@@ -27,7 +27,7 @@ fi
 
 BUILD_DIR="${BUILD_DIR:-build}"
 BOARD="${BOARD:-frank_dino}"
-CPU_SPEED="${CPU_SPEED:-378}"
+CPU_SPEED="${CPU_SPEED:-504}"
 SELFTEST="${SELFTEST:-OFF}"
 CLEAN="${CLEAN:-0}"
 

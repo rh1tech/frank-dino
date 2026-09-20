@@ -56,11 +56,13 @@ message(STATUS "frank-dino ${DINO_VERSION} for ${PICO_BOARD}")
 # CPU_SPEED sets the ceiling on how fast the Z80 can be clocked, because
 # the Z80's clock comes out of a software loop on core 1. It does not set
 # whether the firmware is *correct*: a Z84C00 is fully static, so a slower
-# RP2350 makes a slower Z80 and nothing else. 378 MHz is the default
-# because it needs only the 1.30 V regulator setting; 504 MHz is proven on
-# this board and wants 1.60 V, which is heat this firmware does not need
-# to make until stage 1 asks for the megahertz.
-set(CPU_SPEED 378 CACHE STRING "System clock, MHz")
+# RP2350 makes a slower Z80 and nothing else.
+#
+# Stage 1 asked for the megahertz. With two AY chips rendered inside the
+# same loop, 378 MHz reached 49.34 Hz of frame rate with the pace already
+# at zero -- flat out and still 1.3 % slow, with no way to trim it. 504 MHz
+# is what frank-xt8086 runs on this board and puts the headroom back.
+set(CPU_SPEED 504 CACHE STRING "System clock, MHz")
 
 # The full stage-0 suite instead of the Spectrum.
 #
@@ -74,6 +76,7 @@ option(SELFTEST "Run the stage-0 test suite instead of booting the Spectrum" OFF
 # Components
 # ---------------------------------------------------------------------------
 add_subdirectory(${SRC_ROOT}/core        core)
+add_subdirectory(${SRC_ROOT}/drivers/audio drivers/audio)
 add_subdirectory(${SRC_ROOT}/spectrum    spectrum)
 add_subdirectory(${SRC_ROOT}/drivers/vga drivers/vga)
 add_subdirectory(${SRC_ROOT}/ui          ui)
@@ -108,6 +111,7 @@ target_link_libraries(frank-dino PRIVATE
         dino_ui
         dino_test
         spectrum
+        audio
         vga
 
         pico_runtime

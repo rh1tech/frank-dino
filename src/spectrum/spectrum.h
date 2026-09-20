@@ -77,6 +77,26 @@ extern volatile uint32_t spec_frames;
 extern volatile uint8_t  spec_port_7ffd;
 
 // ============================================================================
+// Sound
+// ============================================================================
+//
+// A 128K has an AY-3-8912 on ports 0xFFFD and 0xBFFD. TurboSound is two
+// of them behind the same pair: a write of 0xFF or 0xFE to the select
+// port chooses which chip the following register accesses reach, instead
+// of naming a register.
+//
+// Whether the second chip exists is a runtime thing rather than a build
+// one, because a program that does not know about TurboSound writes 0xFF
+// to the select port as a register number now and then, and on a machine
+// with only one chip that must stay harmless.
+extern volatile bool     spec_turbosound;
+extern volatile uint32_t spec_ay_writes;
+
+/* True while the beeper bit is set. The mixer samples it; nothing drives
+ * the pin directly any more — see src/drivers/audio/audio.h. */
+extern volatile bool spec_beeper;
+
+// ============================================================================
 // Running it
 // ============================================================================
 
@@ -94,6 +114,21 @@ void spec_init(void);
  * nothing to emulate between interrupts because the CPU does it.
  */
 void spec_run_frame(void);
+
+/*
+ * Trim the Z80's clock until a frame really does take 20 ms.
+ *
+ * z80_calibrate() measures the bus engine on its own, which is the right
+ * answer to a different question. The Spectrum's loop also renders two AY
+ * chips and pushes a sample 882 times a frame, and that work is not free:
+ * calibrated at 3.563 MHz, the machine actually ran at 3.109 — twelve per
+ * cent slow, the audio starved, and every note was a tone and a half flat.
+ *
+ * So this measures the loop that actually runs, with the machine running
+ * it, and adjusts the pace until the frame rate is 50 Hz. Returns the
+ * achieved rate in millihertz-per-frame... in frames per second, x1000.
+ */
+uint32_t spec_tune_clock(void);
 
 // ============================================================================
 // Keyboard

@@ -9,8 +9,10 @@
 
 add_library(spectrum INTERFACE)
 
-target_sources(spectrum INTERFACE ${CMAKE_CURRENT_LIST_DIR}/spectrum.c)
+target_sources(spectrum INTERFACE
+        ${CMAKE_CURRENT_LIST_DIR}/spectrum.c
+        ${CMAKE_CURRENT_LIST_DIR}/ay.c)
 
 target_include_directories(spectrum INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
-target_link_libraries(spectrum INTERFACE dino_core hardware_gpio)
+target_link_libraries(spectrum INTERFACE dino_core audio hardware_gpio)

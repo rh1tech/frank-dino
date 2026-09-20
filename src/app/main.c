@@ -31,6 +31,7 @@
 
 #include "dino.h"
 #include "screen.h"
+#include "audio.h"
 #include "selftest.h"
 #include "spectrum.h"
 #include "vga.h"
@@ -142,7 +143,10 @@ static void core1_main(void) {
     scr_log(ATTR(C_GREY, C_BLACK), "Z80 clock: %lu.%03lu MHz (asked for %u.%03u)",
             (unsigned long)(hz / 1000000), (unsigned long)((hz / 1000) % 1000),
             SPEC_CPU_HZ / 1000000, (SPEC_CPU_HZ / 1000) % 1000);
-    scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, beeper on GP46, keys over the console.");
+    scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, keys over the console.");
+    scr_log(ATTR(C_GREY, C_BLACK), "Sound: beeper + %s on GP46, %u Hz PWM DAC.",
+            spec_turbosound ? "TurboSound (2x AY-3-8912)" : "AY-3-8912",
+            (unsigned)AUDIO_RATE_HZ);
     scr_blank();
     scr_log(ATTR(C_LCYAN, C_BLACK), "Starting...");
 
@@ -151,6 +155,17 @@ static void core1_main(void) {
     sleep_ms(1500);
 
     spec_init();
+
+    // The real loop, measured while running it. See spec_tune_clock().
+    // scr_log, not printf: this is core 1, and core 1 does not talk to
+    // stdio -- it queues, and core 0 prints. See src/ui/screen.h.
+    const uint32_t fps = spec_tune_clock();
+    scr_log(ATTR(C_GREY, C_BLACK), "Frame rate %lu.%02lu Hz at pace %lu (%lu.%03lu MHz)",
+            (unsigned long)(fps / 1000), (unsigned long)((fps % 1000) / 10),
+            (unsigned long)z80_get_pace(),
+            (unsigned long)((uint64_t)fps * SPEC_TSTATES_PER_FRAME / 1000000000ull),
+            (unsigned long)(((uint64_t)fps * SPEC_TSTATES_PER_FRAME / 1000000ull) % 1000));
+
     vga_set_mode(VGA_MODE_SPECTRUM);
     spectrum_running = true;
 
@@ -191,6 +206,10 @@ int main(void) {
     scr_init();
     draw_header();
 
+    // Before core 1 exists: it claims DMA channels and a pacing timer,
+    // and core 1 starts pushing samples the moment the Spectrum starts.
+    audio_init();
+
     multicore_launch_core1_with_stack(core1_main, core1_stack, sizeof core1_stack);
 
     /*
@@ -202,6 +221,7 @@ int main(void) {
      * that is generating the Z80's clock, and can never race tud_task().
      */
     while (true) {
+        audio_task();
         scr_pump();
 
         /*

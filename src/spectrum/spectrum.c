@@ -9,8 +9,11 @@
 #include "spectrum.h"
 
 #include <string.h>
+#include <pico/time.h>
 #include <hardware/gpio.h>
 
+#include "audio.h"
+#include "ay.h"
 #include "dino.h"
 #include "z80_bus.h"
 
@@ -54,6 +57,24 @@ static bool paging_locked = false;
 
 // Keyboard: bit set = key up. Five keys per half-row, bits 0-4.
 static volatile uint8_t kbd[8];
+
+// ---------------------------------------------------------------------------
+// Sound
+// ---------------------------------------------------------------------------
+volatile bool     spec_beeper;
+/*
+ * TurboSound on by default.
+ *
+ * A real TurboSound board is always both chips; software that does not
+ * know about it simply never writes 0xFE or 0xFF to the select port, and
+ * the 128K ROM only ever names registers 0-13. Turning it off is for
+ * chasing a program that does write one of those as a register number.
+ */
+volatile bool     spec_turbosound = true;
+volatile uint32_t spec_ay_writes;
+
+static ay_t    ay[2];
+static uint8_t ay_sel;          // which chip the ports are talking to
 
 // ============================================================================
 // Paging
@@ -100,17 +121,53 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
         spec_border = value & 0x07;
 
         /*
-         * The beeper, and it is not a metaphor.
+         * The beeper. Bit 4 of this port is the speaker on a real
+         * Spectrum, driven from the ULA's latch.
          *
-         * Bit 4 of this port is the speaker on a real Spectrum, driven
-         * straight from the ULA's latch. GP46 on this board is the
-         * speaker too. So the real Z80 executing a real OUT reaches a
-         * real transducer through one store — no sample buffer, no DAC,
-         * no mixer, and no question about the sample rate, because there
-         * are no samples. The waveform is whatever the CPU makes it,
-         * which is exactly what 1-bit audio is.
+         * This used to be a gpio_put() straight to GP46 — the CPU's own
+         * edges reaching the transducer with nothing in between, which
+         * is exactly what 1-bit audio is. The AY ended that: the pin is
+         * a PWM DAC now and cannot also be a logic output, so the beeper
+         * becomes a level that the mixer samples 44100 times a second
+         * along with everything else.
+         *
+         * The loss is real but small. Core 1 runs the frame in
+         * sample-sized slices and reads this between them, so an edge
+         * still lands in the sample it happened in; what is gone is
+         * sub-sample detail, which for a beeper mostly means the very
+         * top of its range.
          */
-        gpio_put(SPEAKER_PIN, (value >> 4) & 1);
+        spec_beeper = (value & 0x10) != 0;
+    }
+
+    /*
+     * The AY, on two ports that are both "A15 high".
+     *
+     * Register select is A15 and A14 both high (0xFFFD); data is A15 high
+     * with A14 low (0xBFFD). As everywhere else on this machine the
+     * decode is partial, and as everywhere else programs rely on it.
+     */
+    if ((port & 0xC002) == 0xC000) {            // select
+        /*
+         * TurboSound steals the top of the register range.
+         *
+         * 0xFF and 0xFE are not register numbers there, they pick which
+         * of the two chips the next data writes reach. A single-chip
+         * machine must treat them as ordinary selects of a register that
+         * does not exist, which is why this only acts when the second
+         * chip has been turned on.
+         */
+        if (spec_turbosound && (value & 0xFE) == 0xFE) {
+            ay_sel = (uint8_t)(value & 1 ? 0 : 1);   // 0xFF = first, 0xFE = second
+        } else {
+            ay_select(&ay[ay_sel], value);
+        }
+        return;
+    }
+    if ((port & 0xC002) == 0x8000) {            // data
+        ay_write(&ay[ay_sel], value);
+        spec_ay_writes++;
+        return;
     }
 
     if ((port & 0x8002) == 0 && !paging_locked) {   // the 128K paging latch
@@ -135,6 +192,9 @@ static uint8_t spec_io_in(const uint16_t port) {
         // machine with nothing connected reads it high.
         return result | 0xA0;
     }
+
+    // The AY's read-back port is the select port, not the data one.
+    if ((port & 0xC002) == 0xC000) return ay_read(&ay[ay_sel]);
 
     /*
      * Everything else is the floating bus, and 0xFF is the honest answer
@@ -275,6 +335,12 @@ void spec_init(void) {
     memset((void *)kbd, 0x1F, sizeof kbd);      // every key up
     held_count = 0;
 
+    ay_reset(&ay[0]);
+    ay_reset(&ay[1]);
+    ay_sel         = 0;
+    spec_beeper    = false;
+    spec_ay_writes = 0;
+
     esc_state      = 0;
     paging_locked  = false;
     spec_port_7ffd = 0;
@@ -285,25 +351,146 @@ void spec_init(void) {
     z80_io_in  = spec_io_in;
     z80_io_out = spec_io_out;
 
-    gpio_put(SPEAKER_PIN, 0);
-
     z80_reset();
+}
+
+/*
+ * One audio sample's worth of Z80, then one audio sample.
+ *
+ * A frame is 70908 T-states and 882 samples, which is 80.394 T-states
+ * each — so the slice length alternates between 80 and 81 under a
+ * fractional accumulator rather than being rounded, because rounding
+ * 0.394 away 882 times a frame is 347 T-states of drift every 20 ms.
+ */
+#define SPEC_TSTATES_PER_SAMPLE (SPEC_TSTATES_PER_FRAME / AUDIO_SAMPLES_PER_FRAME)
+#define SPEC_TSTATE_REMAINDER   (SPEC_TSTATES_PER_FRAME % AUDIO_SAMPLES_PER_FRAME)
+
+// AY clocks per T-state, x256: the chip runs at half the CPU clock, so
+// this is 128/256. Kept as a shift rather than a divide because it is on
+// the per-sample path.
+#define AY_TICKS(tstates) ((tstates) >> 1)
+
+static uint32_t slice_acc;
+
+__force_inline static void run_slice(const uint32_t tstates) {
+    z80_run(tstates);
+
+    /*
+     * The mix, once per sample.
+     *
+     * The beeper is read here rather than pushed by the port handler, so
+     * its level is whatever it was at the end of the slice — which is
+     * the sample it belongs in. The AYs are advanced by exactly the
+     * cycles this slice covered, so nothing drifts against anything.
+     */
+    int32_t s = ay_render(&ay[0], AY_TICKS(tstates));
+    if (spec_turbosound) s += ay_render(&ay[1], AY_TICKS(tstates));
+
+    /*
+     * The beeper at about a quarter of full scale.
+     *
+     * On a real Spectrum the beeper is considerably louder than the AY,
+     * and reproducing that faithfully makes every 128K game's music sit
+     * under its own sound effects. This is the compromise every emulator
+     * makes; it is a mix decision, not a measurement.
+     */
+    if (spec_beeper) s += 8000;
+    else             s -= 8000;
+
+    audio_push(s);
+}
+
+uint32_t spec_tune_clock(void) {
+    // Muted, because the machine is being run at deliberately wrong
+    // speeds and nobody needs to hear that.
+    audio_set_enabled(false);
+
+    // What five frames should take, in microseconds.
+    const int64_t want = 5ll * 1000000ll * SPEC_TSTATES_PER_FRAME / SPEC_CPU_HZ;
+    const int64_t tol  = want / 400;        // a quarter of a per cent
+
+    int32_t pace = (int32_t)z80_get_pace();
+    int64_t us   = want;
+
+    /*
+     * Proportional, then fine.
+     *
+     * Stepping by one and measuring five frames each time is 100 ms an
+     * iteration, and the starting point comes from z80_calibrate(), which
+     * timed the bus engine on its own and therefore lands a long way off
+     * once two AY chips are in the loop. The first version walked ±1 and
+     * ran out of its iteration budget mid-descent, leaving the machine
+     * 1.9 % fast with the tuner reporting success.
+     *
+     * One pace unit is about two per cent of a frame, so the error in per
+     * mille divided by twenty is roughly how many units to move. That
+     * converges in three or four measurements; the ±1 fallback at the end
+     * takes care of the last step, where the estimate rounds to nothing.
+     */
+    for (int iter = 0; iter < 16; iter++) {
+        const uint64_t t0 = time_us_64();
+        for (int f = 0; f < 5; f++) spec_run_frame();
+        us = (int64_t)(time_us_64() - t0);
+
+        const int64_t err = us - want;                  // >0 means too slow
+        if (err > -tol && err < tol) break;
+
+        int32_t step = (int32_t)((err * 1000 / want) / 20);
+        if (step == 0) step = err > 0 ? 1 : -1;
+
+        pace -= step;                                   // slower -> less padding
+        if (pace < 0) pace = 0;
+        z80_set_pace((uint32_t)pace);
+    }
+
+    /*
+     * One more measurement, so the number returned is the one that is
+     * true now.
+     *
+     * The loop's last `us` was taken *before* its last adjustment, which
+     * made the report disagree with the machine — it announced 51.5 Hz
+     * while the board was actually running 49.75. A figure that is wrong
+     * in the direction of looking worse is still wrong, and this one is
+     * printed on the boot screen where it will be believed.
+     */
+    const uint64_t t0 = time_us_64();
+    for (int f = 0; f < 5; f++) spec_run_frame();
+    us = (int64_t)(time_us_64() - t0);
+
+    audio_set_enabled(true);
+    return (uint32_t)((5ll * 1000000000ll) / (us ? us : 1));   // fps x1000
 }
 
 void spec_run_frame(void) {
     /*
-     * One frame, then the interrupt, and nothing in between.
+     * The whole main loop of the machine, sliced.
      *
-     * This is the whole main loop of the machine, and its shortness is
-     * the point: an emulator spends a frame stepping a CPU and counting
-     * contention, and this spends a frame letting a Z84C00 be a Z80.
-     * The only thing the ULA owes it is an interrupt every 70908
-     * T-states, and the only thing that has to be right is the count.
+     * An emulator spends a frame stepping a CPU and counting contention.
+     * This spends it letting a Z84C00 be a Z80, stopping 882 times to
+     * take a sample. The only thing the ULA owes the CPU is an interrupt
+     * every 70908 T-states, and the only thing that has to be right is
+     * the count.
      */
-    z80_run(SPEC_TSTATES_PER_FRAME - SPEC_INT_TSTATES);
+    uint32_t budget = SPEC_TSTATES_PER_FRAME - SPEC_INT_TSTATES;
+
+    for (uint32_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; i++) {
+        uint32_t slice = SPEC_TSTATES_PER_SAMPLE;
+        slice_acc += SPEC_TSTATE_REMAINDER;
+        if (slice_acc >= AUDIO_SAMPLES_PER_FRAME) {
+            slice_acc -= AUDIO_SAMPLES_PER_FRAME;
+            slice++;
+        }
+
+        if (slice > budget) slice = budget;
+        budget -= slice;
+        run_slice(slice);
+        if (!budget) break;
+    }
+
+    if (budget) run_slice(budget);
 
     z80_set_int(true);
-    z80_run(SPEC_INT_TSTATES);
+    run_slice(SPEC_INT_TSTATES);
     z80_set_int(false);
 
     const uint32_t f = spec_frames + 1;

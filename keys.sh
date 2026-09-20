@@ -30,27 +30,33 @@ PORT="${CONSOLE_PORT:-}"
 BAUD="${CONSOLE_BAUD:-115200}"
 GAP="${KEY_GAP:-0.12}"
 
-if [[ -z "${PORT}" ]]; then
-    CANDIDATES=()
-    for p in /dev/cu.usbmodem*; do [[ -e "$p" ]] && CANDIDATES+=("$p"); done
-    case "${#CANDIDATES[@]}" in
-        0) echo "ERROR: no /dev/cu.usbmodem* found." >&2; exit 1 ;;
-        1) PORT="${CANDIDATES[0]}" ;;
-        *) echo "ERROR: more than one candidate; set CONSOLE_PORT:" >&2
-           printf '  %s\n' "${CANDIDATES[@]}" >&2; exit 1 ;;
-    esac
-fi
-
 # pyserial rather than stty: on macOS the termios settings do not survive
 # the next open, so `stty -f port 115200; cat port` reads at whatever the
 # port had before. That silently produces the right number of bytes as
 # pure garbage, which reads like a wiring fault rather than a host one.
-exec python3 - "${PORT}" "${BAUD}" "${GAP}" "$@" <<'PY'
+exec python3 - "${PORT:-}" "${BAUD}" "${GAP}" "$@" <<'PY'
 import sys, time, serial
 
 port, baud, gap, *args = sys.argv[1:]
-s = serial.Serial(port, int(baud), timeout=0.2)
 gap = float(gap)
+
+# Find the board, not the probe.
+#
+# With a Debug Probe attached there are two /dev/cu.usbmodem* and picking
+# the wrong one is silent: keystrokes go to the probe's UART, which on
+# this board is wired for output only, so nothing happens and nothing
+# complains. They are trivial to tell apart by USB descriptor -- the
+# probe says "Debug Probe (CMSIS-DAP)" and the board says "Pico".
+if not port:
+    from serial.tools import list_ports
+    cands = [p for p in list_ports.comports()
+             if p.vid == 0x2E8A and 'Debug Probe' not in (p.description or '')]
+    if not cands:
+        sys.exit("ERROR: no board CDC port found. Is USB plugged in, and S1 set to "
+                 "device mode? (CONSOLE_PORT=/dev/... to override.)")
+    port = cands[0].device
+
+s = serial.Serial(port, int(baud), timeout=0.2)
 
 NAMED = {
     '--enter': '\r', '--space': ' ', '--del': '\x7f',
