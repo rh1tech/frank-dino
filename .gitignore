@@ -1,0 +1,31 @@
+# Build trees. CMake is told to build out-of-source; every one of these is
+# regenerable and none of it belongs in history.
+build/
+build-*/
+cmake-build-*/
+
+# Build products, wherever they land.
+*.uf2
+*.elf
+*.bin
+*.hex
+*.dis
+*.map
+
+# Generated from the .pio next to it by pioasm at build time. Stage 0 has
+# no .pio of its own -- the VGA state machine is one hand-written
+# instruction in vga.c -- but the rule stays, because stage 1 will.
+*.pio.h
+
+# Bench session output: captures, logs, scratch.
+out/
+
+# macOS
+.DS_Store
+._*
+
+# Editors
+.vscode/
+.idea/
+*.swp
+*~

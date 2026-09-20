@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+#
+# frank-dino — an RP2350B acting as the whole machine around a real Z80
+#
+# Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+# https://github.com/rh1tech/frank-dino
+# SPDX-License-Identifier: GPL-3.0-or-later
+#
+# applypatch-msg — the same check, for `git am`.
+#
+# commit-msg does not run when a commit arrives as a mailed patch, which
+# is exactly how a co-author trailer written elsewhere gets into a history
+# that has a commit-msg hook. This closes that door.
+
+set -uo pipefail
+exec "$(git rev-parse --show-toplevel)/tools/check-attribution.sh" --message "$1"
