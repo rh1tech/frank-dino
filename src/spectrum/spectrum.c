@@ -99,6 +99,45 @@ static void apply_paging(void) {
     spec_screen_bank = (v & 0x08) ? 7 : 5;
 }
 
+// ---------------------------------------------------------------------------
+// Launching
+// ---------------------------------------------------------------------------
+static uint16_t tramp_jp;
+static bool     tramp_seen_jp;
+static bool     tramp_active;
+
+void spec_set_paging(const uint8_t value) {
+    spec_port_7ffd = value;
+    apply_paging();
+}
+
+/*
+ * The first opcode fetch after the trampoline's jump is the destination,
+ * and this runs before that fetch is answered — so putting the real ROM
+ * back here means the destination's first byte comes from the ROM even
+ * when the destination is itself inside the bottom 16K, which a few
+ * snapshots' program counters are.
+ */
+static void launch_opfetch(const uint16_t addr) {
+    if (!tramp_seen_jp) {
+        if (addr == tramp_jp) tramp_seen_jp = true;
+        return;
+    }
+    apply_paging();                 // the real ROM, per the latch
+    tramp_active   = false;
+    z80_opfetch_cb = NULL;
+}
+
+void spec_begin_launch(uint8_t *page, const uint16_t jp_addr) {
+    tramp_jp       = jp_addr;
+    tramp_seen_jp  = false;
+    tramp_active   = true;
+    z80_map_page(0, page, NULL);    // read-only, like the ROM it replaces
+    z80_opfetch_cb = launch_opfetch;
+}
+
+bool spec_launch_pending(void) { return tramp_active; }
+
 // ============================================================================
 // Ports
 // ============================================================================

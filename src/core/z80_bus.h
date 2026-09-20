@@ -114,6 +114,21 @@ typedef void    (*z80_io_out_fn)(uint16_t port, uint8_t value);
 extern z80_io_in_fn  z80_io_in;
 extern z80_io_out_fn z80_io_out;
 
+/*
+ * Called on every opcode fetch, *before* the byte is supplied.
+ *
+ * Null almost always, and the check is one load and a
+ * predicted-not-taken branch on the hot path. It exists for the one
+ * thing that cannot be done any other way: swapping what is mapped at
+ * 0x0000 between the instruction that jumps out of it and the fetch at
+ * the destination. A snapshot's restore code lives in the ROM window and
+ * has to stop existing at exactly that moment — one fetch earlier and
+ * the jump reads its operands from the wrong page, one later and the
+ * destination's first byte comes from the trampoline.
+ */
+typedef void (*z80_opfetch_fn)(uint16_t addr);
+extern z80_opfetch_fn z80_opfetch_cb;
+
 // ============================================================================
 // The trace ring
 // ============================================================================

@@ -131,6 +131,25 @@ void spec_run_frame(void);
 uint32_t spec_tune_clock(void);
 
 // ============================================================================
+// Loading something into the machine
+// ============================================================================
+
+/* Set the paging latch from this side, as though the CPU had written it. */
+void spec_set_paging(uint8_t value);
+
+/*
+ * Map `page` over the ROM window and arm the swap back.
+ *
+ * The real ROM returns on the first opcode fetch after the one at
+ * jp_addr, which is the instruction that leaves the page. See
+ * src/spectrum/launch.c for why it has to be that exact moment.
+ */
+void spec_begin_launch(uint8_t *page, uint16_t jp_addr);
+
+/* True while a launch is still waiting for the CPU to leave the page. */
+bool spec_launch_pending(void);
+
+// ============================================================================
 // Keyboard
 // ============================================================================
 //

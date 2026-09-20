@@ -11,7 +11,8 @@ add_library(spectrum INTERFACE)
 
 target_sources(spectrum INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/spectrum.c
-        ${CMAKE_CURRENT_LIST_DIR}/ay.c)
+        ${CMAKE_CURRENT_LIST_DIR}/ay.c
+        ${CMAKE_CURRENT_LIST_DIR}/launch.c)
 
 target_include_directories(spectrum INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 

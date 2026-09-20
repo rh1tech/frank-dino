@@ -38,6 +38,7 @@
 #include "ff.h"
 #include "diskio.h"   // after ff.h: it uses FatFs's own typedefs
 #include "selftest.h"
+#include "launch.h"
 #include "spectrum.h"
 #include "vga.h"
 #include "z80_bus.h"
@@ -164,6 +165,23 @@ static void core1_main(void) {
     sleep_ms(1500);
 
     spec_init();
+
+    /*
+     * Prove the snapshot machinery before anything depends on it, then
+     * put the machine back.
+     *
+     * The self-test leaves the CPU running its own probe program with
+     * RAM full of test values -- which is what it is for, and which is
+     * emphatically not a Spectrum. Without the second spec_init() the
+     * machine spins in the probe for ever and the screen stays black,
+     * which it duly did.
+     */
+    char detail[72];
+    const bool tramp_ok = spec_launch_selftest(detail, sizeof detail);
+    spec_init();
+
+    if (tramp_ok) scr_pass("Snapshot trampoline", "%s", detail);
+    else          scr_fail("Snapshot trampoline", "%s", detail);
 
     // The real loop, measured while running it. See spec_tune_clock().
     // scr_log, not printf: this is core 1, and core 1 does not talk to

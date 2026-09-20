@@ -54,6 +54,8 @@ static void    io_out_default(uint16_t port, uint8_t val) { (void)port; (void)va
 z80_io_in_fn  z80_io_in  = io_in_default;
 z80_io_out_fn z80_io_out = io_out_default;
 
+z80_opfetch_fn z80_opfetch_cb;
+
 /*
  * An unterminated Z80 data bus does not read as zero.
  *
@@ -206,15 +208,18 @@ __force_inline static void bus_service(void) {
         bus_cycle_t kind;
 
         if (!(g & Z80_MREQ)) {
-            v = mem_read(a);
             if (!(g & Z80_M1)) {
                 kind = BUS_OPFETCH;
                 z80_stats.opfetch++;
                 z80_stats.last_opfetch_addr = a;
+                // Before the read, not after: the callback exists to
+                // change what this fetch will see. See z80_bus.h.
+                if (unlikely(z80_opfetch_cb)) z80_opfetch_cb(a);
             } else {
                 kind = BUS_MEM_READ;
                 z80_stats.mem_read++;
             }
+            v = mem_read(a);
         } else {
             // ~MREQ idle with ~RD active is an I/O read and nothing else.
             v = z80_io_in(a);
