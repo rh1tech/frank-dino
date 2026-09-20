@@ -72,10 +72,27 @@ set(CPU_SPEED 504 CACHE STRING "System clock, MHz")
 # other.
 option(SELFTEST "Run the stage-0 test suite instead of booting the Spectrum" OFF)
 
+# A USB keyboard instead of a USB console.
+#
+# S1 routes the RP2350's D+/D- either to the USB-C socket or to the hub
+# and the USB-A ports -- device or host, and the firmware cannot ask which
+# way it is pointing. So this picks one at build time:
+#
+#   OFF  USB is a CDC console. keys.sh types at the machine, `picotool
+#        reboot -u -f` reaches BOOTSEL, and there is no keyboard.
+#   ON   USB is a HID host. A real keyboard works; the console is UART
+#        only, and flashing is SWD only.
+option(USB_KEYBOARD "USB HID keyboard instead of the USB console" OFF)
+
 # ---------------------------------------------------------------------------
 # Components
 # ---------------------------------------------------------------------------
 add_subdirectory(${SRC_ROOT}/core        core)
+if(USB_KEYBOARD)
+    add_subdirectory(${SRC_ROOT}/drivers/usbkbd drivers/usbkbd)
+endif()
+add_subdirectory(${SRC_ROOT}/drivers/fatfs  drivers/fatfs)
+add_subdirectory(${SRC_ROOT}/drivers/sdcard drivers/sdcard)
 add_subdirectory(${SRC_ROOT}/drivers/audio drivers/audio)
 add_subdirectory(${SRC_ROOT}/spectrum    spectrum)
 add_subdirectory(${SRC_ROOT}/drivers/vga drivers/vga)
@@ -92,6 +109,15 @@ target_compile_definitions(frank-dino PRIVATE
 
         CPU_SPEED_MHZ=${CPU_SPEED}
         SELFTEST=$<BOOL:${SELFTEST}>
+        USB_KEYBOARD=$<BOOL:${USB_KEYBOARD}>
+
+        # microSD on J3. The macro names say SPI0; the driver has always
+        # used spi1, because GP40-43 have no SPI0 mapping at all. Left
+        # spelled the upstream way so an update still applies.
+        SDCARD_PIN_SPI0_MISO=40
+        SDCARD_PIN_SPI0_CS=41
+        SDCARD_PIN_SPI0_SCK=42
+        SDCARD_PIN_SPI0_MOSI=43
 
         PICO_FLASH_SIZE_BYTES=16777216
         PICO_PRINTF_ALWAYS_INCLUDED=0
@@ -113,6 +139,7 @@ target_link_libraries(frank-dino PRIVATE
         spectrum
         audio
         vga
+        sdcard
 
         pico_runtime
         pico_stdlib
@@ -150,7 +177,17 @@ set_source_files_properties(${SRC_ROOT}/spectrum/spectrum.c PROPERTIES
 # S1 selects which way the mux (U2) points: to J6 for device mode, which
 # is what this needs, or to the hub for USB-A host. See docs/pinout.md.
 pico_enable_stdio_uart(frank-dino 1)
-pico_enable_stdio_usb(frank-dino 1)
+
+if(USB_KEYBOARD)
+    # The USB controller is a HID host now, so it cannot also enumerate as
+    # a CDC device. UART only, and SWD for flashing.
+    pico_enable_stdio_usb(frank-dino 0)
+    target_link_libraries(frank-dino PRIVATE usbkbd)
+    set(FAMILY rp2350)
+    set(BOARD pico_sdk)
+else()
+    pico_enable_stdio_usb(frank-dino 1)
+endif()
 
 # ---------------------------------------------------------------------------
 # Image

@@ -32,6 +32,11 @@
 #include "dino.h"
 #include "screen.h"
 #include "audio.h"
+#if USB_KEYBOARD
+#include "usbkbd.h"
+#endif
+#include "ff.h"
+#include "diskio.h"   // after ff.h: it uses FatFs's own typedefs
 #include "selftest.h"
 #include "spectrum.h"
 #include "vga.h"
@@ -143,7 +148,11 @@ static void core1_main(void) {
     scr_log(ATTR(C_GREY, C_BLACK), "Z80 clock: %lu.%03lu MHz (asked for %u.%03u)",
             (unsigned long)(hz / 1000000), (unsigned long)((hz / 1000) % 1000),
             SPEC_CPU_HZ / 1000000, (SPEC_CPU_HZ / 1000) % 1000);
+#if USB_KEYBOARD
+    scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, USB keyboard on the USB-A ports.");
+#else
     scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, keys over the console.");
+#endif
     scr_log(ATTR(C_GREY, C_BLACK), "Sound: beeper + %s on GP46, %u Hz PWM DAC.",
             spec_turbosound ? "TurboSound (2x AY-3-8912)" : "AY-3-8912",
             (unsigned)AUDIO_RATE_HZ);
@@ -210,6 +219,49 @@ int main(void) {
     // and core 1 starts pushing samples the moment the Spectrum starts.
     audio_init();
 
+    /*
+     * The card, mounted here and nowhere else.
+     *
+     * FatFs is not re-entrant across cores and the Z80 does not stop for
+     * it, so everything that touches the filesystem happens on core 0 and
+     * before core 1 is running a machine -- which is also when a file
+     * browser wants to run.
+     */
+#if USB_KEYBOARD
+    // Before core 1: enumeration takes a moment and the machine should
+    // not be waiting on it, but the stack has to exist before anything
+    // presses a key.
+    usbkbd_init();
+#endif
+
+    static FATFS fs;
+    const bool sd_ok = (f_mount(&fs, "", 1) == FR_OK);
+    if (sd_ok) {
+        // No f_getlabel(): FF_USE_LABEL is off in the vendored ffconf.h,
+        // and the config is left exactly as it came so an update from
+        // upstream still applies cleanly.
+        DWORD free_clusters = 0;
+        FATFS *fsp = NULL;
+        const bool got = (f_getfree("", &free_clusters, &fsp) == FR_OK);
+        printf("[sd] mounted, %lu KB free\n",
+               got ? (unsigned long)(free_clusters * fsp->csize / 2) : 0ul);
+    } else {
+        /*
+         * Say which, because they need different actions.
+         *
+         * disk_initialize() failing is the card not answering CMD0 at
+         * all — an empty slot, a card in backwards, or the SPI pins
+         * wrong. It succeeding and f_mount() still failing is a card
+         * that talks but has no filesystem this build can read, which is
+         * a formatting problem and not a wiring one.
+         */
+        const DSTATUS st = disk_initialize(0);
+        printf("[sd] %s (disk_initialize status 0x%02X)\n",
+               (st & STA_NOINIT) ? "no card responding - empty slot or bad wiring"
+                                 : "card responds but has no readable FAT volume",
+               (unsigned)st);
+    }
+
     multicore_launch_core1_with_stack(core1_main, core1_stack, sizeof core1_stack);
 
     /*
@@ -222,6 +274,9 @@ int main(void) {
      */
     while (true) {
         audio_task();
+#if USB_KEYBOARD
+        usbkbd_task();
+#endif
         scr_pump();
 
         /*
