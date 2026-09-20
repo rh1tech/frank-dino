@@ -62,10 +62,19 @@ message(STATUS "frank-dino ${DINO_VERSION} for ${PICO_BOARD}")
 # to make until stage 1 asks for the megahertz.
 set(CPU_SPEED 378 CACHE STRING "System clock, MHz")
 
+# The full stage-0 suite instead of the Spectrum.
+#
+# Not a mode the machine can enter at runtime, because the tests are
+# destructive: thirty resets, all 64 KB filled with patterns, and the
+# pace left wherever the speed ramp finished. A build does one or the
+# other.
+option(SELFTEST "Run the stage-0 test suite instead of booting the Spectrum" OFF)
+
 # ---------------------------------------------------------------------------
 # Components
 # ---------------------------------------------------------------------------
 add_subdirectory(${SRC_ROOT}/core        core)
+add_subdirectory(${SRC_ROOT}/spectrum    spectrum)
 add_subdirectory(${SRC_ROOT}/drivers/vga drivers/vga)
 add_subdirectory(${SRC_ROOT}/ui          ui)
 add_subdirectory(${SRC_ROOT}/test        test)
@@ -79,6 +88,7 @@ target_compile_definitions(frank-dino PRIVATE
         FIRMWARE_VERSION="${DINO_VERSION}"
 
         CPU_SPEED_MHZ=${CPU_SPEED}
+        SELFTEST=$<BOOL:${SELFTEST}>
 
         PICO_FLASH_SIZE_BYTES=16777216
         PICO_PRINTF_ALWAYS_INCLUDED=0
@@ -97,6 +107,7 @@ target_link_libraries(frank-dino PRIVATE
         dino_core
         dino_ui
         dino_test
+        spectrum
         vga
 
         pico_runtime
@@ -107,6 +118,13 @@ target_link_libraries(frank-dino PRIVATE
         hardware_dma
         hardware_vreg
 )
+
+# .incbin in src/spectrum/spectrum.c names its ROMs relative to the
+# repository root, and creates no dependency CMake can see -- so a changed
+# ROM would otherwise leave the firmware linked against the copy it last
+# saw, with no symptom but wrong behaviour.
+set_source_files_properties(${SRC_ROOT}/spectrum/spectrum.c PROPERTIES
+        OBJECT_DEPENDS "${FW_ROOT}/roms/128-0.rom;${FW_ROOT}/roms/128-1.rom")
 
 # ---------------------------------------------------------------------------
 # Console

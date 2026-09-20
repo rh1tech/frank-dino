@@ -64,11 +64,35 @@ extern z80_stats_t z80_stats;
 // Guest memory
 // ============================================================================
 //
-// Flat, 64 KB, in on-chip SRAM. Addresses below z80_rom_limit ignore
-// writes, which is the whole of what "ROM" means to a Z80 — a real
-// machine's ROM is not protected, it is simply not connected to ~WR.
-extern uint8_t  z80_mem[GUEST_MEM_SIZE];
-extern uint16_t z80_rom_limit;
+// Four 16 KB windows, which is the shape every Z80 machine worth emulating
+// already has. The Z80's address space divides into four naturally, a
+// Spectrum 128 pages exactly on those boundaries, and the read path becomes
+// one shift and two loads with no branch:
+//
+//     z80_rpage[a >> 14][a & 0x3FFF]
+//
+// Writes go through a separate table, so ROM is not a comparison against a
+// limit on every cycle — it is a window whose write pointer aims at a bit
+// bucket. That is also closer to the truth: a real machine's ROM is not
+// write-protected, it simply has nothing connected to ~WR.
+extern uint8_t *z80_rpage[4];
+extern uint8_t *z80_wpage[4];
+
+/*
+ * The flat 64 KB the stage-0 tests use.
+ *
+ * Kept as its own array rather than carved out of a machine's RAM: the
+ * self-test fills all of it with patterns, and a test that scribbles over
+ * the Spectrum's ROM image to prove the data bus works is a test that can
+ * only be run once.
+ */
+extern uint8_t z80_mem[GUEST_MEM_SIZE];
+
+/* Point all four windows at z80_mem, readable and writable. */
+void z80_map_flat(void);
+
+/* Aim one 16 KB window. A null write pointer makes the window read-only. */
+void z80_map_page(unsigned slot, uint8_t *read_from, uint8_t *write_to);
 
 // ============================================================================
 // I/O
@@ -283,3 +307,15 @@ uint32_t z80_get_pace(void);
 
 /* Achieved Z80 clock in Hz, measured over a real run rather than derived. */
 uint32_t z80_measure_clock(void);
+
+/*
+ * Find the pace that runs the CPU closest to target_hz, and set it.
+ * Returns the clock actually achieved.
+ *
+ * Measured rather than computed, because the loop's speed depends on the
+ * system clock, on what the compiler did with the service routine, and on
+ * how often an interrupt lands in the middle of a clock phase. A Spectrum
+ * wants 3.5 MHz and every note it plays is flat or sharp by whatever this
+ * misses by, so it is worth spending a few milliseconds at boot on.
+ */
+uint32_t z80_calibrate(uint32_t target_hz);

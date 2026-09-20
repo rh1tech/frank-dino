@@ -32,60 +32,23 @@
 #include "dino.h"
 #include "screen.h"
 #include "selftest.h"
+#include "spectrum.h"
 #include "vga.h"
 #include "z80_bus.h"
-
-// ============================================================================
-// The heartbeat program
-// ============================================================================
-//
-//   0000  0E 00      LD C,00h
-//   0002  79         LD A,C      ; loop
-//   0003  D3 00      OUT (00h),A
-//   0005  0C         INC C
-//   0006  C3 02 00   JP loop
-//
-// What it is for: after the tests have finished there is nothing on the
-// screen that changes, and a frozen report and a frozen machine look the
-// same in a photograph. This puts a number on the screen that only
-// advances if the CPU is still fetching, still executing and still
-// driving an I/O cycle the engine still recognises.
-static const uint8_t prog_heartbeat[] = {
-    0x0E, 0x00,
-    0x79,
-    0xD3, 0x00,
-    0x0C,
-    0xC3, 0x02, 0x00,
-};
 
 /*
  * Core 1's stack, in main RAM rather than in SCRATCH_X.
  *
  * The SDK gives core 1 PICO_CORE1_STACK_SIZE bytes, which defaults to
  * 2 KB, carved out of the 4 KB SCRATCH_X region — and SCRATCH_X is a
- * fixed hardware block, so it cannot simply be made bigger.
+ * fixed hardware block that cannot be made bigger. The self-test does not
+ * fit in that: every test is a static function called once, so the
+ * compiler inlines them all into selftest_run_all() and merges their
+ * buffers into one frame that is live for the whole run.
  *
- * The self-test does not fit in that. It nests a test's own buffers
- * inside scr_fail()'s formatting buffers, and because every test is a
- * static function called exactly once, the compiler inlines them all into
- * selftest_run_all() and merges their locals into one frame that is live
- * for the whole run. Adding an 80-byte buffer to the *last* test was
- * enough to overflow it, and what faulted was the *first* one — core 1
- * died in the wiring test, several hundred lines away from the edit that
- * caused it, which is a memorably unhelpful way to spend an afternoon.
- *
- * 16 KB out of 512 KB, and the fault mode stops being a puzzle.
+ * 16 KB out of 512 KB.
  */
 static uint32_t core1_stack[4096] __attribute__((aligned(8)));
-
-static volatile uint8_t  heartbeat_value;
-static volatile uint32_t heartbeat_count;
-
-static void heartbeat_out(const uint16_t port, const uint8_t value) {
-    if ((port & 0xFF) != 0x00) return;
-    heartbeat_value = value;
-    heartbeat_count++;
-}
 
 // ============================================================================
 // The header
@@ -111,54 +74,88 @@ static void draw_header(void) {
 // ============================================================================
 // Core 1: the CPU
 // ============================================================================
+
+/* Set once the machine is up, so core 0 knows where console keys go. */
+volatile bool spectrum_running = false;
+
+/*
+ * Every byte the console has delivered, and the last one.
+ *
+ * Bring-up only, and readable over SWD. "The keys do nothing" has three
+ * causes that look identical from the far end of a cable — the wire, the
+ * host, or this firmware — and a counter that does not move separates
+ * the third from the other two without printing anything into a console
+ * that is itself the thing under suspicion.
+ */
+volatile uint32_t console_chars;
+volatile uint8_t  console_last;
+
 static void core1_main(void) {
     z80_bus_init();
 
+#if SELFTEST
+    /*
+     * The whole stage-0 suite, and then stop.
+     *
+     * A build that runs the tests does not go on to be a Spectrum: the
+     * tests reset the CPU thirty times, fill all 64 KB with patterns and
+     * leave the pace wherever the speed ramp ended. Handing that to a ROM
+     * would be starting a machine out of a state nothing chose.
+     */
     const selftest_result_t r = selftest_run_all();
-
     scr_blank();
-    if (r.failed == 0 && r.passed > 1) {
+    if (r.failed == 0)
         scr_log(ATTR(C_LGREEN, C_BLACK), "%lu/%lu passed. The Z80 works and the bus is sound.",
                 (unsigned long)r.passed, (unsigned long)r.run);
-    } else {
+    else {
         scr_log(ATTR(C_LRED, C_BLACK), "%lu of %lu tests failed.",
                 (unsigned long)r.failed, (unsigned long)r.run);
         selftest_dump_trace(64);
     }
+    while (true) tight_loop_contents();
+#else
+    /*
+     * Enough of stage 0 to know the CPU is there, and no more.
+     *
+     * A dead or missing Z80 gives a black screen and nothing else, and
+     * that is indistinguishable from a dozen other faults. Two tests cost
+     * a few milliseconds and turn it into a sentence. The rest of the
+     * suite is a build option, because it is destructive.
+     */
+    scr_log(ATTR(C_WHITE, C_BLACK), "ZX Spectrum 128K - a real Z84C00 on the bus");
+    scr_blank();
 
-    printf("[dino] selftest: %lu run, %lu passed, %lu failed, best %lu Hz at pace %lu\n",
-           (unsigned long)r.run, (unsigned long)r.passed, (unsigned long)r.failed,
-           (unsigned long)r.z80_clock_hz, (unsigned long)r.best_pace);
-
-    if (r.failed) {
-        // Nothing to run. Leaving the CPU in reset is the honest state,
-        // and it puts D1 back on so the board says so without a screen.
+    if (!selftest_quick_check()) {
+        scr_blank();
+        scr_log(ATTR(C_YELLOW, C_BLACK), "Build with SELFTEST=ON for the full stage-0 report.");
         while (true) tight_loop_contents();
     }
 
-    // --- the heartbeat ---
-    z80_io_out = heartbeat_out;
-    memset(z80_mem, 0xFF, GUEST_MEM_SIZE);
-    memcpy(z80_mem, prog_heartbeat, sizeof prog_heartbeat);
+    // Calibrate against plain NOPs rather than the ROM: this runs the CPU
+    // for tens of thousands of T-states at a dozen different speeds, and
+    // it should not be doing that inside a machine that is booting.
+    z80_map_flat();
+    memset(z80_mem, 0x00, GUEST_MEM_SIZE);
     z80_reset();
 
-    const int row = VGA_ROWS - 2;
-    absolute_time_t next = get_absolute_time();
+    const uint32_t hz = z80_calibrate(SPEC_CPU_HZ);
+    scr_log(ATTR(C_GREY, C_BLACK), "Z80 clock: %lu.%03lu MHz (asked for %u.%03u)",
+            (unsigned long)(hz / 1000000), (unsigned long)((hz / 1000) % 1000),
+            SPEC_CPU_HZ / 1000000, (SPEC_CPU_HZ / 1000) % 1000);
+    scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, beeper on GP46, keys over the console.");
+    scr_blank();
+    scr_log(ATTR(C_LCYAN, C_BLACK), "Starting...");
 
-    while (true) {
-        // A slice, then a look at the clock. 20000 T-states is a few
-        // milliseconds of Z80 at any pace this board reaches, so the
-        // display is responsive without checking the time every cycle.
-        z80_run(20000);
+    // Long enough to read off a capture stick, which is the only way
+    // anyone sees this screen.
+    sleep_ms(1500);
 
-        if (absolute_time_diff_us(get_absolute_time(), next) > 0) continue;
-        next = make_timeout_time_ms(200);
+    spec_init();
+    vga_set_mode(VGA_MODE_SPECTRUM);
+    spectrum_running = true;
 
-        scr_printf(2, row, ATTR(C_LCYAN, C_BLACK),
-                   "Z80 running: OUT(00) = %02X   %lu I/O writes   %llu T-states",
-                   heartbeat_value, (unsigned long)heartbeat_count,
-                   (unsigned long long)z80_stats.t_states);
-    }
+    while (true) spec_run_frame();
+#endif
 }
 
 // ============================================================================
@@ -168,9 +165,9 @@ int main(void) {
     /*
      * GP46 is the input of an audio amplifier and a reset leaves it
      * floating, which is a pin-shaped aerial in front of a speaker. This
-     * board has nothing to say through it in stage 0, so it is driven low
-     * and left there — two instructions against a second of hiss at every
-     * boot.
+     * board's beeper is the Spectrum's, and until the ULA model owns it
+     * the pin is driven low — two instructions against a second of hiss
+     * at every boot.
      */
     gpio_init(SPEAKER_PIN);
     gpio_set_dir(SPEAKER_PIN, GPIO_OUT);
@@ -206,6 +203,25 @@ int main(void) {
      */
     while (true) {
         scr_pump();
+
+        /*
+         * The console is the keyboard.
+         *
+         * There is no keyboard socket on this board yet. Before the
+         * machine starts, a keypress replays the boot report; afterwards
+         * it is a Spectrum key. Which means the whole machine can be
+         * driven from a script over the same cable that flashes it —
+         * type "1" at the 128K menu, screenshot the result, and that is
+         * a regression test.
+         */
+        const int c = getchar_timeout_us(0);
+        if (c != PICO_ERROR_TIMEOUT) {
+            console_chars++;
+            console_last = (uint8_t)c;
+            if (spectrum_running) spec_key_ascii((char)c);
+            else                  scr_replay();
+        }
+
         sleep_ms(2);
     }
 }

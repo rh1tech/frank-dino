@@ -15,6 +15,10 @@ target_sources(vga INTERFACE ${CMAKE_CURRENT_LIST_DIR}/vga.c)
 
 target_include_directories(vga INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
+# The scanline interrupt reads the Spectrum's screen straight out of guest
+# RAM, so it needs that module's header. It does not link its code.
+target_include_directories(vga INTERFACE ${CMAKE_CURRENT_LIST_DIR}/../../spectrum)
+
 target_link_libraries(vga INTERFACE
         dino_core
         hardware_pio

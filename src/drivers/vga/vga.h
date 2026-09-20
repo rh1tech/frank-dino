@@ -40,4 +40,15 @@ extern uint8_t vga_text[VGA_COLS * VGA_ROWS * 2];
 /* Frames output since init. The one honest "is the video alive" signal. */
 extern volatile uint32_t vga_frames;
 
+/*
+ * Two pictures this driver can put on the wire.
+ *
+ * TEXT is the stage-0 report: 80x30 characters, built for being read off
+ * a capture stick. SPECTRUM is a ZX Spectrum's screen, read straight out
+ * of the guest's RAM with no framebuffer in between — there is nowhere
+ * for one to live that the CPU would not overwrite anyway.
+ */
+typedef enum { VGA_MODE_TEXT = 0, VGA_MODE_SPECTRUM } vga_mode_t;
+
 void vga_init(void);
+void vga_set_mode(vga_mode_t mode);

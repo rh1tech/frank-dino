@@ -136,7 +136,7 @@ static void log_line(const uint8_t attr, const char *text) {
     log_head = h + 1;
 }
 
-static void log_replay(void) {
+void scr_replay(void) {
     const uint32_t h = log_head;
     const uint32_t first = h > LOG_QUEUE ? h - LOG_QUEUE : 0;
     puts("--- report ---");
@@ -155,16 +155,6 @@ void scr_pump(void) {
         log_tail = t + 1;
     }
 
-    /*
-     * Any keypress replays the whole report.
-     *
-     * The tests finish in well under a second and a USB host takes one
-     * or two to enumerate, so the live output is gone before anything is
-     * listening — which on a board whose SWD comes and goes is the
-     * difference between reading the result and reflashing to see it
-     * again. The screen always has it; this is how the console catches up.
-     */
-    if (getchar_timeout_us(0) != PICO_ERROR_TIMEOUT) log_replay();
     recursive_mutex_exit(&log_mutex);
 }
 

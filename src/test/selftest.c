@@ -36,7 +36,7 @@ static void load(const uint16_t at, const uint8_t *code, const size_t len) {
 
 static void wipe(void) {
     memset(z80_mem, 0xFF, GUEST_MEM_SIZE);
-    z80_rom_limit = 0;
+    z80_map_flat();    // the tests want the plain 64 KB, not a machine
 }
 
 // ============================================================================
@@ -162,13 +162,13 @@ static bool test_wiring(void) {
         for (unsigned i = 0; i < 24; i++) {
             if (!shorts[i]) continue;
             total++;
-            if (shown++ >= 4) continue;
+            if (shown++ >= 2) continue;
             name_mask(names, sizeof names, shorts[i]);
             scr_log(ATTR(C_LRED, C_BLACK), "  %s shorted to: %s",
                     bus_line_name(i), names);
         }
-        if (total > 4)
-            scr_log(ATTR(C_LRED, C_BLACK), "  ...and %u more lines", total - 4);
+        if (total > 2)
+            scr_log(ATTR(C_YELLOW, C_BLACK), "  ...and %u more lines", total - 2);
         if (!stuck)
             scr_fail("Bus wiring (CPU in reset)", "%u lines shorted together", total);
     }
@@ -226,7 +226,7 @@ static const char *kind_name(bus_cycle_t k);
 
 static void diag_pass(const uint8_t fill, const char *label) {
     memset(z80_mem, fill, GUEST_MEM_SIZE);
-    z80_rom_limit = 0;
+    z80_map_flat();    // the tests want the plain 64 KB, not a machine
 
     z80_trace_reset();
     z80_trace_on = true;
@@ -362,6 +362,24 @@ static bool test_address_bus(void) {
     }
     scr_fail("Address bus A0-A15", "%d/%d bad, first %04X read as %04X, bits %04lX",
              failures, n - 2, first_want, first_got, (unsigned long)(bad_bits & 0xFFFF));
+
+    /*
+     * Before believing that, check whether it is really the data bus.
+     *
+     * Each target is reached by a JP whose two operand bytes arrive over
+     * D0-D7 — the low byte becomes A0-A7 and the high byte A8-A15. So a
+     * single stuck data line b corrupts the address in exactly two
+     * places, bit b and bit b+8, and the address test reports a fault it
+     * does not have.
+     *
+     * That is not hypothetical: a Z80 with D6 stuck high failed this
+     * test with "bits 4040" and sent a morning after A6 and A14.
+     */
+    const uint32_t lo = bad_bits & 0xFFu, hi = (bad_bits >> 8) & 0xFFu;
+    if (lo && lo == hi)
+        scr_log(ATTR(C_YELLOW, C_BLACK),
+                "  bits %02lX repeat in both halves - that is a DATA line, not an address one",
+                (unsigned long)lo);
     return false;
 }
 
@@ -682,6 +700,30 @@ void selftest_dump_trace(const uint32_t max_lines) {
         const bus_event_t e = z80_trace_get(i);
         printf("  %s %04X %02X\n", kind_name(e.kind), e.addr, e.data);
     }
+}
+
+bool selftest_quick_check(void) {
+    if (!test_presence()) return false;
+
+    /*
+     * The wiring test runs, but it does not get a vote.
+     *
+     * It is a diagnostic, not a gate: it measures the bus with the CPU
+     * held in reset and its outputs high-impedance, which is a state the
+     * machine is never in while it is working. It has twice reported a
+     * data line held high on a board whose data bus then round-tripped
+     * all twenty test values without a fault — so on this hardware it
+     * produces false positives, and refusing to boot a Spectrum on the
+     * strength of one would be believing the weaker measurement.
+     *
+     * What it is good for is naming a line when something really is
+     * wrong, which is worth printing either way. The tests that decide
+     * whether to go on are the ones that ask the CPU to do something.
+     */
+    test_wiring();
+
+    if (!test_reset()) return false;
+    return true;
 }
 
 // ============================================================================

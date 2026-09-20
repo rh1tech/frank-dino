@@ -43,6 +43,16 @@ void scr_init(void);
  * test result, intermittently enough to look like a hardware problem.
  */
 void scr_pump(void);
+
+/*
+ * Print the whole retained report again.
+ *
+ * The tests finish in well under a second and a USB host takes one or two
+ * to enumerate, so the live output is gone before anything is listening.
+ * The screen always has it; this is how the console catches up. Bound to
+ * a keypress by whoever owns the console at the time.
+ */
+void scr_replay(void);
 void scr_clear(uint8_t attr);
 void scr_put(int x, int y, const char *s, uint8_t attr);
 void scr_printf(int x, int y, uint8_t attr, const char *fmt, ...) __attribute__((format(printf, 4, 5)));

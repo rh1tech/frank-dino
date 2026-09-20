@@ -12,11 +12,48 @@ does the same thing for a real 8086. The toolchain, the bench scripts, the
 video timing and the structure are that firmware's; the bus engine is not,
 because the two CPUs share none of the signals that matter.
 
+![ZX Spectrum 128K, booted on a real Z84C00](docs/screenshots/spectrum128.png)
+
+## What it is now
+
+A **ZX Spectrum 128K**. The ROM boots to its menu, 128 BASIC runs, and
+`BEEP` comes out of the board's speaker — all executed by a Z84C00 in a
+socket, with the RP2350B being everything else it can see.
+
+| | |
+|---|---|
+| CPU | A real Z84C00, clocked at **3.573 MHz** (a Spectrum's 3.5469, within 0.7 %) |
+| RAM | 128 KB, eight banks, paged through port 0x7FFD |
+| ROM | The stock Sinclair 128K pair, welded into the binary |
+| Video | The ULA's 256x192 and border, doubled into 640x480 over HDMI |
+| Sound | The beeper — bit 4 of port 0xFE, straight to GP46 |
+| Keyboard | The full matrix, typed at over the console |
+
+The beeper is the part worth looking at. Bit 4 of port 0xFE is the
+speaker on a real Spectrum and GP46 is the speaker here, so the whole of
+the audio path is one line in the port handler:
+
+```c
+gpio_put(SPEAKER_PIN, (value >> 4) & 1);
+```
+
+No sample buffer, no DAC, no mixer, and no question about the sample
+rate, because there are no samples. The waveform is whatever the CPU
+makes it, which is what 1-bit audio *is*.
+
+There is no AY, no tape, no microSD and no keyboard socket yet. See
+`docs/spectrum.md`.
+
+## Stage 0: proving the bus first
+
+Stage 0 still exists, and is where this started.
+
 ![Stage 0 passing on the bench](docs/screenshots/stage0.png)
 
-## Stage 0
+Build it with `SELFTEST=ON`; the default build boots the Spectrum and
+runs only the two non-destructive checks on the way past.
 
-This is **stage 0**: a test firmware. There is no ROM, no emulated
+This was **stage 0**: a test firmware. There is no ROM, no emulated
 machine, and nothing to boot. Its whole job is to answer one question
 before a ZX Spectrum emulator is built on top of it — *does the Z80 work,
 and does this board's idea of a bus match the Z80's?*
@@ -58,23 +95,30 @@ the program counter while the CPU runs.
 ## Quick start
 
 ```sh
-make hooks          # once, per clone
-./build.sh          # build
-./swd_flash.sh      # flash through the Debug Probe on J5
-./console.sh        # watch the report
-./capture.sh shot   # and photograph it
+make hooks                      # once, per clone
+./build.sh                      # build
+./swd_flash.sh                  # flash through the Debug Probe on J5
+./capture.sh shot               # photograph the screen
+./keys.sh --down --enter        # pick 128 BASIC
+./keys.sh 'beep 1,0' --enter    # and listen
 ```
+
+The last two are the point of `keys.sh`: the board has no keyboard
+socket, so the console is the keyboard, and the whole machine can be
+driven from a script over the same cable that flashes it. "Does it still
+boot to the menu and run a program" is a question a test can answer with
+a screenshot.
 
 ## What the board gives the Z80
 
 | Part | This firmware |
 |------|---------------|
 | Clock | Generated in software on core 1, edge by edge |
-| RAM | 64 KB flat, in on-chip SRAM |
-| ROM | None. Addresses below `z80_rom_limit` ignore writes; it is 0 |
-| I/O | Two function pointers, which the tests re-point per test |
-| Video | 640x480 at 60 Hz, 80x30 text, over HDMI |
-| Console | UART0 on J1 at 115200 8N1 |
+| RAM | Four 16 KB windows; the Spectrum aims them at its eight banks |
+| ROM | A window whose write pointer goes to a bit bucket |
+| I/O | Two function pointers, re-pointed by whatever machine is running |
+| Video | 640x480 at 60 Hz — 80x30 text, or the ULA's screen |
+| Console | UART0 on J1, and USB CDC, both at 115200 |
 
 ## How the bus engine works
 
@@ -227,10 +271,18 @@ This makes "did stage 0 pass" a question a script can answer.
 
 ## What comes next
 
-Stage 0 answers whether the hardware works. Stage 1 is the ZX Spectrum,
-and the two things it needs that this does not have are a renderer with a
-border and a 256x192 bitmap, and a bus engine fast enough to hold
-3.5 MHz — which is the number the speed test exists to report.
+The machine runs. What it has not got yet, roughly in the order it will
+want them:
+
+- **A keyboard.** The matrix is complete and works; there is simply no
+  socket wired to it. The USB controller is currently a CDC device for
+  the console and picotool, and a HID host needs it back.
+- **The AY-3-8912.** 128K music is AY music, and none of it plays.
+- **Tape and microSD.** Nothing loads. The 128K menu's Tape Loader
+  reaches a screen and waits for ever.
+- **Contention and the floating bus.** Port 0xFF returns 0xFF here.
+  Reproducing the real thing needs the video and the CPU to share a
+  clock, which on this board they do not.
 
 ## Toolchain
 

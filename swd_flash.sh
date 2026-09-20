@@ -39,8 +39,10 @@ ADAPTER_SPEED="${ADAPTER_SPEED:-1000}"
 
 OPENOCD_ARGS=(-f interface/cmsis-dap.cfg -c "adapter speed ${ADAPTER_SPEED}" -f target/rp2350.cfg)
 
+# `reset halt` then `resume`, for the same reason the flash path does it:
+# `reset run` alone does not reliably bring both cores out together.
 if [[ "${1:-}" == "--reset-only" || "${2:-}" == "--reset-only" ]]; then
-    exec openocd "${OPENOCD_ARGS[@]}" -c "init" -c "reset run" -c "exit"
+    exec openocd "${OPENOCD_ARGS[@]}" -c "init" -c "reset halt" -c "resume" -c "exit"
 fi
 
 if [[ ! -f "${ELF}" ]]; then

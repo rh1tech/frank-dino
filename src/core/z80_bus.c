@@ -18,7 +18,29 @@
 z80_stats_t z80_stats;
 
 uint8_t  z80_mem[GUEST_MEM_SIZE] __attribute__((aligned(4)));
-uint16_t z80_rom_limit = 0;
+
+uint8_t *z80_rpage[4];
+uint8_t *z80_wpage[4];
+
+/*
+ * Where writes to a read-only window go.
+ *
+ * A whole 16 KB thrown away so the write path can be a single indexed
+ * store with no test for ROM. The alternative costs a compare and a branch
+ * on a path the CPU takes several million times a second, and this chip
+ * has the memory to not care.
+ */
+static uint8_t write_bitbucket[16384] __attribute__((aligned(4)));
+
+void z80_map_page(const unsigned slot, uint8_t *read_from, uint8_t *write_to) {
+    z80_rpage[slot] = read_from;
+    z80_wpage[slot] = write_to ? write_to : write_bitbucket;
+}
+
+void z80_map_flat(void) {
+    for (unsigned i = 0; i < 4; i++)
+        z80_map_page(i, z80_mem + i * 16384, z80_mem + i * 16384);
+}
 
 uint8_t  z80_int_vector = 0xFF;
 
@@ -53,6 +75,24 @@ static uint8_t io_in_default(uint16_t port)               { (void)port; return B
 
 static uint32_t pace_settle = 24;
 
+/*
+ * The second half-cycle's pace, which does not have to equal the first.
+ *
+ * A T-state is two settles, so splitting the count between them halves
+ * the granularity for nothing: pace 7 can be 3+4 as well as 3+3 or 4+4.
+ * That matters because one unit of this loop is about three processor
+ * cycles, which at 3.5 MHz is five per cent of a half-cycle — so whole
+ * steps put the nearest achievable clock 3.3 % below a Spectrum's
+ * 3.5469 MHz, and 3.3 % is a third of a semitone on everything the
+ * machine ever plays.
+ *
+ * Dithering with a fractional accumulator was tried first and made it
+ * worse, not better: the add and compare it needs cost more time than
+ * the granularity it was buying back, and the top speed fell below the
+ * target altogether. This costs nothing at all.
+ */
+static uint32_t pace_settle_b = 24;
+
 // How many consecutive quiet samples have matched the interrupt-
 // acknowledge shape. File scope rather than a static inside the service
 // routine, which is force-inlined at more than one call site and would
@@ -82,16 +122,21 @@ __force_inline static void settle(void) {
     while (n--) __asm volatile("nop" ::: "memory");
 }
 
+__force_inline static void settle_b(void) {
+    uint32_t n = pace_settle_b;
+    while (n--) __asm volatile("nop" ::: "memory");
+}
+
 // ============================================================================
 // Memory
 // ============================================================================
 
 __force_inline static uint8_t mem_read(const uint16_t a) {
-    return z80_mem[a];
+    return z80_rpage[a >> 14][a & 0x3FFF];
 }
 
 __force_inline static void mem_write(const uint16_t a, const uint8_t v) {
-    if (likely(a >= z80_rom_limit)) z80_mem[a] = v;
+    z80_wpage[a >> 14][a & 0x3FFF] = v;
 }
 
 // ============================================================================
@@ -280,7 +325,7 @@ __force_inline static void t_state(void) {
     seen_low  |= ~g;
 
     sio_hw->gpio_clr = Z80_CLK;
-    settle();
+    settle_b();
     bus_service();
     g = sio_hw->gpio_in;
     seen_high |= g;
@@ -531,8 +576,17 @@ void z80_pulse_nmi(void) {
 // Pace and measurement
 // ============================================================================
 
-void     z80_set_pace(const uint32_t settle_iterations) { pace_settle = settle_iterations; }
-uint32_t z80_get_pace(void)                             { return pace_settle; }
+/*
+ * The pace is a total, split across the T-state's two half-cycles.
+ * Odd totals lean the extra nop onto the second half, which is the one
+ * the Z80 has least to say during.
+ */
+void z80_set_pace(const uint32_t total) {
+    pace_settle   = total / 2;
+    pace_settle_b = total - pace_settle;
+}
+
+uint32_t z80_get_pace(void) { return pace_settle + pace_settle_b; }
 
 uint32_t z80_measure_clock(void) {
     constexpr uint32_t sample = 20000;
@@ -548,6 +602,27 @@ uint32_t z80_measure_clock(void) {
 
     const uint64_t us = t1 - t0;
     return us ? (uint32_t)((uint64_t)sample * 1000000u / us) : 0;
+}
+
+uint32_t z80_calibrate(const uint32_t target_hz) {
+    uint32_t best_total = 0, best_hz = 0, best_err = UINT32_MAX;
+
+    // Pace only ever makes the CPU slower, so walk up from flat out and
+    // stop one step past the target rather than sweeping the whole range.
+    // The step is half what it used to be, because a total of N is split
+    // across the two half-cycles.
+    for (uint32_t t = 0; t <= 128; t++) {
+        z80_set_pace(t);
+        const uint32_t hz = z80_measure_clock();
+
+        const uint32_t err = hz > target_hz ? hz - target_hz : target_hz - hz;
+        if (err < best_err) { best_err = err; best_total = t; best_hz = hz; }
+
+        if (hz < target_hz) break;
+    }
+
+    z80_set_pace(best_total);
+    return best_hz;
 }
 
 // ============================================================================
@@ -593,5 +668,6 @@ void z80_bus_init(void) {
     gpio_put(Z80_NMI_PIN, 1);
     gpio_set_dir(Z80_NMI_PIN, GPIO_OUT);
 
+    z80_map_flat();
     memset(&z80_stats, 0, sizeof z80_stats);
 }

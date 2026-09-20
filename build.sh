@@ -28,17 +28,19 @@ fi
 BUILD_DIR="${BUILD_DIR:-build}"
 BOARD="${BOARD:-frank_dino}"
 CPU_SPEED="${CPU_SPEED:-378}"
+SELFTEST="${SELFTEST:-OFF}"
 CLEAN="${CLEAN:-0}"
 
 [[ "${CLEAN}" == "1" ]] && rm -rf "${BUILD_DIR}"
 
 echo "=== frank-dino ==="
-echo "  board ${BOARD}   CPU ${CPU_SPEED} MHz"
+echo "  board ${BOARD}   CPU ${CPU_SPEED} MHz   selftest ${SELFTEST}"
 echo
 
 cmake -S src/app -B "${BUILD_DIR}" \
       -DPICO_BOARD="${BOARD}" \
-      -DCPU_SPEED="${CPU_SPEED}"
+      -DCPU_SPEED="${CPU_SPEED}" \
+      -DSELFTEST="${SELFTEST}"
 
 cmake --build "${BUILD_DIR}" -j"$(getconf _NPROCESSORS_ONLN 2>/dev/null || echo 4)"
 

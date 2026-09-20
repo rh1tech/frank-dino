@@ -32,5 +32,18 @@ typedef struct {
 
 selftest_result_t selftest_run_all(void);
 
+/*
+ * Presence and a reset, and nothing else.
+ *
+ * What a machine that is about to boot a ROM needs to know, in a few
+ * milliseconds and without writing to a single byte of guest memory. The
+ * rest of the suite resets the CPU thirty times and fills all 64 KB with
+ * patterns, which is not something to do underneath a Spectrum.
+ *
+ * Returns false if there is no CPU, or if it will not fetch from 0000
+ * after a reset. Reports either on the screen.
+ */
+bool selftest_quick_check(void);
+
 /* Dump the bus trace ring to the console. Called after a failure. */
 void selftest_dump_trace(uint32_t max_lines);

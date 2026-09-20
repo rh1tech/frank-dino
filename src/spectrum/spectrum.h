@@ -1,0 +1,118 @@
+/*
+ * frank-dino — an RP2350B acting as the whole machine around a real Z80
+ *
+ * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
+ * https://github.com/rh1tech/frank-dino
+ * SPDX-License-Identifier: GPL-3.0-or-later
+ */
+
+/*
+ * A ZX Spectrum 128K, for a Z80 that is not emulated.
+ *
+ * What is here is only the half of a Spectrum that is not the CPU: the
+ * memory map and its paging port, the ULA's two jobs (the screen and
+ * port 0xFE), the 50 Hz interrupt, and the keyboard matrix. The other
+ * half is a Z84C00 in a socket, and it needs no help.
+ *
+ * The rules — which bits of which port do what, how the screen is laid
+ * out, how many T-states a frame is — are the ones pico-speccy and
+ * ESPectrum established; see docs/spectrum.md. The code is not theirs,
+ * because theirs is built around ticking an emulated Z80 through twenty
+ * different machines and this is built around answering a real one.
+ */
+#pragma once
+
+#include <stdbool.h>
+#include <stdint.h>
+
+// ============================================================================
+// Timing
+// ============================================================================
+//
+// A 128K frame is 70908 T-states, not the 48K's 69888 — the 128's ULA
+// runs 311 lines to the 48's 312 and the line is a T-state longer. Getting
+// this wrong does not break anything visibly; it makes the machine run at
+// the wrong speed and every piece of music play flat.
+#define SPEC_TSTATES_PER_FRAME 70908
+
+// How long the ULA holds ~INT low. 36 T-states on a 128K; 32 on a 48K.
+// Long enough that the CPU cannot miss it between two instructions.
+#define SPEC_INT_TSTATES 36
+
+// 70908 T-states at 50.01 Hz.
+#define SPEC_CPU_HZ 3546900
+
+// ============================================================================
+// Memory
+// ============================================================================
+//
+// Eight 16 KB RAM banks and two 16 KB ROMs. The window layout never
+// changes; only which bank is in the top one, and which ROM is in the
+// bottom one:
+//
+//   0000-3FFF   ROM 0 (editor) or ROM 1 (48K BASIC)
+//   4000-7FFF   RAM bank 5, always — and the screen normally lives here
+//   8000-BFFF   RAM bank 2, always
+//   C000-FFFF   RAM bank 0-7, whichever port 0x7FFD names
+#define SPEC_RAM_BANKS 8
+#define SPEC_BANK_SIZE 0x4000
+
+extern uint8_t spec_ram[SPEC_RAM_BANKS][SPEC_BANK_SIZE];
+
+// ============================================================================
+// State the video driver reads
+// ============================================================================
+
+/* The bank the ULA displays: 5 normally, 7 when 0x7FFD bit 3 is set. */
+extern volatile uint8_t spec_screen_bank;
+
+/* Border colour, 0-7. Written by OUT (0xFE),A while a frame is drawing. */
+extern volatile uint8_t spec_border;
+
+/* Flips every 16 frames; inverts any cell whose attribute has bit 7. */
+extern volatile bool spec_flash;
+
+/* Frames since reset, and the paging port's last value, for the report. */
+extern volatile uint32_t spec_frames;
+extern volatile uint8_t  spec_port_7ffd;
+
+// ============================================================================
+// Running it
+// ============================================================================
+
+/*
+ * Load the ROMs, clear RAM, map the windows and reset the CPU.
+ *
+ * Does not return the machine running — call spec_run_frame() for that.
+ */
+void spec_init(void);
+
+/*
+ * Clock the Z80 for one frame and deliver the 50 Hz interrupt.
+ *
+ * Runs on core 1, and is the whole of the Spectrum's main loop: there is
+ * nothing to emulate between interrupts because the CPU does it.
+ */
+void spec_run_frame(void);
+
+// ============================================================================
+// Keyboard
+// ============================================================================
+//
+// Eight half-rows of five keys, read through port 0xFE with the row
+// selected by whichever of A8-A15 the CPU pulls low. A pressed key reads
+// as 0, which is why the matrix is held as "not pressed" bits and handed
+// out inverted.
+//
+// There is no keyboard socket on this board yet, so the console is the
+// keyboard: spec_key_ascii() takes a character off the UART or USB and
+// holds the matching keys down for a few frames. That is enough to reach
+// the 128K menu and type a BASIC line, and it is testable from a script,
+// which a PS/2 socket would not be.
+void spec_key_ascii(char c);
+
+/* Press or release a matrix position directly. row 0-7, bit 0-4. */
+void spec_key_set(uint8_t row, uint8_t bit, bool pressed);
+
+/* Called once per frame to time out keys pressed by spec_key_ascii(). */
+void spec_key_tick(void);

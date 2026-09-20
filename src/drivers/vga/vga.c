@@ -16,6 +16,7 @@
 
 #include "dino.h"       // likely()/unlikely(), and VGA_BASE_PIN
 #include "font8x16.h"
+#include "spectrum.h"
 
 #ifndef VGA_BASE_PIN
 #define VGA_BASE_PIN 30
@@ -97,6 +98,118 @@ static const uint8_t palette16[16] = {
 
 uint8_t vga_text[VGA_COLS * VGA_ROWS * 2];
 volatile uint32_t vga_frames;
+
+static volatile vga_mode_t vga_mode = VGA_MODE_TEXT;
+
+void vga_set_mode(const vga_mode_t mode) { vga_mode = mode; }
+
+// ============================================================================
+// The Spectrum's picture inside a 640x480 one
+// ============================================================================
+//
+// 256x192 doubled to 512x384, centred, and the 64 columns and 48 lines
+// left over on each side are the border — which is what the border is on
+// a real television, so the proportions come out close to right rather
+// than being a frame drawn around a small picture.
+#define SPEC_X0     64          // first visible picture byte in the line
+#define SPEC_Y0     48          // first picture scanline
+#define SPEC_H      384         // 192 doubled
+
+/*
+ * Sixteen colours, two bits a channel.
+ *
+ * Bright is full scale and normal is two thirds, which is the same
+ * decision the text palette makes and for the same reason: on a
+ * two-resistor ladder the one-third step is too dark to read. Black has
+ * no bright variant on a Spectrum and none here.
+ *
+ * The attribute's colour bits are GRB, not RGB — bit 0 is blue, bit 1 is
+ * red, bit 2 is green. Getting that backwards swaps red and blue on
+ * every screen ever written, which looks deliberate enough to miss.
+ */
+static uint8_t spec_palette[16];
+
+static void build_spec_palette(void) {
+    for (int i = 0; i < 16; i++) {
+        const int lvl = (i & 8) ? 3 : 2;
+        const int c   = i & 7;
+        spec_palette[i] = PX((c & 2) ? lvl : 0,      // red
+                             (c & 4) ? lvl : 0,      // green
+                             (c & 1) ? lvl : 0);     // blue
+    }
+}
+
+/*
+ * Nibble to four doubled pixels.
+ *
+ * dmask2[n][0] covers bits 3 and 2 of the nibble, each becoming two
+ * output bytes; dmask2[n][1] covers bits 1 and 0. Bit 3 is leftmost,
+ * because in Spectrum screen memory bit 7 of a byte is the leftmost
+ * pixel — the opposite convention to this firmware's font, which is a
+ * good way to get one of them wrong.
+ */
+static uint32_t dmask2[16][2];
+
+static void build_dmask2(void) {
+    for (int n = 0; n < 16; n++) {
+        // word 0: bit3 bit3 bit2 bit2   word 1: bit1 bit1 bit0 bit0
+        const uint32_t b3 = (n & 8) ? 0xFFFFu : 0, b2 = (n & 4) ? 0xFFFF0000u : 0;
+        const uint32_t b1 = (n & 2) ? 0xFFFFu : 0, b0 = (n & 1) ? 0xFFFF0000u : 0;
+        dmask2[n][0] = b3 | b2;
+        dmask2[n][1] = b1 | b0;
+    }
+}
+
+/*
+ * One Spectrum scanline, straight out of the guest's RAM.
+ *
+ * The screen address is the famous one: the third of the screen, the
+ * character row within it and the pixel row within the character are
+ * three separate fields of the address and they are not in that order.
+ * Bits 6-5 of y pick the third, bits 2-0 pick the line within a
+ * character cell, and bits 5-3 pick the row of cells.
+ */
+__force_inline static void render_spectrum_line(uint32_t *__restrict out, const uint32_t line) {
+    const uint8_t  border_px = spec_palette[spec_border & 7];
+    const uint32_t border32  = (uint32_t)border_px * 0x01010101u;
+
+    if (line < SPEC_Y0 || line >= SPEC_Y0 + SPEC_H) {
+        for (int i = 0; i < VISIBLE_BYTES / 4; i++) out[i] = border32;
+        return;
+    }
+
+    const uint32_t y = (line - SPEC_Y0) >> 1;           // 0..191
+
+    const uint8_t *__restrict scr = spec_ram[spec_screen_bank];
+    const uint8_t *__restrict bmp = scr + (((y & 0xC0) << 5) | ((y & 0x38) << 2) | ((y & 0x07) << 8));
+    const uint8_t *__restrict att = scr + 0x1800 + ((y >> 3) << 5);
+
+    const bool flash = spec_flash;
+
+    for (int i = 0; i < SPEC_X0 / 4; i++) *out++ = border32;
+
+    for (int col = 0; col < 32; col++) {
+        const uint8_t bits = bmp[col];
+        const uint8_t a    = att[col];
+
+        const uint8_t bright = (a & 0x40) >> 3;         // -> palette bit 3
+        uint32_t ink   = (uint32_t)spec_palette[(a & 0x07) | bright] * 0x01010101u;
+        uint32_t paper = (uint32_t)spec_palette[((a >> 3) & 0x07) | bright] * 0x01010101u;
+
+        // FLASH swaps the pair, every sixteen frames, for this cell only.
+        if (unlikely(flash && (a & 0x80))) { const uint32_t t = ink; ink = paper; paper = t; }
+
+        const uint32_t *hi = dmask2[bits >> 4];
+        const uint32_t *lo = dmask2[bits & 15];
+
+        *out++ = (ink & hi[0]) | (paper & ~hi[0]);
+        *out++ = (ink & hi[1]) | (paper & ~hi[1]);
+        *out++ = (ink & lo[0]) | (paper & ~lo[0]);
+        *out++ = (ink & lo[1]) | (paper & ~lo[1]);
+    }
+
+    for (int i = 0; i < SPEC_X0 / 4; i++) *out++ = border32;
+}
 
 // --- PIO: one instruction, `out pins, 8`, wrapped onto itself ---
 static uint16_t vga_pio_instructions[] = { 0x6008 };
@@ -186,6 +299,11 @@ void __time_critical_func(vga_scanline)(void) {
 
     uint32_t *__restrict out = scanline_buffers[IMAGE] + PICTURE_OFFSET_BYTES / 4;
 
+    if (vga_mode == VGA_MODE_SPECTRUM) {
+        render_spectrum_line(out, line);
+        return;
+    }
+
     const uint32_t glyph_line = line & 15u;
     const uint8_t *__restrict cell = &vga_text[(line >> 4) * (VGA_COLS * 2)];
 
@@ -255,6 +373,8 @@ static void configure_dma(void) {
 
 void vga_init(void) {
     build_expand4();
+    build_dmask2();
+    build_spec_palette();
 
     for (int i = 0; i < SCANLINE_BUFFERS; i++)
         scanline_buffers[i] = &scanline_mem[i * (LINE_BYTES / 4)];
