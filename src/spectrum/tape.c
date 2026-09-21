@@ -8,6 +8,8 @@
 
 #include "tape.h"
 
+#include "beta.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -58,9 +60,20 @@ uint32_t tape_block_index(void) { return block_no; }
  * Low byte 0x7B, and the value is chosen rather than picked: OUT (n),A
  * puts A on A8-A15, so only the low byte is dependable. 0x7B has A0 set,
  * which keeps it clear of the ULA; A1 set, which keeps it clear of both
- * the 0x7FFD paging latch and the AY's select port; and it is not
- * anything a Spectrum answers. Nothing but the stub can reach it anyway,
- * since the stub only exists inside a ROM page this firmware installed.
+ * the 0x7FFD paging latch and the AY's select port.
+ *
+ * Those two requirements between them force a collision. A0 and A1 both
+ * set is exactly what selects the Beta Disk interface, and 0x7B's
+ * A7-A5 land on its data register -- the same register 0x7F reaches.
+ * See the decode in beta.c, whose own comment lists #7B as one of the
+ * aliases the real hardware has.
+ *
+ * So the handlers cannot be separated by address, and they are
+ * separated by state instead: this one stands down whenever the TR-DOS
+ * ROM is paged. That costs nothing, because the stub lives in the 48K
+ * BASIC ROM and the Beta Disk's ROM replaces it -- with TR-DOS in, the
+ * stub is not mapped and cannot be the thing doing the OUT. Anything
+ * on #7B then is meant for the WD1793.
  */
 #define TAPE_PORT 0x7B
 
@@ -477,7 +490,7 @@ static bool serve(void) {
 }
 
 bool __not_in_flash_func(tape_port_out)(const uint16_t port, const uint8_t value) {
-    if (!mounted || (port & 0xFF) != TAPE_PORT) return false;
+    if (!mounted || (port & 0xFF) != TAPE_PORT || beta_rom_paged()) return false;
 
     switch (step) {
         case 0: want_type  = value; step = 1; break;
@@ -492,7 +505,7 @@ bool __not_in_flash_func(tape_port_out)(const uint16_t port, const uint8_t value
 }
 
 bool __not_in_flash_func(tape_port_in)(const uint16_t port, uint8_t *value) {
-    if (!mounted || (port & 0xFF) != TAPE_PORT) return false;
+    if (!mounted || (port & 0xFF) != TAPE_PORT || beta_rom_paged()) return false;
     *value = last_ok ? 1 : 0;
     step = 0;              // resynchronise, in case a sequence was cut short
     return true;
