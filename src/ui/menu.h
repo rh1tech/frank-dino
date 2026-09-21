@@ -7,14 +7,15 @@
  */
 
 /*
- * The on-screen menu, and the file browser that is most of it.
+ * The way in and out of the on-screen UI, and the keys that feed it.
  *
- * Modal and synchronous: menu_run() pauses the machine, takes over the
- * screen, loops until the user leaves, and resumes. That is a great deal
- * simpler than an event-driven menu drawn over a running Spectrum, and it
- * is also the only shape that is safe here — the card may only be touched
- * while the Z80 is parked, and loading a file rewrites the RAM the CPU
- * would otherwise be executing from.
+ * Modal and synchronous: menu_run() pauses the machine, hands the screen
+ * to the ported browser or settings menu, and resumes when they are
+ * done. That is a great deal simpler than an event-driven menu drawn
+ * over a running Spectrum, and it is also the only shape that is safe
+ * here -- the card may only be touched while the Z80 is parked, and
+ * loading a file rewrites the RAM the CPU would otherwise be executing
+ * from.
  *
  * Runs on core 0, which owns the screen, the card and the console.
  */
@@ -55,6 +56,9 @@ bool menu_is_open(void);
  * mailbox alone.
  */
 int menu_wait_key(void);
+
+/* The same, giving up after `ms` and returning -1. */
+int menu_wait_key_timeout(unsigned ms);
 
 /*
  * Set by the settings page's "Re-read the card" action.

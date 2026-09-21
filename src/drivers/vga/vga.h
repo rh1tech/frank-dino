@@ -25,18 +25,6 @@
 #define VGA_COLS 80
 #define VGA_ROWS 30
 
-/*
- * Character cell, attribute cell. Two bytes per cell in one buffer, the
- * way every text-mode machine since the MDA has done it, because the
- * renderer wants them in the same cache line.
- *
- * Attribute: bits 0-3 foreground, bits 4-7 background, from the 16-colour
- * table in vga.c. No blink bit — this screen is read by a camera on a
- * capture stick as often as by a person, and a blinking character is a
- * character that is sometimes not in the photograph.
- */
-extern uint8_t vga_text[VGA_COLS * VGA_ROWS * 2];
-
 /* Frames output since init. The one honest "is the video alive" signal. */
 extern volatile uint32_t vga_frames;
 
@@ -48,7 +36,57 @@ extern volatile uint32_t vga_frames;
  * of the guest's RAM with no framebuffer in between — there is nowhere
  * for one to live that the CPU would not overwrite anyway.
  */
-typedef enum { VGA_MODE_TEXT = 0, VGA_MODE_SPECTRUM } vga_mode_t;
+/*
+ * Two pictures this driver can put on the wire, and it used to be three.
+ *
+ * The third was an 80x30 character mode that carried the stage-0 report
+ * before the menus had a surface of their own. Everything is drawn on
+ * that surface now -- the report, the browser, the settings, the pages
+ * -- so the character generator, its font and its 4,800-byte buffer
+ * were nine kilobytes of SRAM for a picture nothing asked for.
+ *
+ * SPECTRUM is the machine's screen, built scanline by scanline out of
+ * the guest's RAM with no framebuffer in between. UI is the menus'
+ * 320x240 surface in the PSRAM, doubled.
+ */
+typedef enum { VGA_MODE_SPECTRUM = 0, VGA_MODE_UI } vga_mode_t;
+
+/*
+ * The menu's surface: 320x240, one byte per pixel, doubled to 640x480.
+ *
+ * pico-speccy's OSD rasteriser draws into a 320x240 8bpp framebuffer and
+ * lets the video hardware scale it up, so its layout arithmetic -- a 6x10
+ * font, 12-pixel rows, a 1-pixel window border, a 2-pixel margin -- is
+ * written against those dimensions and nothing else. Give it the same
+ * surface and its drawing code ports across very nearly unchanged; give
+ * it a character grid instead and every line of it has to be rewritten,
+ * which is how the last two attempts at this UI went.
+ *
+ * The byte is an index into palette16, so 0..15 are the UI colours in
+ * UiColor order and nothing else is ever stored.
+ *
+ * It lives in the PSRAM because 76,800 bytes do not fit in what is left
+ * of the 512 KB, and it can live there because the only thing that reads
+ * it is this driver, 320 bytes at a time, with the Z80 stopped and a
+ * whole line of DMA in hand. Nothing on the bus engine's critical path
+ * ever touches it.
+ */
+#define VGA_UI_W 320
+#define VGA_UI_H 240
+extern uint8_t vga_ui_fb[VGA_UI_W * VGA_UI_H];
 
 void vga_init(void);
 void vga_set_mode(vga_mode_t mode);
+vga_mode_t vga_get_mode(void);
+
+/*
+ * Rebuild the menu's dither table from settings.ui_solid.
+ *
+ * Called at init and again whenever that setting changes, which is the
+ * only thing that moves it.
+ */
+void vga_build_ui_palette(void);
+
+/* Rebuild the ULA+ colour tables. Called from the blanking. */
+void vga_build_ulaplus(void);
+void vga_refresh_ulaplus_border(void);

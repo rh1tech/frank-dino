@@ -21,39 +21,17 @@
 #include <stdbool.h>
 
 /*
- * Sixteen colours, and they are pico-speccy's.
+ * The colour roles are the menu's, so the names come from there.
  *
- * Not CGA's, which is what was here: this is the palette from
- * src/ui/UiGfx.cpp's kUiPaletteVga, in their order and with their names.
- * It exists because their menu has to work on a four-levels-per-channel
- * VGA path -- which is exactly what this board's resistor ladder is --
- * so the values are already chosen for it, and they are chosen by
- * somebody who looked at the result. Copying the numbers is cheaper than
- * having taste.
- *
- * The roles are what matters. C_PANEL is the body, C_PANEL_ALT the
- * bands at the top and bottom, C_SEL_BG the selection bar, C_TEXT and
- * C_TEXT_DIM the two weights of text, and the three C_ICON_* are the
- * rainbow in the header and the only strong colours in the design.
+ * The browser and the report are drawn in the same sixteen roles as
+ * everything else -- C_PANEL the body, C_PANEL_ALT the bands, C_SEL_BG
+ * the selection bar, C_TEXT and C_TEXT_DIM the two weights of text --
+ * and there is one definition of them, in ui_gfx.h, next to the
+ * rasteriser that uses them. Two copies of an enumeration that has to
+ * match a palette table is one copy too many.
  */
-enum {
-    C_BG = 0,       // outside the window
-    C_PANEL,        // the body of a page
-    C_PANEL_ALT,    // header, sub-header and pane-title bands
-    C_SEP,          // rules
-    C_TEXT,         // primary text
-    C_TEXT_DIM,     // secondary text, footer hints
-    C_WHITE,        // emphasis, and text on the selection bar
-    C_SEL_BG,       // the selection bar
-    C_SEL_BAND,     // the focused row of an unfocused pane
-    C_ACCENT,       // the chosen option, and anything that passed
-    C_FOOT_BG,
-    C_SHADOW,
-    C_ICON_R,       // the rainbow, and anything that failed
-    C_ICON_Y,
-    C_ICON_C,
-    C_DISABLED,     // rows that cannot be selected
-};
+#include "ui_gfx.h"
+
 #define ATTR(fg, bg) (uint8_t)(((bg) << 4) | (fg))
 
 void scr_init(void);
@@ -82,31 +60,6 @@ void scr_pump(void);
  * a keypress by whoever owns the console at the time.
  */
 void scr_replay(void);
-void scr_clear(uint8_t attr);
-void scr_put(int x, int y, const char *s, uint8_t attr);
-void scr_printf(int x, int y, uint8_t attr, const char *fmt, ...) __attribute__((format(printf, 4, 5)));
-void scr_box(int x, int y, int w, int h, const char *title, uint8_t attr);
-
-/*
- * The furniture pico-speccy's menu is made of.
- *
- * Their design is bands and panes, not a box with a border: a header
- * strip with a rainbow mark, a sub-header for the breadcrumb, the body,
- * and a footer of key hints. See src/ui/UiRender.cpp, whose comment
- * draws the whole thing in ASCII at the top of the file.
- */
-void scr_band(int y, uint8_t bg);                       /* a full-width strip */
-void scr_fill(int x, int y, int w, int h, uint8_t bg);  /* a rectangle of colour */
-void scr_rainbow(int x, int y);                         /* the four-bar mark */
-
-/*
- * A page's header and footer, drawn the same way everywhere.
- *
- * `right` is the machine name or whatever belongs at the far end;
- * `hints` is the footer line. Both may be NULL.
- */
-void scr_page(const char *title, const char *right, const char *breadcrumb);
-void scr_footer(const char *hints);
 
 /*
  * Append a line to the scrolling report region and to the UART.
@@ -120,6 +73,30 @@ void scr_log(uint8_t attr, const char *fmt, ...) __attribute__((format(printf, 2
  * a zero-length format, which is a warning in every build that has -Wall
  * and a reasonable thing for the compiler to complain about. */
 void scr_blank(void);
+
+/*
+ * The retained report, oldest first, for whoever draws it.
+ *
+ * The ring is the only copy that outlives the call -- the text buffer
+ * scrolls and the console queue is consumed -- so this is what the boot
+ * screen redraws itself from. `ink` is the colour the line was logged
+ * in, as a palette index.
+ */
+typedef enum { SCR_PLAIN = 0, SCR_PASS, SCR_FAIL } scr_verdict_t;
+
+/*
+ * Where a verdict line's three fields sit inside the flat string.
+ *
+ * verdict() formats "%-28s %-4s %s". The console reads the whole line;
+ * the screen cuts it here so it can put the name on one row and the
+ * detail, wrapped, on the next. Change the format and change these.
+ */
+#define SCR_VERDICT_AT 29
+#define SCR_DETAIL_AT  34
+
+unsigned    scr_report_lines(void);
+const char *scr_report_line(unsigned i, uint8_t *ink, uint8_t *kind);
+void        scr_report_tally(unsigned *pass, unsigned *fail);
 
 /* Pass/fail lines, which is most of what stage 0 prints. */
 void scr_pass(const char *name, const char *detail_fmt, ...) __attribute__((format(printf, 2, 3)));

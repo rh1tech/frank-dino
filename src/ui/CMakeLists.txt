@@ -5,14 +5,22 @@
 # https://github.com/rh1tech/frank-dino
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# ui — the report, drawn into the text buffer and echoed to the console.
+# ui — the report in the text buffer, and the menu on its own 320x240 surface.
 
 add_library(dino_ui INTERFACE)
 
 target_sources(dino_ui INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/screen.c
         ${CMAKE_CURRENT_LIST_DIR}/menu.c
-        ${CMAKE_CURRENT_LIST_DIR}/options.c)
+        ${CMAKE_CURRENT_LIST_DIR}/ui_font.c
+        ${CMAKE_CURRENT_LIST_DIR}/ui_gfx.c
+        ${CMAKE_CURRENT_LIST_DIR}/ui_render.c
+        ${CMAKE_CURRENT_LIST_DIR}/ui_report.c
+        ${CMAKE_CURRENT_LIST_DIR}/ui_nav.c
+        ${CMAKE_CURRENT_LIST_DIR}/ui_browser.c
+        ${CMAKE_CURRENT_LIST_DIR}/ui_capture.c
+        ${CMAKE_CURRENT_LIST_DIR}/ui_dialog.c
+        ${CMAKE_CURRENT_LIST_DIR}/ui_tree.c)
 
 target_include_directories(dino_ui INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
