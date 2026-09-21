@@ -288,6 +288,39 @@ int main(void) {
     // and core 1 starts pushing samples the moment the Spectrum starts.
     audio_init();
 
+#if USB_KEYBOARD
+    /*
+     * The host stack, which nothing else will start.
+     *
+     * After psram_init(), because that runs with interrupts off and with
+     * the flash unreachable, and TinyUSB installs an interrupt handler.
+     * Before core 1, because everything USB happens on this core --
+     * tuh_task() is called from the loop at the bottom of this file and
+     * enumeration finishes while core 1 is still printing its report.
+     */
+    usbkbd_init();
+
+    /*
+     * And then wait a moment for something to turn up.
+     *
+     * Not politeness: in a USB_KEYBOARD build the keyboard is the only
+     * input there is -- S1 has given the console's pins to the host
+     * controller -- so "did it enumerate" is a question with no other
+     * way to ask it. A hub and a keyboard behind it take a few hundred
+     * milliseconds; a second and a half is generous and only costs the
+     * boot screen, which is on display for longer than that anyway.
+     */
+    const absolute_time_t usb_deadline = make_timeout_time_ms(1500);
+    while (!usbkbd_present() && absolute_time_diff_us(get_absolute_time(), usb_deadline) > 0)
+        usbkbd_task();
+
+    if (usbkbd_present())
+        scr_pass("USB keyboard", "enumerated on the USB-A port");
+    else
+        scr_log(ATTR(C_YELLOW, C_BLACK),
+                "USB keyboard                 none yet - check S1 is in the USB-A position");
+#endif
+
     /*
      * The card, mounted here and nowhere else.
      *

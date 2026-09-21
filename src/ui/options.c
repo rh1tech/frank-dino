@@ -14,6 +14,9 @@
 #include "beta.h"
 #include "menu.h"
 #include "psram.h"
+#if USB_KEYBOARD
+#include "usbkbd.h"
+#endif
 #include "screen.h"
 #include "settings.h"
 #include "spectrum.h"
@@ -223,6 +226,12 @@ static void trace_action(void) {
     status[0] = 0;
 }
 
+#if USB_KEYBOARD
+static const char *kbd_info(void) {
+    return usbkbd_present() ? "attached" : "nothing enumerated";
+}
+#endif
+
 static const char *fdc_info(void) {
     static char buf[40];
     beta_stats(buf, sizeof buf);
@@ -334,6 +343,9 @@ static const row_t rows[] = {
     HEAD("SYSTEM"),
     INFO  ("PSRAM",                     psram_info, NULL),
     INFO  ("Z80",                       z80_info,   NULL),
+#if USB_KEYBOARD
+    INFO  ("USB keyboard",              kbd_info,   NULL),
+#endif
     CHOICE("Record the bus",     &settings.bus_trace,      off_on,    trace_changed),
     ACTION("Show the bus trace",        trace_action),
     ACTION("Test the PSRAM",            psram_test_action),
