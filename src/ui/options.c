@@ -67,6 +67,7 @@ static const char *const turbos[]   = { "3.5 MHz (real)", "5.3 MHz", "7 MHz" };
 static const char *const joysticks[]= { "None", "Kempston", "Sinclair 1", "Sinclair 2",
                                         "Cursor", "Fuller" };
 static const char *const kports[]   = { "#1F", "#DF" };
+static const char *const outputs[]  = { "Jack / buzzer", "HDMI (line level)" };
 
 // --- what the rows do -------------------------------------------------------
 
@@ -110,6 +111,13 @@ static void turbo_changed(void) {
 }
 
 static void nothing(void) { }
+
+static void output_changed(void) {
+    snprintf(status, sizeof status,
+             settings.output == OUTPUT_HDMI
+                 ? "Line level: a third of full scale, which is what the encoder wants"
+                 : "Full scale, for the jack and the buzzer");
+}
 
 static void betadisk_changed(void) {
     // The ROM it brings in replaces the BASIC ROM, so the machine has to
@@ -343,6 +351,7 @@ static const row_t rows[] = {
     CHOICE("Z80 speed",          &settings.turbo,          turbos,    turbo_changed),
 
     HEAD("AUDIO"),
+    CHOICE("Output (S2)",        &settings.output,         outputs,   output_changed),
     NUMBER("Master volume",      &settings.volume,         10,        nothing),
     NUMBER("Beeper volume",      &settings.beeper_vol,     10,        nothing),
     NUMBER("AY volume",          &settings.ay_vol,         10,        nothing),

@@ -34,6 +34,7 @@ static const field_t fields[] = {
     { "issue2",         &settings.issue2,         1  },
     { "turbo",          &settings.turbo,          2  },
 
+    { "output",         &settings.output,         OUTPUT_COUNT - 1 },
     { "volume",         &settings.volume,         10 },
     { "beeper_vol",     &settings.beeper_vol,     10 },
     { "ay_vol",         &settings.ay_vol,         10 },
@@ -61,6 +62,15 @@ void settings_defaults(void) {
         .issue2         = 0,
         .turbo          = 0,
 
+        /*
+         * Line level by default, which is the quiet choice.
+         *
+         * Too quiet into a buzzer is a buzzer that wants turning up; too
+         * loud into a line input is distortion on everything, and it is
+         * not obvious what is causing it. One of those is a setting away
+         * from right and the other cost an evening.
+         */
+        .output         = OUTPUT_HDMI,
         .volume         = 8,
         .beeper_vol     = 8,
         .ay_vol         = 8,

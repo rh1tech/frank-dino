@@ -1030,7 +1030,20 @@ __force_inline static void run_slice(const uint32_t tstates, const uint32_t num)
         s = test_tone_wave[test_tone_phase];
     }
 
-    audio_push(s * settings.volume / 10);
+    /*
+     * Master volume and the output's own headroom, in one step.
+     *
+     * The second divisor is what the board does not have: there is no
+     * attenuator between GP46 and the MS9288A, so a full-scale mix
+     * arrives at its line input about three times too big and everything
+     * sounds distorted. The jack and the buzzer want it full scale.
+     * Which of the two it is, is a switch nothing can read -- see
+     * output_t in settings.h.
+     */
+    static const uint8_t out_scale[OUTPUT_COUNT] = { 10, 3 };   // over ten
+    const uint32_t scale = settings.volume *
+                           out_scale[settings.output < OUTPUT_COUNT ? settings.output : 0];
+    audio_push(s * (int32_t)scale / 100);
 }
 
 static uint32_t tune_once(void) {

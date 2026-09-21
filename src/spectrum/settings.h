@@ -50,6 +50,22 @@ typedef enum : uint8_t {
     JOY_COUNT,
 } joystick_t;
 
+/*
+ * Where GP46 is pointed, and how hard to drive it.
+ *
+ * Full scale is about three volts peak to peak out of the PWM, which is
+ * what a transistor driving a buzzer wants and roughly three times what
+ * a line input wants. Feeding that to the HDMI encoder is heard as
+ * distortion on everything, and it is not the DAC's fault -- the board
+ * has no attenuator between GP46 and the encoder, so the level has to
+ * come out of the mix.
+ */
+typedef enum : uint8_t {
+    OUTPUT_JACK = 0,    // the 3.5 mm jack or the buzzer, through Q1
+    OUTPUT_HDMI,        // the MS9288A's line input, which wants a third of it
+    OUTPUT_COUNT,
+} output_t;
+
 /* The directions, as the rest of the firmware talks about them. */
 enum { JOY_BIT_RIGHT = 0, JOY_BIT_LEFT, JOY_BIT_DOWN, JOY_BIT_UP, JOY_BIT_FIRE };
 
@@ -60,6 +76,18 @@ typedef struct {
     uint8_t turbo;          // Z80 clock: 0 = 3.5 MHz, 1 = 5.3, 2 = 7
 
     // --- audio ---
+    /*
+     * Where the sound is going, which the firmware cannot see.
+     *
+     * S2 routes GP46 to the jack, the buzzer or the MS9288A's audio
+     * input, and it is a switch with no sense line -- so this is the one
+     * thing about the audio path that has to be told rather than
+     * measured. It matters because the two destinations want very
+     * different levels: the transistor and the buzzer want the duty
+     * swung as wide as it will go, and the encoder's line input wants
+     * about a volt peak to peak and was getting three.
+     */
+    uint8_t output;         // output_t
     uint8_t volume;         // master, 0-10
     uint8_t beeper_vol;     // 0-10
     uint8_t ay_vol;         // 0-10
