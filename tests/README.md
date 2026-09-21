@@ -22,6 +22,7 @@ it. `tests/out/` holds anything a test drew, as PPM, for looking at.
 | `divmmc` | the automap, the bank paging, and the SD card behind it |
 | `tape`   | `.tap`, `.tzx` and `.pzx` arriving at the same bytes |
 | `saa`    | the SAA1099: its pitch law across the octave range, mixer, envelopes and clock scaling |
+| `settings` | the config file round trip, and the invariants a card cannot be trusted to hold |
 | `video`  | the Bayer dither and every table built on it |
 | `ui`     | the rasteriser, the font, and the rounded frames |
 

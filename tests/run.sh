@@ -45,6 +45,7 @@ try divmmc  "-DREAL_DIVMMC" \
     src/spectrum/divmmc.c src/spectrum/storage.c tests/stub/ff_host.c
 try tape    "-DREAL_TAPE" \
     src/spectrum/tape.c src/spectrum/storage.c src/core/z80_bus.c tests/stub/ff_host.c
+try settings "" src/spectrum/settings.c src/spectrum/storage.c tests/stub/ff_host.c
 try saa     "" src/spectrum/saa.c
 try video   "-DREAL_VGA"
 try ui      "" src/ui/ui_gfx.c src/ui/ui_font.c
