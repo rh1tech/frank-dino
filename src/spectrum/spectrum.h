@@ -26,6 +26,36 @@
 #include <stdint.h>
 
 // ============================================================================
+// Which machine
+// ============================================================================
+//
+// Three, and the differences are small but none of them are cosmetic.
+//
+// A 48K has one ROM, no paging port and a frame of 69888 T-states; its
+// AY does not exist, so writes to 0xFFFD must do nothing rather than
+// quietly work. A 128K has two ROMs, the 0x7FFD latch, 70908 T-states
+// and the AY. A +2 is a 128K with Amstrad's ROM 0 — same hardware,
+// different menu, and enough software checks for it that it is worth
+// being able to select.
+typedef enum : uint8_t {
+    MACHINE_48K = 0,
+    MACHINE_128K,
+    MACHINE_PLUS2,
+    MACHINE_COUNT,
+} machine_t;
+
+extern machine_t spec_machine;
+
+const char *spec_machine_name(void);
+
+/* Select a machine and cold-start it. Pauses nothing; caller owns that. */
+void spec_set_machine(machine_t m);
+void spec_next_machine(void);
+
+/* T-states per frame for the current machine. */
+uint32_t spec_frame_tstates(void);
+
+// ============================================================================
 // Timing
 // ============================================================================
 //
@@ -33,7 +63,8 @@
 // runs 311 lines to the 48's 312 and the line is a T-state longer. Getting
 // this wrong does not break anything visibly; it makes the machine run at
 // the wrong speed and every piece of music play flat.
-#define SPEC_TSTATES_PER_FRAME 70908
+#define SPEC_TSTATES_PER_FRAME   70908
+#define SPEC_TSTATES_PER_FRAME_48 69888
 
 // How long the ULA holds ~INT low. 36 T-states on a 128K; 32 on a 48K.
 // Long enough that the CPU cannot miss it between two instructions.
@@ -129,6 +160,24 @@ void spec_run_frame(void);
  * achieved rate in millihertz-per-frame... in frames per second, x1000.
  */
 uint32_t spec_tune_clock(void);
+
+// ============================================================================
+// Stopping it
+// ============================================================================
+//
+// Core 0 owns the card, the screen and the menu; core 1 owns the Z80. The
+// two never touch the same thing at the same time because core 1 parks
+// between frames whenever core 0 asks — which is also the only moment
+// FatFs may be entered, and the only moment guest RAM may be rewritten
+// underneath the CPU.
+//
+// Parking between frames rather than mid-frame matters: the machine
+// experiences the pause as one very long gap between interrupts, which
+// is something a Spectrum's ROM copes with, rather than as a bus cycle
+// that never completed, which is not.
+void spec_pause(void);
+void spec_resume(void);
+bool spec_is_paused(void);
 
 // ============================================================================
 // Loading something into the machine

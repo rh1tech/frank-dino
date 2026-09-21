@@ -38,8 +38,13 @@ void z80_map_page(const unsigned slot, uint8_t *read_from, uint8_t *write_to) {
 }
 
 void z80_map_flat(void) {
-    for (unsigned i = 0; i < 4; i++)
-        z80_map_page(i, z80_mem + i * 16384, z80_mem + i * 16384);
+    // Wraps when z80_mem is smaller than the address space, which in a
+    // Spectrum build it is: every window then shows the same 16 KB, which
+    // is all calibration needs and all it ever looks at.
+    for (unsigned i = 0; i < 4; i++) {
+        uint8_t *p = z80_mem + ((i * 16384) % GUEST_MEM_SIZE);
+        z80_map_page(i, p, p);
+    }
 }
 
 uint8_t  z80_int_vector = 0xFF;

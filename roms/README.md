@@ -6,6 +6,8 @@
 |------|-------|-----|------|
 | `128-0.rom` | 16384 | `b4d2692115a9f2924df92a3cbfb358fb` | ROM 0 — the 128K editor and menu |
 | `128-1.rom` | 16384 | `6e09e5d3c4aef166601669feaaadc01c` | ROM 1 — 48K BASIC |
+| `48.rom`    | 16384 | see below | The 48K machine's single ROM |
+| `plus2.rom` | 16384 | see below | ROM 0 of the Amstrad +2 |
 
 These are the stock Sinclair 128K ROMs, and those two MD5s are the
 canonical ones every emulator checks against.

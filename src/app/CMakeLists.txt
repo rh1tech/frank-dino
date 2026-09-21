@@ -155,7 +155,7 @@ target_link_libraries(frank-dino PRIVATE
 # ROM would otherwise leave the firmware linked against the copy it last
 # saw, with no symptom but wrong behaviour.
 set_source_files_properties(${SRC_ROOT}/spectrum/spectrum.c PROPERTIES
-        OBJECT_DEPENDS "${FW_ROOT}/roms/128-0.rom;${FW_ROOT}/roms/128-1.rom")
+        OBJECT_DEPENDS "${FW_ROOT}/roms/128-0.rom;${FW_ROOT}/roms/128-1.rom;${FW_ROOT}/roms/48.rom;${FW_ROOT}/roms/plus2.rom")
 
 # ---------------------------------------------------------------------------
 # Console

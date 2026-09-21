@@ -9,8 +9,10 @@
 
 add_library(dino_ui INTERFACE)
 
-target_sources(dino_ui INTERFACE ${CMAKE_CURRENT_LIST_DIR}/screen.c)
+target_sources(dino_ui INTERFACE
+        ${CMAKE_CURRENT_LIST_DIR}/screen.c
+        ${CMAKE_CURRENT_LIST_DIR}/menu.c)
 
 target_include_directories(dino_ui INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
-target_link_libraries(dino_ui INTERFACE vga pico_stdio)
+target_link_libraries(dino_ui INTERFACE vga spectrum pico_stdio)

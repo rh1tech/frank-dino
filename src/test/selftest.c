@@ -15,8 +15,11 @@
 #include "z80_progs.h"
 #include "screen.h"
 
+#if SELFTEST
 static selftest_result_t res;
+#endif
 
+#if SELFTEST
 static void record(const bool ok) {
     res.run++;
     if (ok) res.passed++; else res.failed++;
@@ -33,6 +36,7 @@ static void record(const bool ok) {
 static void load(const uint16_t at, const uint8_t *code, const size_t len) {
     memcpy(&z80_mem[at], code, len);
 }
+#endif
 
 static void wipe(void) {
     memset(z80_mem, 0xFF, GUEST_MEM_SIZE);
@@ -42,6 +46,7 @@ static void wipe(void) {
 // ============================================================================
 // The I/O handlers the I/O test watches
 // ============================================================================
+#if SELFTEST
 static volatile uint16_t io_seen_port;
 static volatile uint8_t  io_seen_value;
 static volatile uint32_t io_seen_writes;
@@ -57,6 +62,7 @@ static uint8_t test_io_in(const uint16_t port) {
     (void)port;
     return io_answer;
 }
+#endif
 
 // ============================================================================
 // 1. Is there a CPU
@@ -222,8 +228,11 @@ static bool test_reset(void) {
 //
 // A bring-up firmware that can only say "failed" is a bring-up firmware
 // that sends you back to the oscilloscope.
+#if SELFTEST
 static const char *kind_name(bus_cycle_t k);
+#endif
 
+#if SELFTEST
 static void diag_pass(const uint8_t fill, const char *label) {
     memset(z80_mem, fill, GUEST_MEM_SIZE);
     z80_map_flat();    // the tests want the plain 64 KB, not a machine
@@ -314,6 +323,42 @@ static void diag_first_cycles(void) {
     diag_pass(0x00, "00 ");
     diag_pass(0xFF, "FF ");
 }
+#endif
+
+bool selftest_quick_check(void) {
+    if (!test_presence()) return false;
+
+    /*
+     * The wiring test runs, but it does not get a vote.
+     *
+     * It is a diagnostic, not a gate: it measures the bus with the CPU
+     * held in reset and its outputs high-impedance, which is a state the
+     * machine is never in while it is working. It has twice reported a
+     * data line held high on a board whose data bus then round-tripped
+     * all twenty test values without a fault — so on this hardware it
+     * produces false positives, and refusing to boot a Spectrum on the
+     * strength of one would be believing the weaker measurement.
+     *
+     * What it is good for is naming a line when something really is
+     * wrong, which is worth printing either way. The tests that decide
+     * whether to go on are the ones that ask the CPU to do something.
+     */
+    test_wiring();
+
+    if (!test_reset()) return false;
+    return true;
+}
+
+/*
+ * The destructive half, compiled only into a SELFTEST build.
+ *
+ * These fill all 64 KB with patterns and reset the CPU thirty times, so
+ * they need the flat guest array at its full size -- which a Spectrum
+ * build does not allocate, because a machine brings its own memory. Left
+ * compiled in, they index a 16 KB array at 0x4000 and the compiler says
+ * so.
+ */
+#if SELFTEST
 
 // ============================================================================
 // 3. The address bus, one line at a time
@@ -702,30 +747,6 @@ void selftest_dump_trace(const uint32_t max_lines) {
     }
 }
 
-bool selftest_quick_check(void) {
-    if (!test_presence()) return false;
-
-    /*
-     * The wiring test runs, but it does not get a vote.
-     *
-     * It is a diagnostic, not a gate: it measures the bus with the CPU
-     * held in reset and its outputs high-impedance, which is a state the
-     * machine is never in while it is working. It has twice reported a
-     * data line held high on a board whose data bus then round-tripped
-     * all twenty test values without a fault — so on this hardware it
-     * produces false positives, and refusing to boot a Spectrum on the
-     * strength of one would be believing the weaker measurement.
-     *
-     * What it is good for is naming a line when something really is
-     * wrong, which is worth printing either way. The tests that decide
-     * whether to go on are the ones that ask the CPU to do something.
-     */
-    test_wiring();
-
-    if (!test_reset()) return false;
-    return true;
-}
-
 // ============================================================================
 // The run
 // ============================================================================
@@ -764,3 +785,5 @@ selftest_result_t selftest_run_all(void) {
 
     return res;
 }
+
+#endif  // SELFTEST

@@ -138,4 +138,18 @@
 // register and no PSRAM latency on the critical path. The PSRAM (U7, 8 MB)
 // is untouched in stage 0 and is there for when something needs more than
 // the Z80 can address — snapshots, disk images, a second machine.
+/*
+ * Only the stage-0 tests need a real flat 64 KB.
+ *
+ * A machine brings its own memory and aims the windows at it, so in a
+ * Spectrum build this array exists solely for the clock calibration,
+ * which runs the CPU through NOPs and never cares what it reads twice.
+ * Sixteen kilobytes shared by all four windows does that just as well and
+ * gives back 48 KB — which matters, because 128 KB of guest RAM, four
+ * ROMs, a trampoline page and the video buffers had RAM at 88 %.
+ */
+#if SELFTEST
 #define GUEST_MEM_SIZE   (64 * 1024)
+#else
+#define GUEST_MEM_SIZE   (16 * 1024)
+#endif

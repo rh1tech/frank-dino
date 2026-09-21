@@ -35,8 +35,8 @@
 #if USB_KEYBOARD
 #include "usbkbd.h"
 #endif
-#include "ff.h"
-#include "diskio.h"   // after ff.h: it uses FatFs's own typedefs
+#include "menu.h"
+#include "storage.h"
 #include "selftest.h"
 #include "ay.h"
 #include "launch.h"
@@ -245,44 +245,12 @@ int main(void) {
      * The card, mounted here and nowhere else.
      *
      * FatFs is not re-entrant across cores and the Z80 does not stop for
-     * it, so everything that touches the filesystem happens on core 0 and
-     * before core 1 is running a machine -- which is also when a file
-     * browser wants to run.
+     * it, so everything that touches the filesystem happens on core 0,
+     * and only while the machine is paused -- which is also when a file
+     * browser is on the screen.
      */
-#if USB_KEYBOARD
-    // Before core 1: enumeration takes a moment and the machine should
-    // not be waiting on it, but the stack has to exist before anything
-    // presses a key.
-    usbkbd_init();
-#endif
-
-    static FATFS fs;
-    const bool sd_ok = (f_mount(&fs, "", 1) == FR_OK);
-    if (sd_ok) {
-        // No f_getlabel(): FF_USE_LABEL is off in the vendored ffconf.h,
-        // and the config is left exactly as it came so an update from
-        // upstream still applies cleanly.
-        DWORD free_clusters = 0;
-        FATFS *fsp = NULL;
-        const bool got = (f_getfree("", &free_clusters, &fsp) == FR_OK);
-        printf("[sd] mounted, %lu KB free\n",
-               got ? (unsigned long)(free_clusters * fsp->csize / 2) : 0ul);
-    } else {
-        /*
-         * Say which, because they need different actions.
-         *
-         * disk_initialize() failing is the card not answering CMD0 at
-         * all — an empty slot, a card in backwards, or the SPI pins
-         * wrong. It succeeding and f_mount() still failing is a card
-         * that talks but has no filesystem this build can read, which is
-         * a formatting problem and not a wiring one.
-         */
-        const DSTATUS st = disk_initialize(0);
-        printf("[sd] %s (disk_initialize status 0x%02X)\n",
-               (st & STA_NOINIT) ? "no card responding - empty slot or bad wiring"
-                                 : "card responds but has no readable FAT volume",
-               (unsigned)st);
-    }
+    if (storage_mount()) printf("[sd] card mounted\n");
+    else                 printf("[sd] no card\n");
 
     multicore_launch_core1_with_stack(core1_main, core1_stack, sizeof core1_stack);
 
@@ -315,8 +283,11 @@ int main(void) {
         if (c != PICO_ERROR_TIMEOUT) {
             console_chars++;
             console_last = (uint8_t)c;
-            if (spectrum_running) spec_key_ascii((char)c);
-            else                  scr_replay();
+
+            if (menu_is_open())          menu_key((char)c);
+            else if (c == '\t')          menu_run();     // modal; returns when closed
+            else if (spectrum_running)   spec_key_ascii((char)c);
+            else                         scr_replay();
         }
 
         sleep_ms(2);

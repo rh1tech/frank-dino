@@ -36,8 +36,27 @@
 
 IMPORT_BIN("roms/128-0.rom", spec_rom0);
 IMPORT_BIN("roms/128-1.rom", spec_rom1);
+IMPORT_BIN("roms/48.rom",    spec_rom48);
+IMPORT_BIN("roms/plus2.rom", spec_romp2);
 extern const uint8_t spec_rom0[SPEC_BANK_SIZE];
 extern const uint8_t spec_rom1[SPEC_BANK_SIZE];
+extern const uint8_t spec_rom48[SPEC_BANK_SIZE];
+extern const uint8_t spec_romp2[SPEC_BANK_SIZE];
+
+machine_t spec_machine = MACHINE_128K;
+
+const char *spec_machine_name(void) {
+    switch (spec_machine) {
+        case MACHINE_48K:   return "ZX Spectrum 48K";
+        case MACHINE_PLUS2: return "ZX Spectrum +2";
+        default:            return "ZX Spectrum 128K";
+    }
+}
+
+uint32_t spec_frame_tstates(void) {
+    return spec_machine == MACHINE_48K ? SPEC_TSTATES_PER_FRAME_48
+                                       : SPEC_TSTATES_PER_FRAME;
+}
 
 // ============================================================================
 // State
@@ -83,9 +102,25 @@ static uint8_t ay_sel;          // which chip the ports are talking to
 static void apply_paging(void) {
     const uint8_t v = spec_port_7ffd;
 
+    /*
+     * A 48K has one ROM and no paging at all: whatever is in the latch,
+     * the map is fixed. Modelling that as "the latch exists but is
+     * ignored" rather than as a separate code path keeps one function
+     * responsible for the memory map.
+     */
+    if (spec_machine == MACHINE_48K) {
+        z80_map_page(0, (uint8_t *)spec_rom48, NULL);
+        z80_map_page(1, spec_ram[5], spec_ram[5]);
+        z80_map_page(2, spec_ram[2], spec_ram[2]);
+        z80_map_page(3, spec_ram[0], spec_ram[0]);
+        spec_screen_bank = 5;
+        return;
+    }
+
     // Bottom window: ROM 1 (48K BASIC) when bit 4 is set, ROM 0 otherwise.
     // Read-only, which here means "its write pointer goes to the bucket".
-    z80_map_page(0, (uint8_t *)((v & 0x10) ? spec_rom1 : spec_rom0), NULL);
+    const uint8_t *rom0 = (spec_machine == MACHINE_PLUS2) ? spec_romp2 : spec_rom0;
+    z80_map_page(0, (uint8_t *)((v & 0x10) ? spec_rom1 : rom0), NULL);
 
     // The two fixed windows never move. Mapped every time anyway, because
     // the cost is two stores on a path taken a few hundred times a second
@@ -186,7 +221,7 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
      * with A14 low (0xBFFD). As everywhere else on this machine the
      * decode is partial, and as everywhere else programs rely on it.
      */
-    if ((port & 0xC002) == 0xC000) {            // select
+    if (spec_machine != MACHINE_48K && (port & 0xC002) == 0xC000) {   // select
         /*
          * TurboSound steals the top of the register range.
          *
@@ -203,13 +238,13 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
         }
         return;
     }
-    if ((port & 0xC002) == 0x8000) {            // data
+    if (spec_machine != MACHINE_48K && (port & 0xC002) == 0x8000) {   // data
         ay_write(&ay[ay_sel], value);
         spec_ay_writes++;
         return;
     }
 
-    if ((port & 0x8002) == 0 && !paging_locked) {   // the 128K paging latch
+    if (spec_machine != MACHINE_48K && (port & 0x8002) == 0 && !paging_locked) {
         spec_port_7ffd = value;
         if (value & 0x20) paging_locked = true;
         apply_paging();
@@ -233,7 +268,8 @@ static uint8_t spec_io_in(const uint16_t port) {
     }
 
     // The AY's read-back port is the select port, not the data one.
-    if ((port & 0xC002) == 0xC000) return ay_read(&ay[ay_sel]);
+    if (spec_machine != MACHINE_48K && (port & 0xC002) == 0xC000)
+        return ay_read(&ay[ay_sel]);
 
     /*
      * Everything else is the floating bus, and 0xFF is the honest answer
@@ -534,7 +570,40 @@ uint32_t spec_tune_clock(void) {
     return (uint32_t)((5ll * 1000000000ll) / (us ? us : 1));   // fps x1000
 }
 
+static volatile bool pause_req, paused;
+
+void spec_pause(void) {
+    pause_req = true;
+    // A machine that is not running cannot acknowledge, and one that has
+    // not started yet never will -- so this waits, but not for ever.
+    const absolute_time_t deadline = make_timeout_time_ms(200);
+    while (!paused && absolute_time_diff_us(get_absolute_time(), deadline) > 0)
+        tight_loop_contents();
+}
+
+void spec_resume(void)    { pause_req = false; }
+bool spec_is_paused(void) { return paused; }
+
+static void pause_point(void) {
+    if (!pause_req) return;
+    paused = true;
+    while (pause_req) tight_loop_contents();
+    paused = false;
+}
+
+void spec_set_machine(const machine_t m) {
+    if (m >= MACHINE_COUNT) return;
+    spec_machine = m;
+    spec_init();
+}
+
+void spec_next_machine(void) {
+    spec_set_machine((machine_t)((spec_machine + 1) % MACHINE_COUNT));
+}
+
 void spec_run_frame(void) {
+    pause_point();
+
     /*
      * The whole main loop of the machine, sliced.
      *
@@ -544,7 +613,7 @@ void spec_run_frame(void) {
      * every 70908 T-states, and the only thing that has to be right is
      * the count.
      */
-    uint32_t budget = SPEC_TSTATES_PER_FRAME - SPEC_INT_TSTATES;
+    uint32_t budget = spec_frame_tstates() - SPEC_INT_TSTATES;
 
     for (uint32_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; i++) {
         uint32_t slice = SPEC_TSTATES_PER_SAMPLE;
