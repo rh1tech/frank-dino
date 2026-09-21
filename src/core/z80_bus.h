@@ -312,12 +312,39 @@ extern uint8_t z80_int_vector;
 // what it physically is: the Z80's outputs are valid some nanoseconds
 // after an edge and sampling earlier reads the previous cycle.
 //
-// There is no lower bound at which the machine becomes *incorrect* in the
-// way a free-running CPU would — a Z84C00 is fully static, so a phase
-// that runs long is simply a long phase. Too short is what breaks, and it
-// breaks at the Z80's minimum clock width and its output delay, not at
-// ours. z80_measure_clock() reports what a given pace actually achieves.
+// There is no *upper* bound at which the machine becomes incorrect — a
+// Z84C00 is fully static, so a phase that runs long is simply a long
+// phase. Too short is what breaks, and it breaks at the Z80's minimum
+// clock width and its output delay. z80_measure_clock() reports what a
+// given pace actually achieves.
+/*
+ * The fastest the engine may be driven and still be right.
+ *
+ * Below some settle time bus_service() samples the Z80's pins before
+ * they are valid and reads the previous cycle's address. The stage-0
+ * speed ramp is what measures it: on this board the CPU answers
+ * correctly at a pace of 6 and gives the wrong answer at 4.
+ *
+ * Eight, because the boundary is not a constant. It moves with
+ * temperature, with the code's layout and with whatever else the frame
+ * loop is doing -- and anything that tunes for a frame *rate* will walk
+ * straight through it, because that arithmetic cannot tell "the machine
+ * is slow" from "the machine is wrong". Which is a failure like no
+ * other: the Spectrum boots, the ROM runs, the self-tests pass, the
+ * frame rate reads 50.5 Hz, and the screen is noise. Two steps of margin
+ * is cheap.
+ */
+#define Z80_PACE_MIN 8
+
+/*
+ * Set the padding, clamped to Z80_PACE_MIN.
+ *
+ * Everything that tunes for speed goes through this. The stage-0 speed
+ * ramp, whose whole job is to find where the engine stops being right,
+ * uses z80_set_pace_raw() instead.
+ */
 void     z80_set_pace(uint32_t settle_iterations);
+void     z80_set_pace_raw(uint32_t settle_iterations);
 uint32_t z80_get_pace(void);
 
 /* Achieved Z80 clock in Hz, measured over a real run rather than derived. */

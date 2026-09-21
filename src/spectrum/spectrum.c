@@ -955,9 +955,20 @@ uint32_t spec_tune_clock(void) {
         int32_t step = (int32_t)((err * 1000 / want) / 20);
         if (step == 0) step = err > 0 ? 1 : -1;
 
+        /*
+         * Down to the floor and no further.
+         *
+         * Padding is the only thing this can trade, and below
+         * Z80_PACE_MIN the engine samples the CPU's pins before they are
+         * valid -- so a frame that is still too long at the floor means
+         * the machine cannot run at 50 Hz, not that it should be driven
+         * harder. The alternative is a Spectrum that keeps perfect time
+         * and computes nonsense, which is what happened.
+         */
         pace -= step;                                   // slower -> less padding
-        if (pace < 0) pace = 0;
+        if (pace < (int32_t)Z80_PACE_MIN) pace = (int32_t)Z80_PACE_MIN;
         z80_set_pace((uint32_t)pace);
+        if (pace == (int32_t)Z80_PACE_MIN && err > 0) break;
     }
 
     /*

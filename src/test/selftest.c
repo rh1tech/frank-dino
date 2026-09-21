@@ -660,7 +660,9 @@ static void test_speed(void) {
     int at = snprintf(ramp, sizeof ramp, "  MHz: ");
 
     for (unsigned i = 0; i < count_of(paces); i++) {
-        z80_set_pace(paces[i]);
+        // Raw, deliberately: this is the measurement the floor the rest
+        // of the firmware is clamped to comes from.
+        z80_set_pace_raw(paces[i]);
 
         wipe();
         load(0x0000, prog_checksum, sizeof prog_checksum);

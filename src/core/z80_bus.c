@@ -591,9 +591,13 @@ void z80_pulse_nmi(void) {
  * Odd totals lean the extra nop onto the second half, which is the one
  * the Z80 has least to say during.
  */
-void z80_set_pace(const uint32_t total) {
+void z80_set_pace_raw(const uint32_t total) {
     pace_settle   = total / 2;
     pace_settle_b = total - pace_settle;
+}
+
+void z80_set_pace(const uint32_t total) {
+    z80_set_pace_raw(total < Z80_PACE_MIN ? Z80_PACE_MIN : total);
 }
 
 uint32_t z80_get_pace(void) { return pace_settle + pace_settle_b; }
