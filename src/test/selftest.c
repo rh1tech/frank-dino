@@ -202,9 +202,9 @@ static bool test_wiring(void) {
         scr_fail("Bus wiring (CPU in reset)", "will not follow a pull: %s", names);
 
         name_mask(names, sizeof names, stuck & levels);
-        if (stuck & levels)  scr_log(ATTR(C_YELLOW, C_BLACK), "  held HIGH: %s", names);
+        if (stuck & levels)  scr_log(ATTR(C_ICON_Y, C_PANEL), "  held HIGH: %s", names);
         name_mask(names, sizeof names, stuck & ~levels);
-        if (stuck & ~levels) scr_log(ATTR(C_YELLOW, C_BLACK), "  held LOW:  %s", names);
+        if (stuck & ~levels) scr_log(ATTR(C_ICON_Y, C_PANEL), "  held LOW:  %s", names);
 
         /*
          * Which side of the 200R data resistors. This is the line that
@@ -213,12 +213,12 @@ static bool test_wiring(void) {
          */
         if (undriveable & stuck) {
             name_mask(names, sizeof names, undriveable & stuck);
-            scr_log(ATTR(C_LRED, C_BLACK), "  cannot even be driven high: %s", names);
-            scr_log(ATTR(C_LRED, C_BLACK), "  -> fault is on the RP2350 side of R10-R17");
+            scr_log(ATTR(C_ICON_R, C_PANEL), "  cannot even be driven high: %s", names);
+            scr_log(ATTR(C_ICON_R, C_PANEL), "  -> fault is on the RP2350 side of R10-R17");
         } else {
             name_mask(names, sizeof names, stuck & ~undriveable);
-            scr_log(ATTR(C_LGREEN, C_BLACK), "  but drive high fine: %s", names);
-            scr_log(ATTR(C_YELLOW, C_BLACK), "  -> fault is past R10-R17: the CPU or its socket");
+            scr_log(ATTR(C_ACCENT, C_PANEL), "  but drive high fine: %s", names);
+            scr_log(ATTR(C_ICON_Y, C_PANEL), "  -> fault is past R10-R17: the CPU or its socket");
         }
     }
     if (shorted_lines) {
@@ -233,11 +233,11 @@ static bool test_wiring(void) {
             total++;
             if (shown++ >= 2) continue;
             name_mask(names, sizeof names, shorts[i]);
-            scr_log(ATTR(C_LRED, C_BLACK), "  %s shorted to: %s",
+            scr_log(ATTR(C_ICON_R, C_PANEL), "  %s shorted to: %s",
                     bus_line_name(i), names);
         }
         if (total > 2)
-            scr_log(ATTR(C_YELLOW, C_BLACK), "  ...and %u more lines", total - 2);
+            scr_log(ATTR(C_ICON_Y, C_PANEL), "  ...and %u more lines", total - 2);
         if (!stuck)
             scr_fail("Bus wiring (CPU in reset)", "%u lines shorted together", total);
     }
@@ -309,7 +309,7 @@ static void diag_pass(const uint8_t fill, const char *label) {
 
     const uint32_t n = z80_trace_count();
     if (n == 0) {
-        scr_log(ATTR(C_LRED, C_BLACK), "  %s: no bus cycles at all in 64 T-states", label);
+        scr_log(ATTR(C_ICON_R, C_PANEL), "  %s: no bus cycles at all in 64 T-states", label);
         return;
     }
 
@@ -332,7 +332,7 @@ static void diag_pass(const uint8_t fill, const char *label) {
         for (unsigned b = 0; b < 4; b++)
             if (never_high & (1u << b))
                 at += snprintf(names + at, sizeof names - (size_t)at, "A%u ", b);
-        scr_log(ATTR(C_LRED, C_BLACK),
+        scr_log(ATTR(C_ICON_R, C_PANEL),
                 "  %sA0-A3 never went high: %s - stuck at the CPU pin", label, names);
     }
 
@@ -345,7 +345,7 @@ static void diag_pass(const uint8_t fill, const char *label) {
             at += snprintf(line + at, sizeof line - (size_t)at,
                            "%s%04X:%02X ", kind_name(e.kind), e.addr, e.data);
         }
-        scr_log(ATTR(C_LCYAN, C_BLACK), "  %s%s", i == 0 ? label : "      ", line);
+        scr_log(ATTR(C_ICON_C, C_PANEL), "  %s%s", i == 0 ? label : "      ", line);
     }
 }
 
@@ -376,13 +376,13 @@ static void diag_pass(const uint8_t fill, const char *label) {
  */
 static void diag_first_cycles(void) {
     const uint32_t raw = z80_raw_bus();
-    scr_log(ATTR(C_WHITE, C_BLACK),
+    scr_log(ATTR(C_WHITE, C_PANEL),
             "Bus at rest: A=%04X D=%02X  MREQ=%u RD=%u WR=%u M1=%u",
             (unsigned)(raw & 0xFFFF), (unsigned)((raw >> 16) & 0xFF),
             (unsigned)((raw >> 24) & 1), (unsigned)((raw >> 25) & 1),
             (unsigned)((raw >> 26) & 1), (unsigned)((raw >> 27) & 1));
 
-    scr_log(ATTR(C_WHITE, C_BLACK), "First cycles after reset, all memory:");
+    scr_log(ATTR(C_WHITE, C_PANEL), "First cycles after reset, all memory:");
     diag_pass(0x00, "00 ");
     diag_pass(0xFF, "FF ");
 }
@@ -485,7 +485,7 @@ static bool test_address_bus(void) {
      */
     const uint32_t lo = bad_bits & 0xFFu, hi = (bad_bits >> 8) & 0xFFu;
     if (lo && lo == hi)
-        scr_log(ATTR(C_YELLOW, C_BLACK),
+        scr_log(ATTR(C_ICON_Y, C_PANEL),
                 "  bits %02lX repeat in both halves - that is a DATA line, not an address one",
                 (unsigned long)lo);
     return false;
@@ -630,9 +630,9 @@ static bool test_execution(void) {
     const uint32_t stuck_hi = z80_edge_watch_stuck_high();
     const uint32_t stuck_lo = z80_edge_watch_stuck_low();
     if (stuck_hi)
-        scr_log(ATTR(C_YELLOW, C_BLACK), "  note: address lines held high: %04lX",
+        scr_log(ATTR(C_ICON_Y, C_PANEL), "  note: address lines held high: %04lX",
                 (unsigned long)stuck_hi);
-    scr_log(ATTR(C_DGREY, C_BLACK), "  address lines exercised: %04lX",
+    scr_log(ATTR(C_DISABLED, C_PANEL), "  address lines exercised: %04lX",
             (unsigned long)(0xFFFFu & ~stuck_lo));
     return true;
 }
@@ -766,7 +766,7 @@ static void test_speed(void) {
         if (!ok) break;         // past the edge; going faster proves nothing
     }
 
-    scr_log(ATTR(C_GREY, C_BLACK), "%s", ramp);
+    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "%s", ramp);
 
     res.z80_clock_hz = best_hz;
     res.best_pace    = best_pace;
@@ -780,7 +780,7 @@ static void test_speed(void) {
         scr_pass("Speed", "%lu.%02lu MHz clean - a Spectrum's 3.5 MHz fits",
                  (unsigned long)(best_hz / 1000000), (unsigned long)((best_hz / 10000) % 100));
     else
-        scr_log(ATTR(C_YELLOW, C_BLACK), "Speed                        %lu.%02lu MHz clean - under 3.5 MHz",
+        scr_log(ATTR(C_ICON_Y, C_PANEL), "Speed                        %lu.%02lu MHz clean - under 3.5 MHz",
                 (unsigned long)(best_hz / 1000000), (unsigned long)((best_hz / 10000) % 100));
 
     res.run++;
@@ -819,7 +819,7 @@ void selftest_dump_trace(const uint32_t max_lines) {
 selftest_result_t selftest_run_all(void) {
     memset(&res, 0, sizeof res);
 
-    scr_log(ATTR(C_WHITE, C_BLACK), "Stage 0 - proving the Z80 and the bus");
+    scr_log(ATTR(C_WHITE, C_PANEL), "Stage 0 - proving the Z80 and the bus");
     scr_blank();
 
     // Presence is the one test worth stopping on. Everything below it
@@ -828,7 +828,7 @@ selftest_result_t selftest_run_all(void) {
     record(present);
     if (!present) {
         scr_blank();
-        scr_log(ATTR(C_YELLOW, C_BLACK), "Check: CPU in the socket the right way round, 5V on U3 pin 11.");
+        scr_log(ATTR(C_ICON_Y, C_PANEL), "Check: CPU in the socket the right way round, 5V on U3 pin 11.");
         return res;
     }
 

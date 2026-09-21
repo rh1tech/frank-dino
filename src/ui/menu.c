@@ -96,47 +96,56 @@ static const char *kind_label(const file_kind_t k) {
 }
 
 static void draw(void) {
-    scr_clear(ATTR(C_GREY, C_BLACK));
-    scr_box(0, 0, VGA_COLS, VGA_ROWS, NULL, ATTR(C_BLUE, C_BLACK));
+    /*
+     * pico-speccy's browser, in cells.
+     *
+     * A header strip with the rainbow and the machine at the far end, a
+     * breadcrumb under it, the listing on the panel with a blue bar for
+     * the selection, and a footer of key hints. See src/ui/UiRender.cpp
+     * in their tree -- the layout is drawn in ASCII at the top of it.
+     */
+    scr_page("Files", spec_machine_name(), cwd);
 
-    scr_printf(2, 1, ATTR(C_YELLOW, C_BLACK), "FRANK DINO  %s", FIRMWARE_VERSION);
-    scr_printf(VGA_COLS - 24, 1, ATTR(C_DGREY, C_BLACK), "%s", spec_machine_name());
-    scr_printf(2, 2, ATTR(C_WHITE, C_BLACK), "%.*s", VGA_COLS - 4, cwd);
+    if (entry_count > ROWS_SHOWN)
+        scr_printf(VGA_COLS - 14, 1, ATTR(C_TEXT_DIM, C_PANEL), "%d/%d",
+                   cursor + 1, entry_count);
 
-    for (int x = 1; x < VGA_COLS - 1; x++) scr_put(x, 3, "\xC4", ATTR(C_BLUE, C_BLACK));
-
-    if (entry_count <= 0) {
-        scr_put(3, 5, storage_mounted() ? "(empty directory)"
+    if (entry_count <= 0)
+        scr_put(3, 4, storage_mounted() ? "(empty directory)"
                                         : "No card. Insert one and press R to retry.",
-                ATTR(C_LRED, C_BLACK));
-    }
+                ATTR(C_ICON_R, C_PANEL));
 
     for (int i = 0; i < ROWS_SHOWN && top + i < entry_count; i++) {
         const storage_entry_t *e = &entries[top + i];
         const bool sel = (top + i == cursor);
-        const uint8_t attr = sel ? ATTR(C_BLACK, C_LCYAN)
-                                 : ATTR(e->kind == FILE_DIR ? C_LCYAN
-                                        : e->kind == FILE_OTHER ? C_DGREY : C_WHITE, C_BLACK);
+        const int  y   = 4 + i;
 
-        // The whole row is painted, selected or not, so the highlight is a
-        // bar rather than the length of the filename.
-        char row[VGA_COLS];
+        const uint8_t bg = sel ? C_SEL_BG : C_PANEL;
+        const uint8_t fg = sel ? C_WHITE
+                         : e->kind == FILE_DIR   ? C_ICON_C
+                         : e->kind == FILE_OTHER ? C_DISABLED
+                                                 : C_TEXT;
+
+        // The whole row is painted, so the selection is a bar rather than
+        // the length of a filename.
+        scr_fill(1, y, VGA_COLS - 2, 1, bg);
+
+        // Name on the left, kind and size right-aligned against the edge.
+        const int name_w = VGA_COLS - 22;
+        scr_printf(3, y, ATTR(fg, bg), "%-*.*s", name_w, name_w, e->name);
+
+        const uint8_t meta = ATTR(sel ? C_WHITE : C_TEXT_DIM, bg);
         if (e->kind == FILE_DIR)
-            snprintf(row, sizeof row, " %-44.44s %s", e->name, "dir");
+            scr_printf(VGA_COLS - 18, y, meta, "%-4s %10s", "dir", "");
         else
-            snprintf(row, sizeof row, " %-44.44s %-3s %7lu", e->name,
-                     kind_label(e->kind), (unsigned long)e->size);
-        scr_printf(2, 5 + i, attr, "%-*s", VGA_COLS - 5, row);
+            scr_printf(VGA_COLS - 18, y, meta, "%-4s %10lu",
+                       kind_label(e->kind), (unsigned long)e->size);
     }
 
-    if (entry_count > ROWS_SHOWN)
-        scr_printf(VGA_COLS - 14, 3, ATTR(C_DGREY, C_BLACK), " %d/%d ",
-                   cursor + 1, entry_count);
+    if (status[0])
+        scr_printf(2, VGA_ROWS - 3, ATTR(C_ACCENT, C_PANEL), "%.*s", VGA_COLS - 4, status);
 
-    scr_printf(2, VGA_ROWS - 4, ATTR(C_LGREEN, C_BLACK), "%s", status);
-    scr_put(2, VGA_ROWS - 2,
-            "Up/Down move   Enter open   Backspace up   A-Z jump   \\ settings   Tab resume",
-            ATTR(C_DGREY, C_BLACK));
+    scr_footer("Up/Down  Enter open  Backspace up  A-Z jump  F12 settings  F11 resume");
 }
 
 // ---------------------------------------------------------------------------
@@ -266,6 +275,17 @@ int menu_wait_key(void) {
     }
 }
 
+/*
+ * Open straight onto the settings page, for F12.
+ *
+ * The browser is the way in and the settings hang off it, so "go to the
+ * settings" is "open the browser and immediately open the page" rather
+ * than a second modal thing with its own key loop.
+ */
+static bool straight_to_settings;
+
+void menu_open_settings(const bool yes) { straight_to_settings = yes; }
+
 bool menu_run(void) {
     open_ = true;
     loaded_something = false;
@@ -278,6 +298,13 @@ bool menu_run(void) {
 
     if (!entry_count) rescan();
     draw();
+
+    if (straight_to_settings) {
+        straight_to_settings = false;
+        options_run();
+        if (menu_rescan_wanted) { menu_rescan_wanted = false; rescan(); }
+        draw();
+    }
 
     for (;;) {
         const int k = menu_wait_key();

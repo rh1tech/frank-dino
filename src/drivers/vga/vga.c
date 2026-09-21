@@ -50,25 +50,37 @@
  * CGA blue measured at a quarter of full scale instead of two thirds.
  * A two-resistor ladder has no room to be subtle about it.
  */
+/*
+ * pico-speccy's UI palette, from src/ui/UiGfx.cpp (kUiPaletteVga).
+ *
+ * Their own comment explains why these particular values: an on-grid
+ * RGB888 comes out of a four-levels-per-channel VGA path solid rather
+ * than dithered, and the dark end of a slate theme cannot survive being
+ * rounded to that grid -- so the darks were re-spread by hand over
+ * black, navy and blue while the text, selection and icon hues stay on
+ * the nearest grid point.
+ *
+ * Four levels per channel is exactly what R48-R57 give this board, so
+ * the work of choosing them is already done and this is a transcription.
+ */
 static const uint8_t palette16[16] = {
-    PX(0, 0, 0),  // 0  black
-    PX(0, 0, 2),  // 1  blue
-    PX(0, 2, 0),  // 2  green
-    PX(0, 2, 2),  // 3  cyan
-    PX(2, 0, 0),  // 4  red
-    PX(2, 0, 2),  // 5  magenta
-    PX(2, 1, 0),  // 6  brown    — red plus half green
-    PX(2, 2, 2),  // 7  light grey
-    PX(1, 1, 1),  // 8  dark grey
-    PX(0, 0, 3),  // 9  bright blue
-    PX(0, 3, 0),  // 10 bright green
-    PX(0, 3, 3),  // 11 bright cyan
-    PX(3, 0, 0),  // 12 bright red
-    PX(3, 0, 3),  // 13 bright magenta
-    PX(3, 3, 0),  // 14 yellow
-    PX(3, 3, 3),  // 15 white
+    PX(0, 0, 0),  // 0  C_BG        000000
+    PX(0, 0, 1),  // 1  C_PANEL     000055
+    PX(0, 0, 2),  // 2  C_PANEL_ALT 0000AA
+    PX(1, 1, 1),  // 3  C_SEP       555555
+    PX(3, 3, 3),  // 4  C_TEXT      FFFFFF
+    PX(2, 2, 2),  // 5  C_TEXT_DIM  AAAAAA
+    PX(3, 3, 3),  // 6  C_WHITE     FFFFFF
+    PX(1, 1, 3),  // 7  C_SEL_BG    5555FF
+    PX(0, 0, 2),  // 8  C_SEL_BAND  0000AA
+    PX(1, 3, 2),  // 9  C_ACCENT    55FFAA
+    PX(0, 0, 0),  // 10 C_FOOT_BG   000000
+    PX(0, 0, 0),  // 11 C_SHADOW    000000
+    PX(3, 1, 1),  // 12 C_ICON_R    FF5555
+    PX(3, 2, 1),  // 13 C_ICON_Y    FFAA55
+    PX(1, 2, 3),  // 14 C_ICON_C    55AAFF
+    PX(1, 1, 1),  // 15 C_DISABLED  555555
 };
-
 // ============================================================================
 // Timing
 // ============================================================================

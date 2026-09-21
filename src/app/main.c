@@ -64,21 +64,24 @@ static uint32_t core1_stack[4096] __attribute__((aligned(8)));
 // The header
 // ============================================================================
 static void draw_header(void) {
-    scr_clear(ATTR(C_GREY, C_BLACK));
-    scr_box(0, 0, VGA_COLS, VGA_ROWS, NULL, ATTR(C_BLUE, C_BLACK));
+    /*
+     * The same header the menus use: a band with the rainbow mark, not a
+     * box with a border round the whole screen. The border was inherited
+     * from frank-xt8086's report page and belongs to a different design;
+     * this one is pico-speccy's, so the start-up screen may as well look
+     * like the rest of the firmware.
+     */
+    char right[40];
+    snprintf(right, sizeof right, "dino_z80   Z84C00 + RP2350B");
 
-    scr_printf(2, 1, ATTR(C_YELLOW, C_BLACK), "FRANK DINO  %s", FIRMWARE_VERSION);
-    scr_put(VGA_COLS - 28, 1, "dino_z80  Z84C00 + RP2350B", ATTR(C_DGREY, C_BLACK));
+    char sub[80];
+    snprintf(sub, sizeof sub, "%u MHz   640x480 over HDMI   console 115200 on J1",
+             (unsigned)(clock_get_hz(clk_sys) / MHZ));
 
-    scr_printf(2, 2, ATTR(C_GREY, C_BLACK),
-               "RP2350B at %u MHz   video 640x480@60 over HDMI   console 115200 on J1",
-               (unsigned)(clock_get_hz(clk_sys) / MHZ));
+    char title[40];
+    snprintf(title, sizeof title, "frank-dino  %s", FIRMWARE_VERSION);
 
-    scr_put(2, 3, "Stage 0: no emulation, no ROM - just the CPU and the bus.",
-            ATTR(C_DGREY, C_BLACK));
-
-    for (int x = 1; x < VGA_COLS - 1; x++)
-        scr_put(x, 4, "\xC4", ATTR(C_BLUE, C_BLACK));
+    scr_page(title, right, sub);
 }
 
 // ============================================================================
@@ -115,10 +118,10 @@ static void core1_main(void) {
     const selftest_result_t r = selftest_run_all();
     scr_blank();
     if (r.failed == 0)
-        scr_log(ATTR(C_LGREEN, C_BLACK), "%lu/%lu passed. The Z80 works and the bus is sound.",
+        scr_log(ATTR(C_ACCENT, C_PANEL), "%lu/%lu passed. The Z80 works and the bus is sound.",
                 (unsigned long)r.passed, (unsigned long)r.run);
     else {
-        scr_log(ATTR(C_LRED, C_BLACK), "%lu of %lu tests failed.",
+        scr_log(ATTR(C_ICON_R, C_PANEL), "%lu of %lu tests failed.",
                 (unsigned long)r.failed, (unsigned long)r.run);
         selftest_dump_trace(64);
     }
@@ -132,12 +135,12 @@ static void core1_main(void) {
      * a few milliseconds and turn it into a sentence. The rest of the
      * suite is a build option, because it is destructive.
      */
-    scr_log(ATTR(C_WHITE, C_BLACK), "ZX Spectrum 128K - a real Z84C00 on the bus");
+    scr_log(ATTR(C_WHITE, C_PANEL), "ZX Spectrum 128K - a real Z84C00 on the bus");
     scr_blank();
 
     if (!selftest_quick_check()) {
         scr_blank();
-        scr_log(ATTR(C_YELLOW, C_BLACK), "Build with SELFTEST=ON for the full stage-0 report.");
+        scr_log(ATTR(C_ICON_Y, C_PANEL), "Build with SELFTEST=ON for the full stage-0 report.");
         while (true) tight_loop_contents();
     }
 
@@ -149,7 +152,7 @@ static void core1_main(void) {
     z80_reset();
 
     const uint32_t hz = z80_calibrate(SPEC_CPU_HZ);
-    scr_log(ATTR(C_GREY, C_BLACK), "Z80 clock: %lu.%03lu MHz (asked for %u.%03u)",
+    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "Z80 clock: %lu.%03lu MHz (asked for %u.%03u)",
             (unsigned long)(hz / 1000000), (unsigned long)((hz / 1000) % 1000),
             SPEC_CPU_HZ / 1000000, (SPEC_CPU_HZ / 1000) % 1000);
 
@@ -163,24 +166,24 @@ static void core1_main(void) {
      */
     const uint32_t floor = selftest_probe_pace_floor();
     z80_set_pace_floor(floor);
-    scr_log(ATTR(C_GREY, C_BLACK), "Bus engine: correct down to a pace of %lu; floor set there.",
+    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "Bus engine: correct down to a pace of %lu; floor set there.",
             (unsigned long)floor);
 #if USB_KEYBOARD
-    scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, USB keyboard on the USB-A ports.");
+    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "128K ROM, 8 x 16K RAM, USB keyboard on the USB-A ports.");
 #else
-    scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, keys over the console.");
+    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "128K ROM, 8 x 16K RAM, keys over the console.");
 #endif
     if (psram_size())
         scr_pass("PSRAM (U7, GP47)", "%lu MB mapped at %08X",
                  (unsigned long)(psram_size() >> 20), PSRAM_BASE);
     else
-        scr_log(ATTR(C_YELLOW, C_BLACK), "PSRAM (U7, GP47)             none found");
+        scr_log(ATTR(C_ICON_Y, C_PANEL), "PSRAM (U7, GP47)             none found");
 
-    scr_log(ATTR(C_GREY, C_BLACK), "Sound: beeper + %s on GP46, %u Hz PWM DAC.",
+    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "Sound: beeper + %s on GP46, %u Hz PWM DAC.",
             settings.turbosound ? "TurboSound (2x AY-3-8912)" : "AY-3-8912",
             (unsigned)AUDIO_RATE_HZ);
     scr_blank();
-    scr_log(ATTR(C_LCYAN, C_BLACK), "Starting...");
+    scr_log(ATTR(C_ICON_C, C_PANEL), "Starting...");
 
     // Long enough to read off a capture stick, which is the only way
     // anyone sees this screen.
@@ -212,7 +215,7 @@ static void core1_main(void) {
     // scr_log, not printf: this is core 1, and core 1 does not talk to
     // stdio -- it queues, and core 0 prints. See src/ui/screen.h.
     const uint32_t fps = spec_tune_clock();
-    scr_log(ATTR(C_GREY, C_BLACK), "Frame rate %lu.%02lu Hz at pace %lu (%lu.%03lu MHz)",
+    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "Frame rate %lu.%02lu Hz at pace %lu (%lu.%03lu MHz)",
             (unsigned long)(fps / 1000), (unsigned long)((fps % 1000) / 10),
             (unsigned long)z80_get_pace(),
             (unsigned long)((uint64_t)fps * SPEC_TSTATES_PER_FRAME / 1000000000ull),
@@ -317,7 +320,7 @@ int main(void) {
     if (usbkbd_present())
         scr_pass("USB keyboard", "enumerated on the USB-A port");
     else
-        scr_log(ATTR(C_YELLOW, C_BLACK),
+        scr_log(ATTR(C_ICON_Y, C_PANEL),
                 "USB keyboard                 none yet - check S1 is in the USB-A position");
 #endif
 
@@ -366,6 +369,9 @@ int main(void) {
          * press Tab at.
          */
         if (usbkbd_take_menu_request() && spectrum_running) {
+            // F12 goes straight to the settings; F11 opens the browser,
+            // which is where the settings live anyway.
+            menu_open_settings(usbkbd_menu_request_was_settings());
             usbkbd_release_all();       // nothing left held on the way in
             menu_run();
             usbkbd_release_all();       // ...or on the way out

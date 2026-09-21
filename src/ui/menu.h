@@ -30,6 +30,15 @@
  */
 bool menu_run(void);
 
+/*
+ * Make the next menu_run() open the settings page at once.
+ *
+ * F12 means "settings" and F11 means "files", and the settings hang off
+ * the browser -- so this is how the one becomes the other without a
+ * second modal loop.
+ */
+void menu_open_settings(bool yes);
+
 /* Feed a console byte to the menu while it is open. */
 void menu_key(char c);
 

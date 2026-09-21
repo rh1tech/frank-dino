@@ -25,6 +25,7 @@
 static bool    mounted;
 static uint8_t last_report[8];
 static bool    menu_wanted;
+static bool    menu_wanted_settings;
 
 bool usbkbd_present(void) { return mounted; }
 
@@ -33,6 +34,8 @@ bool usbkbd_take_menu_request(void) {
     menu_wanted = false;
     return w;
 }
+
+bool usbkbd_menu_request_was_settings(void) { return menu_wanted_settings; }
 
 // ---------------------------------------------------------------------------
 // USB HID usage codes to the Spectrum's matrix
@@ -255,7 +258,8 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
  * cursor key is ESC, '[' and a letter. That is why menu_key() feeds a
  * queue rather than a single slot.
  */
-#define HID_F1 0x3A
+#define HID_F11 0x44
+#define HID_F12 0x45
 
 static bool is_new(const uint8_t *now, const uint8_t *before, const uint8_t usage) {
     for (int i = 2; i < 8; i++) if (before[i] == usage) return false;
@@ -289,9 +293,10 @@ static void feed_menu(const uint8_t *now, const uint8_t *before) {
             case 0x50: menu_arrow('D'); break;      // left
             case 0x28: menu_key('\r'); break;       // enter
             case 0x2A: menu_key(0x7F); break;       // backspace
-            case HID_F1:
+            case HID_F11:
             case 0x29:                              // escape
             case 0x2B: menu_key('\t'); break;       // tab: leave
+            case HID_F12:
             case 0x31: menu_key('\\'); break;       // backslash: settings
             default: {
                 // Everything printable, so that typing a letter jumps to
@@ -307,6 +312,49 @@ static void feed_menu(const uint8_t *now, const uint8_t *before) {
     }
 }
 
+/*
+ * Auto-repeat, which a keyboard does not do for you.
+ *
+ * A boot-protocol report is the set of keys currently down, and it is
+ * only sent when that set *changes* -- so holding a key produces exactly
+ * one report and nothing more. The Spectrum does not care: its matrix is
+ * a level, and the ROM's own REPDEL/REPPER handle the rest. The menus do
+ * care, because they are fed discrete keystrokes, and holding Down in a
+ * two-hundred-entry directory did nothing at all.
+ *
+ * So the repeat is made here, on the same schedule a Spectrum uses: a
+ * pause of about a third of a second, then five or six a second.
+ */
+#define REPEAT_DELAY_MS  350
+#define REPEAT_RATE_MS    60
+
+static uint8_t         repeat_usage;
+static absolute_time_t repeat_due;
+
+static bool held(const uint8_t usage) {
+    for (int i = 2; i < 8; i++) if (last_report[i] == usage) return true;
+    return false;
+}
+
+static void repeat_arm(const uint8_t usage) {
+    repeat_usage = usage;
+    repeat_due   = make_timeout_time_ms(REPEAT_DELAY_MS);
+}
+
+static void repeat_task(void) {
+    if (!repeat_usage) return;
+
+    // Let go, or left the menu, and it stops.
+    if (!menu_is_open() || !held(repeat_usage)) { repeat_usage = 0; return; }
+
+    if (absolute_time_diff_us(get_absolute_time(), repeat_due) > 0) return;
+
+    const uint8_t one[8] = { 0, 0, repeat_usage, 0, 0, 0, 0, 0 };
+    const uint8_t none[8] = { 0 };
+    feed_menu(one, none);
+    repeat_due = make_timeout_time_ms(REPEAT_RATE_MS);
+}
+
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
                                 uint8_t const *report, uint16_t len) {
     if (tuh_hid_interface_protocol(dev_addr, instance) == HID_ITF_PROTOCOL_KEYBOARD &&
@@ -317,13 +365,22 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
 
         if (menu_is_open()) {
             feed_menu(last_report, before);
-        } else if (is_new(last_report, before, HID_F1)) {
+
+            // Whatever was pressed last is what repeats. A second key
+            // taking over is what a real keyboard does too.
+            repeat_usage = 0;
+            for (int i = 2; i < 8; i++)
+                if (last_report[i] && is_new(last_report, before, last_report[i]))
+                    repeat_arm(last_report[i]);
+        } else if (is_new(last_report, before, HID_F11) ||
+                   is_new(last_report, before, HID_F12)) {
             /*
              * Asked for, not opened. This runs inside tuh_task(), and
              * the browser is modal and calls tuh_task() itself -- so it
              * is started from the main loop once this has returned.
              */
             menu_wanted = true;
+            menu_wanted_settings = is_new(last_report, before, HID_F12);
         } else {
             apply_report(last_report);
         }
@@ -342,4 +399,7 @@ void usbkbd_init(void) {
     printf("[usbkbd] host stack up; S1 must be in USB-A (host) position\n");
 }
 
-void usbkbd_task(void) { tuh_task(); }
+void usbkbd_task(void) {
+    tuh_task();
+    repeat_task();
+}

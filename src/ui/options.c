@@ -55,19 +55,31 @@ typedef struct {
     uint8_t            *value;
     uint8_t             count;          // number of options, for CHOICE
     const char *const  *names;          // count of them, for CHOICE
+    /*
+     * A short form for the left column, when the full name will not fit.
+     *
+     * pico-speccy's Option carries exactly this and calls it slabel: the
+     * narrow pane says "128K" and the wide one says "ZX Spectrum 128K",
+     * so neither has to be truncated to suit the other. NULL means the
+     * full name is short enough.
+     */
+    const char *const  *snames;
     void              (*changed)(void); // after the value moves
     void              (*action)(void);  // for ACTION rows
     const char       *(*info)(void);    // for INFO rows
 } row_t;
 
 static const char *const off_on[]   = { "Off", "On" };
-static const char *const machines[] = { "ZX Spectrum 48K", "ZX Spectrum 128K",
-                                       "ZX Spectrum +2", "Pentagon 128" };
+static const char *const machines[]  = { "ZX Spectrum 48K", "ZX Spectrum 128K",
+                                         "ZX Spectrum +2", "Pentagon 128" };
+static const char *const machines_s[]= { "48K", "128K", "+2", "Pentagon" };
 static const char *const turbos[]   = { "3.5 MHz (real)", "5.3 MHz", "7 MHz" };
+static const char *const turbos_s[] = { "3.5 MHz", "5.3 MHz", "7 MHz" };
 static const char *const joysticks[]= { "None", "Kempston", "Sinclair 1", "Sinclair 2",
                                         "Cursor", "Fuller" };
 static const char *const kports[]   = { "#1F", "#DF" };
 static const char *const outputs[]  = { "Jack / buzzer", "HDMI (line level)" };
+static const char *const outputs_s[]= { "Jack", "HDMI" };
 
 // --- what the rows do -------------------------------------------------------
 
@@ -159,7 +171,7 @@ static void psram_test_action(void) {
 
     // The page is already on the screen; the status line is the one part
     // of it that has to change before a test that takes a second.
-    scr_printf(2, VGA_ROWS - 4, ATTR(C_LGREEN, C_BLACK), "%-*s",
+    scr_printf(2, VGA_ROWS - 4, ATTR(C_ACCENT, C_PANEL), "%-*s",
                VGA_COLS - 4, "Testing 4 MB of PSRAM...");
 
     // The bottom of the window holds the disk and tape images, so the
@@ -218,10 +230,10 @@ static void trace_action(void) {
         return;
     }
 
-    scr_clear(ATTR(C_GREY, C_BLACK));
-    scr_box(0, 0, VGA_COLS, VGA_ROWS, NULL, ATTR(C_BLUE, C_BLACK));
-    scr_printf(2, 1, ATTR(C_YELLOW, C_BLACK), "BUS TRACE");
-    scr_printf(VGA_COLS - 30, 1, ATTR(C_DGREY, C_BLACK),
+    scr_clear(ATTR(C_TEXT_DIM, C_PANEL));
+    scr_box(0, 0, VGA_COLS, VGA_ROWS, NULL, ATTR(C_SEP, C_PANEL));
+    scr_printf(2, 1, ATTR(C_ICON_Y, C_PANEL), "BUS TRACE");
+    scr_printf(VGA_COLS - 30, 1, ATTR(C_DISABLED, C_PANEL),
                "last %lu cycles, newest last", (unsigned long)n);
 
     // Two columns, because a 30-row screen holds fifty of them that way
@@ -231,14 +243,14 @@ static void trace_action(void) {
         const bus_event_t e = z80_trace_get(n - shown + i);
         const int col = (i < 25) ? 4 : (VGA_COLS / 2 + 2);
         const int row = 4 + (int)(i % 25);
-        scr_printf(col, row, ATTR(e.kind == BUS_OPFETCH ? C_WHITE : C_GREY, C_BLACK),
+        scr_printf(col, row, ATTR(e.kind == BUS_OPFETCH ? C_WHITE : C_TEXT_DIM, C_PANEL),
                    "%04X  %s  %02X", e.addr,
                    e.kind < (sizeof cycle_name / sizeof cycle_name[0])
                        ? cycle_name[e.kind] : "?    ",
                    e.data);
     }
 
-    scr_put(2, VGA_ROWS - 2, "Any key to go back", ATTR(C_DGREY, C_BLACK));
+    scr_put(2, VGA_ROWS - 2, "Any key to go back", ATTR(C_DISABLED, C_PANEL));
     menu_wait_key();
     status[0] = 0;
 }
@@ -339,6 +351,9 @@ static void reset_action(void) {
 #define CHOICE(t, v, n, c) { .kind = ROW_CHOICE, .label = (t), .value = (v), \
                              .count = (uint8_t)(sizeof (n) / sizeof (n)[0]), \
                              .names = (n), .changed = (c) }
+#define CHOICE_S(t, v, n, sn, c) { .kind = ROW_CHOICE, .label = (t), .value = (v), \
+                             .count = (uint8_t)(sizeof (n) / sizeof (n)[0]), \
+                             .names = (n), .snames = (sn), .changed = (c) }
 #define NUMBER(t, v, m, c) { .kind = ROW_NUMBER, .label = (t), .value = (v), \
                              .count = (m) + 1, .changed = (c) }
 #define ACTION(t, a)       { .kind = ROW_ACTION, .label = (t), .action = (a) }
@@ -346,12 +361,12 @@ static void reset_action(void) {
 
 static const row_t rows[] = {
     HEAD("MACHINE"),
-    CHOICE("Machine",            &settings.machine,        machines,  machine_changed),
+    CHOICE_S("Machine",          &settings.machine,        machines, machines_s, machine_changed),
     CHOICE("Issue 2 keyboard",   &settings.issue2,         off_on,    nothing),
-    CHOICE("Z80 speed",          &settings.turbo,          turbos,    turbo_changed),
+    CHOICE_S("Z80 speed",        &settings.turbo,          turbos, turbos_s, turbo_changed),
 
     HEAD("AUDIO"),
-    CHOICE("Output (S2)",        &settings.output,         outputs,   output_changed),
+    CHOICE_S("Output (S2)",      &settings.output,         outputs, outputs_s, output_changed),
     NUMBER("Master volume",      &settings.volume,         10,        nothing),
     NUMBER("Beeper volume",      &settings.beeper_vol,     10,        nothing),
     NUMBER("AY volume",          &settings.ay_vol,         10,        nothing),
@@ -366,7 +381,7 @@ static const row_t rows[] = {
     HEAD("INPUT"),
     CHOICE("Joystick",           &settings.joystick,       joysticks, nothing),
     CHOICE("Kempston port",      &settings.kempston_port,  kports,    nothing),
-    CHOICE("Cursor keys as joystick", &settings.cursor_as_joy, off_on, nothing),
+    CHOICE("Cursor keys as joy", &settings.cursor_as_joy,  off_on,    nothing),
 
     HEAD("STORAGE"),
     CHOICE("Auto-start tapes",   &settings.tape_autostart, off_on,    nothing),
@@ -402,9 +417,11 @@ static const row_t rows[] = {
 
 static void value_text(const row_t *r, char *out, const unsigned len) {
     switch (r->kind) {
-        case ROW_CHOICE:
-            snprintf(out, len, "%s", *r->value < r->count ? r->names[*r->value] : "?");
+        case ROW_CHOICE: {
+            const char *const *n = r->snames ? r->snames : r->names;
+            snprintf(out, len, "%s", *r->value < r->count ? n[*r->value] : "?");
             break;
+        }
         case ROW_NUMBER:
             snprintf(out, len, "%u", *r->value);
             break;
@@ -425,7 +442,7 @@ static void value_text(const row_t *r, char *out, const unsigned len) {
  * -- the alternative is a page that silently loses its last row the next
  * time somebody adds one.
  */
-#define ROWS_SHOWN (VGA_ROWS - 8)
+#define ROWS_SHOWN (VGA_ROWS - 6)
 
 static int top;
 
@@ -440,40 +457,108 @@ static void scroll_to(const int cursor) {
     if (top < 0) top = 0;
 }
 
-static void draw(const int cursor) {
-    scr_clear(ATTR(C_GREY, C_BLACK));
-    scr_box(0, 0, VGA_COLS, VGA_ROWS, NULL, ATTR(C_BLUE, C_BLACK));
+/*
+ * pico-speccy's two-pane settings page, in cells.
+ *
+ * Theirs puts the list of rows in a narrow left pane with each row's
+ * current value beside it, and the *options of the focused row* in a
+ * wide right pane, one per line, with the chosen one marked. That is
+ * the part of the design worth having: the value you are about to pick
+ * is spelled out in full instead of cycling past in a corner, and you
+ * can see the whole range before choosing.
+ *
+ * Their own drawing of it is at the top of src/ui/UiRender.cpp.
+ */
+#define PANE_W   32                 /* left pane, including its value column */
+#define PANE_SEP (PANE_W + 1)
 
-    scr_printf(2, 1, ATTR(C_YELLOW, C_BLACK), "SETTINGS");
-    scr_printf(VGA_COLS - 24, 1, ATTR(C_DGREY, C_BLACK), "%s", spec_machine_name());
-    for (int x = 1; x < VGA_COLS - 1; x++) scr_put(x, 2, "\xC4", ATTR(C_BLUE, C_BLACK));
+static void draw_right_pane(const row_t *r) {
+    const int x = PANE_SEP + 2;
+    const int w = VGA_COLS - x - 1;
+
+    scr_fill(PANE_SEP + 1, 3, VGA_COLS - PANE_SEP - 1, VGA_ROWS - 5, C_PANEL);
+
+    // The pane's own title band, which names the row you are on.
+    scr_fill(PANE_SEP + 1, 3, VGA_COLS - PANE_SEP - 1, 1, C_PANEL_ALT);
+    scr_printf(x, 3, ATTR(C_WHITE, C_PANEL_ALT), "%.*s", w, r->label);
+
+    if (r->kind == ROW_CHOICE) {
+        for (int i = 0; i < r->count; i++) {
+            const bool on = (*r->value == i);
+            scr_printf(x, 5 + i, ATTR(on ? C_ACCENT : C_TEXT, C_PANEL),
+                       "%-*.*s", w - 2, w - 2, r->names[i]);
+            // The chosen one is marked, the way a radio row is.
+            scr_put(x + w - 1, 5 + i, on ? "*" : "o",
+                    ATTR(on ? C_ACCENT : C_DISABLED, C_PANEL));
+        }
+        return;
+    }
+
+    if (r->kind == ROW_NUMBER) {
+        char bar[24];
+        const unsigned n = *r->value;
+        for (unsigned i = 0; i < 20; i++) bar[i] = i < n * 2 ? (char)0xDB : (char)0xB0;
+        bar[20] = 0;
+        scr_printf(x, 5, ATTR(C_ACCENT, C_PANEL), "%s", bar);
+        scr_printf(x, 7, ATTR(C_TEXT, C_PANEL), "%u of %u", n, r->count - 1);
+        scr_put(x, 9, "Left and Right change it.", ATTR(C_TEXT_DIM, C_PANEL));
+        return;
+    }
+
+    if (r->kind == ROW_INFO) {
+        scr_printf(x, 5, ATTR(C_TEXT, C_PANEL), "%.*s", w, r->info());
+        scr_put(x, 7, "Enter acts on it.", ATTR(C_TEXT_DIM, C_PANEL));
+        return;
+    }
+
+    scr_put(x, 5, "Enter runs this.", ATTR(C_TEXT_DIM, C_PANEL));
+}
+
+static void draw(const int cursor) {
+    /*
+     * The breadcrumb names the section the cursor is in, which is what
+     * pico-speccy's sub-header does -- "Settings > Storage" and so on.
+     */
+    const char *section = "";
+    for (int i = cursor; i >= 0; i--)
+        if (rows[i].kind == ROW_HEADING) { section = rows[i].label; break; }
+
+    char crumb[48];
+    snprintf(crumb, sizeof crumb, "Settings %c %s", (char)0x1A, section);
+    scr_page("Settings", spec_machine_name(), crumb);
+
+    // The rule between the panes, full height of the body.
+    for (int y = 3; y < VGA_ROWS - 2; y++)
+        scr_printf(PANE_SEP, y, ATTR(C_SEP, C_PANEL), "\xB3");
 
     for (int i = top; i < (int)ROW_COUNT && i - top < ROWS_SHOWN; i++) {
         const row_t *r = &rows[i];
-        const int y = 4 + (i - top);
+        const int y = 3 + (i - top);
 
         if (r->kind == ROW_HEADING) {
-            scr_printf(2, y, ATTR(C_YELLOW, C_BLACK), "%s", r->label);
+            scr_printf(2, y, ATTR(C_ICON_Y, C_PANEL), "%-*.*s", PANE_W - 2, PANE_W - 2,
+                       r->label);
             continue;
         }
 
         const bool sel = (i == cursor);
-        const uint8_t attr = sel ? ATTR(C_BLACK, C_LCYAN) : ATTR(C_WHITE, C_BLACK);
+        const uint8_t bg = sel ? C_SEL_BG : C_PANEL;
 
         char val[40];
         value_text(r, val, sizeof val);
 
-        // The whole row is painted so the highlight is a bar rather than
-        // the length of the label.
-        char line[VGA_COLS];
-        snprintf(line, sizeof line, " %-*s%s", VALUE_COL - 5, r->label, val);
-        scr_printf(4, y, attr, "%-*.*s", VGA_COLS - 9, VGA_COLS - 9, line);
+        scr_fill(1, y, PANE_W, 1, bg);
+        scr_printf(3, y, ATTR(sel ? C_WHITE : C_TEXT, bg), "%-*.*s",
+                   PANE_W - 13, PANE_W - 13, r->label);
+        scr_printf(PANE_W - 9, y, ATTR(sel ? C_WHITE : C_TEXT_DIM, bg), "%9.9s", val);
     }
 
-    scr_printf(2, VGA_ROWS - 4, ATTR(C_LGREEN, C_BLACK), "%s", status);
-    scr_put(2, VGA_ROWS - 2,
-            "Up/Down move   Left/Right change   Enter act   S save   Tab back",
-            ATTR(C_DGREY, C_BLACK));
+    draw_right_pane(&rows[cursor]);
+
+    if (status[0])
+        scr_printf(2, VGA_ROWS - 2, ATTR(C_ACCENT, C_PANEL), "%.*s", VGA_COLS - 4, status);
+
+    scr_footer("Up/Down  Left/Right change  Enter act  S save  F12 back");
 }
 
 // ---------------------------------------------------------------------------

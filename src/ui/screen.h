@@ -20,10 +20,39 @@
 #include <stdint.h>
 #include <stdbool.h>
 
-// CGA-order colour numbers, for attributes.
+/*
+ * Sixteen colours, and they are pico-speccy's.
+ *
+ * Not CGA's, which is what was here: this is the palette from
+ * src/ui/UiGfx.cpp's kUiPaletteVga, in their order and with their names.
+ * It exists because their menu has to work on a four-levels-per-channel
+ * VGA path -- which is exactly what this board's resistor ladder is --
+ * so the values are already chosen for it, and they are chosen by
+ * somebody who looked at the result. Copying the numbers is cheaper than
+ * having taste.
+ *
+ * The roles are what matters. C_PANEL is the body, C_PANEL_ALT the
+ * bands at the top and bottom, C_SEL_BG the selection bar, C_TEXT and
+ * C_TEXT_DIM the two weights of text, and the three C_ICON_* are the
+ * rainbow in the header and the only strong colours in the design.
+ */
 enum {
-    C_BLACK = 0, C_BLUE, C_GREEN, C_CYAN, C_RED, C_MAGENTA, C_BROWN, C_GREY,
-    C_DGREY, C_LBLUE, C_LGREEN, C_LCYAN, C_LRED, C_LMAGENTA, C_YELLOW, C_WHITE
+    C_BG = 0,       // outside the window
+    C_PANEL,        // the body of a page
+    C_PANEL_ALT,    // header, sub-header and pane-title bands
+    C_SEP,          // rules
+    C_TEXT,         // primary text
+    C_TEXT_DIM,     // secondary text, footer hints
+    C_WHITE,        // emphasis, and text on the selection bar
+    C_SEL_BG,       // the selection bar
+    C_SEL_BAND,     // the focused row of an unfocused pane
+    C_ACCENT,       // the chosen option, and anything that passed
+    C_FOOT_BG,
+    C_SHADOW,
+    C_ICON_R,       // the rainbow, and anything that failed
+    C_ICON_Y,
+    C_ICON_C,
+    C_DISABLED,     // rows that cannot be selected
 };
 #define ATTR(fg, bg) (uint8_t)(((bg) << 4) | (fg))
 
@@ -57,6 +86,27 @@ void scr_clear(uint8_t attr);
 void scr_put(int x, int y, const char *s, uint8_t attr);
 void scr_printf(int x, int y, uint8_t attr, const char *fmt, ...) __attribute__((format(printf, 4, 5)));
 void scr_box(int x, int y, int w, int h, const char *title, uint8_t attr);
+
+/*
+ * The furniture pico-speccy's menu is made of.
+ *
+ * Their design is bands and panes, not a box with a border: a header
+ * strip with a rainbow mark, a sub-header for the breadcrumb, the body,
+ * and a footer of key hints. See src/ui/UiRender.cpp, whose comment
+ * draws the whole thing in ASCII at the top of the file.
+ */
+void scr_band(int y, uint8_t bg);                       /* a full-width strip */
+void scr_fill(int x, int y, int w, int h, uint8_t bg);  /* a rectangle of colour */
+void scr_rainbow(int x, int y);                         /* the four-bar mark */
+
+/*
+ * A page's header and footer, drawn the same way everywhere.
+ *
+ * `right` is the machine name or whatever belongs at the far end;
+ * `hints` is the footer line. Both may be NULL.
+ */
+void scr_page(const char *title, const char *right, const char *breadcrumb);
+void scr_footer(const char *hints);
 
 /*
  * Append a line to the scrolling report region and to the UART.

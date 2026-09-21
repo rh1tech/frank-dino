@@ -103,7 +103,7 @@ static void log_scroll(void) {
     memmove(cell(0, LOG_TOP), cell(0, LOG_TOP + 1),
             (size_t)(LOG_ROWS - 1) * VGA_COLS * 2);
     uint8_t *c = cell(0, VGA_ROWS - 1);
-    for (int i = 0; i < VGA_COLS; i++) { *c++ = ' '; *c++ = ATTR(C_GREY, C_BLACK); }
+    for (int i = 0; i < VGA_COLS; i++) { *c++ = ' '; *c++ = ATTR(C_TEXT_DIM, C_PANEL); }
 }
 
 /*
@@ -160,7 +160,7 @@ void scr_pump(void) {
 
 void scr_blank(void) {
     recursive_mutex_enter_blocking(&log_mutex);
-    log_line(ATTR(C_GREY, C_BLACK), "");
+    log_line(ATTR(C_TEXT_DIM, C_PANEL), "");
     recursive_mutex_exit(&log_mutex);
 }
 
@@ -190,7 +190,7 @@ static void verdict(const bool ok, const char *name, const char *detail) {
     // detail on the wire too, where there is room for it.
     char buf[VGA_COLS + 48];
     snprintf(buf, sizeof buf, "%-28s %-4s %s", name, ok ? "PASS" : "FAIL", detail);
-    log_line(ok ? ATTR(C_LGREEN, C_BLACK) : ATTR(C_LRED, C_BLACK), buf);
+    log_line(ok ? ATTR(C_ACCENT, C_PANEL) : ATTR(C_ICON_R, C_PANEL), buf);
 }
 
 void scr_pass(const char *name, const char *fmt, ...) {
@@ -217,5 +217,75 @@ void scr_fail(const char *name, const char *fmt, ...) {
 
 void scr_init(void) {
     recursive_mutex_init(&log_mutex);
-    scr_clear(ATTR(C_GREY, C_BLACK));
+    scr_clear(ATTR(C_TEXT_DIM, C_PANEL));
+}
+
+// ---------------------------------------------------------------------------
+// The furniture
+// ---------------------------------------------------------------------------
+/*
+ * pico-speccy's layout, in character cells.
+ *
+ * Theirs is drawn pixel by pixel with its own font and a rounded
+ * one-pixel border; this board's UI is an 80x30 grid of 8x16 cells and
+ * cannot have the corners or the hairline. What it can have -- and what
+ * actually carries the design -- is the structure: a coloured header
+ * strip with the rainbow at its left, a sub-header for where you are, a
+ * body on a panel, a selection bar rather than a highlighted word, and a
+ * footer of key hints in dim text. That is the part worth copying.
+ */
+
+void scr_fill(const int x, const int y, const int w, const int h, const uint8_t bg) {
+    const uint8_t attr = ATTR(C_TEXT, bg);
+    for (int j = 0; j < h; j++)
+        for (int i = 0; i < w; i++) {
+            uint8_t *c = cell(x + i, y + j);
+            c[0] = ' '; c[1] = attr;
+        }
+}
+
+void scr_band(const int y, const uint8_t bg) { scr_fill(0, y, VGA_COLS, 1, bg); }
+
+/*
+ * The four-bar mark, which is the one piece of colour in the header.
+ *
+ * Theirs is a small sprite of diagonal bars; four solid cells is what
+ * this grid can say, and it says the same thing.
+ */
+void scr_rainbow(const int x, const int y) {
+    static const uint8_t bars[] = { C_ICON_R, C_ICON_Y, C_ACCENT, C_ICON_C };
+    for (unsigned i = 0; i < sizeof bars; i++) {
+        uint8_t *c = cell(x + (int)i, y);
+        c[0] = 0xDB;                            // a full block
+        c[1] = ATTR(bars[i], C_PANEL_ALT);
+    }
+}
+
+void scr_page(const char *title, const char *right, const char *breadcrumb) {
+    scr_fill(0, 0, VGA_COLS, VGA_ROWS, C_PANEL);
+
+    // Header: the mark, the name, and whatever belongs at the far end.
+    scr_band(0, C_PANEL_ALT);
+    scr_rainbow(1, 0);
+    scr_printf(6, 0, ATTR(C_WHITE, C_PANEL_ALT), "%s", title ? title : "");
+    if (right && *right) {
+        const int len = (int)strlen(right);
+        scr_printf(VGA_COLS - len - 2, 0, ATTR(C_TEXT_DIM, C_PANEL_ALT), "%s", right);
+    }
+
+    // Sub-header: where you are.
+    scr_band(1, C_PANEL);
+    if (breadcrumb && *breadcrumb)
+        scr_printf(2, 1, ATTR(C_TEXT_DIM, C_PANEL), "%.*s", VGA_COLS - 4, breadcrumb);
+
+    for (int x = 0; x < VGA_COLS; x++) {
+        uint8_t *c = cell(x, 2);
+        c[0] = 0xC4; c[1] = ATTR(C_SEP, C_PANEL);
+    }
+}
+
+void scr_footer(const char *hints) {
+    scr_band(VGA_ROWS - 1, C_PANEL_ALT);
+    if (hints && *hints)
+        scr_printf(2, VGA_ROWS - 1, ATTR(C_TEXT_DIM, C_PANEL_ALT), "%.*s", VGA_COLS - 4, hints);
 }
