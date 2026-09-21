@@ -8,6 +8,21 @@
 
 #include "z80_bus.h"
 
+/*
+ * Everything on the clock path is pinned in SRAM with
+ * __not_in_flash_func(), the way pico-speccy pins its own hot functions.
+ *
+ * The rest of this firmware runs from flash through the XIP cache, which
+ * is the only reason it fits. This file cannot: it generates the Z80's
+ * clock edge by edge, and a cache miss between two edges stretches a
+ * clock phase by about a microsecond. The CPU is static so nothing
+ * breaks, but the measured clock moves and the pace floor moves with it
+ * -- which is the check that this file is still where it should be.
+ *
+ * The helpers are all __force_inline and land inside their caller, so
+ * marking the entry points is enough.
+ */
+
 #include <string.h>
 #include <hardware/gpio.h>
 #include <pico/time.h>
@@ -17,10 +32,10 @@
 // ============================================================================
 z80_stats_t z80_stats;
 
-uint8_t  z80_mem[GUEST_MEM_SIZE] __attribute__((aligned(4)));
+uint8_t *z80_mem;       /* the app's, see z80_bus.h */
 
-uint8_t *z80_rpage[4];
-uint8_t *z80_wpage[4];
+uint8_t *z80_rpage[Z80_PAGES];
+uint8_t *z80_wpage[Z80_PAGES];
 
 /*
  * Where writes to a read-only window go.
@@ -32,12 +47,23 @@ uint8_t *z80_wpage[4];
  */
 static uint8_t write_bitbucket[16384] __attribute__((aligned(4)));
 
-void z80_map_page(const unsigned slot, uint8_t *read_from, uint8_t *write_to) {
+void z80_map_page8(const unsigned slot, uint8_t *read_from, uint8_t *write_to) {
     z80_rpage[slot] = read_from;
     z80_wpage[slot] = write_to ? write_to : write_bitbucket;
 }
 
+void z80_map_page(const unsigned slot, uint8_t *read_from, uint8_t *write_to) {
+    /* The second half starts 8 KB in, and a NULL write pointer stays NULL
+     * so both halves land in the bucket rather than one of them landing
+     * 8 KB into it. */
+    z80_map_page8(slot * 2, read_from, write_to);
+    z80_map_page8(slot * 2 + 1, read_from ? read_from + 8192 : NULL,
+                  write_to ? write_to + 8192 : NULL);
+}
+
 void z80_map_flat(void) {
+    if (!z80_mem) return;       /* nothing to map: the app has not set it */
+
     // Wraps when z80_mem is smaller than the address space, which in a
     // Spectrum build it is: every window then shows the same 16 KB, which
     // is all calibration needs and all it ever looks at.
@@ -72,7 +98,7 @@ z80_opfetch_fn z80_opfetch_cb;
  */
 #define BUS_FLOAT 0xFF
 
-static uint8_t io_in_default(uint16_t port)               { (void)port; return BUS_FLOAT; }
+static uint8_t __not_in_flash_func(io_in_default)(uint16_t port) { (void)port; return BUS_FLOAT; }
 
 // How many consecutive quiet samples with ~M1 low and ~MREQ high mean an
 // interrupt acknowledge rather than the first half-T-state of an ordinary
@@ -147,11 +173,11 @@ __force_inline static void settle(uint32_t n) {
 // ============================================================================
 
 __force_inline static uint8_t mem_read(const uint16_t a) {
-    return z80_rpage[a >> 14][a & 0x3FFF];
+    return z80_rpage[a >> 13][a & 0x1FFF];
 }
 
 __force_inline static void mem_write(const uint16_t a, const uint8_t v) {
-    z80_wpage[a >> 14][a & 0x3FFF] = v;
+    z80_wpage[a >> 13][a & 0x1FFF] = v;
 }
 
 // ============================================================================
@@ -528,7 +554,7 @@ uint32_t z80_edge_watch_stuck_low(void)  { return (~seen_high) & Z80_ADDR_MASK; 
  * and every instruction saved here is an instruction the tuner can spend
  * on waiting instead. Cheaper loop, longer settle, more margin.
  */
-void z80_run(const uint32_t t_states) {
+void __not_in_flash_func(z80_run)(const uint32_t t_states) {
     const uint32_t pa = pace_settle, pb = pace_settle_b;
     uint32_t prev = prev_ctl;
 
@@ -542,7 +568,7 @@ void z80_run(const uint32_t t_states) {
     z80_stats.t_states += t_states;
 }
 
-uint32_t z80_run_to_opfetch(const uint32_t max_t_states) {
+uint32_t __not_in_flash_func(z80_run_to_opfetch)(const uint32_t max_t_states) {
     const uint32_t before = z80_stats.opfetch;
     for (uint32_t i = 0; i < max_t_states; i++) {
         t_state();

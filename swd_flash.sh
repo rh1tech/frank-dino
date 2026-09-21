@@ -20,10 +20,18 @@
 #
 # Usage: ./swd_flash.sh [image.elf] [--reset-only]
 #
+# With no image it flashes ${BUILD_DIR}/frank-dino.elf, which is build/
+# unless BUILD_DIR says otherwise -- the same variable build.sh takes, so
+# `BUILD_DIR=build-kbd ./build.sh && BUILD_DIR=build-kbd ./swd_flash.sh`
+# builds and flashes the same tree. It used to ignore BUILD_DIR and always
+# take build/, which flashes a perfectly good image of the wrong
+# configuration and reports success: the symptom is a feature that was
+# just built and tested not being there at all.
 set -euo pipefail
 cd "$(dirname "$0")"
 
-ELF="${1:-build/frank-dino.elf}"
+BUILD_DIR="${BUILD_DIR:-build}"
+ELF="${1:-${BUILD_DIR}/frank-dino.elf}"
 
 # SWD clock: 1 MHz, not the 5 MHz an RP2350 will normally take.
 #

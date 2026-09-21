@@ -8,7 +8,7 @@
 
 .DEFAULT_GOAL := help
 
-.PHONY: help hooks check-attribution build clean flash swd swd-check console shot view
+.PHONY: help hooks check-attribution build clean flash swd swd-check console shot view test
 
 help: ## Show this help
 	@grep -hE '^[a-z_-]+:.*?## ' $(MAKEFILE_LIST) | awk 'BEGIN{FS=":.*?## "}{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
@@ -25,6 +25,9 @@ check-attribution: ## Scan this branch's commits for AI attribution
 
 build: ## Build the firmware
 	@./build.sh
+
+test: ## Run the host test suite
+	@./tests/run.sh
 
 clean: ## Remove the build tree
 	@rm -rf build build-*

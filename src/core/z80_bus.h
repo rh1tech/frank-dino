@@ -74,35 +74,76 @@ extern z80_stats_t z80_stats;
 // Guest memory
 // ============================================================================
 //
-// Four 16 KB windows, which is the shape every Z80 machine worth emulating
-// already has. The Z80's address space divides into four naturally, a
-// Spectrum 128 pages exactly on those boundaries, and the read path becomes
-// one shift and two loads with no branch:
+// Eight 8 KB windows, and the read path is one shift and two loads with no
+// branch:
 //
-//     z80_rpage[a >> 14][a & 0x3FFF]
+//     z80_rpage[a >> 13][a & 0x1FFF]
+//
+// It was four 16 KB windows, which is the shape a Spectrum 128 pages on and
+// the shape almost every machine here wants. The Timex is the exception: its
+// SCLD banks in 8 KB chunks, eight of them, each independently from the home
+// memory, the cartridge dock or the EX-ROM — so a 16 KB table cannot express
+// its map at all. Halving the window costs nothing on the hot path (the same
+// shift and mask against different constants) and four more pointers, so the
+// exception decides it.
+//
+// Most callers still think in 16 KB and should use z80_map_page(), which
+// fills the two halves; z80_map_page8() is for the machines that need the
+// finer grain.
 //
 // Writes go through a separate table, so ROM is not a comparison against a
 // limit on every cycle — it is a window whose write pointer aims at a bit
 // bucket. That is also closer to the truth: a real machine's ROM is not
 // write-protected, it simply has nothing connected to ~WR.
-extern uint8_t *z80_rpage[4];
-extern uint8_t *z80_wpage[4];
+#define Z80_PAGES 8
+extern uint8_t *z80_rpage[Z80_PAGES];
+extern uint8_t *z80_wpage[Z80_PAGES];
 
 /*
- * The flat 64 KB the stage-0 tests use.
+ * The flat memory the stage-0 tests use.
  *
- * Kept as its own array rather than carved out of a machine's RAM: the
- * self-test fills all of it with patterns, and a test that scribbles over
- * the Spectrum's ROM image to prove the data bus works is a test that can
- * only be run once.
+ * Not an array of its own. The self-test fills all of it with patterns,
+ * so it cannot be the ROM image -- a test that scribbles over the
+ * Spectrum's ROM to prove the data bus works is a test that can only be
+ * run once -- but it CAN be a page of the guest's RAM, because stage 0
+ * finishes before spec_init() puts a machine in it.
+ *
+ * So the app provides it, and the app points it at RAM bank 0. Sixteen
+ * kilobytes of .bss that was only ever alive for the first second after
+ * reset is sixteen kilobytes a machine can have instead.
+ *
+ * Set before core 1 starts; NULL until then, which is why z80_map_flat()
+ * checks.
  */
-extern uint8_t z80_mem[GUEST_MEM_SIZE];
+extern uint8_t *z80_mem;
 
 /* Point all four windows at z80_mem, readable and writable. */
 void z80_map_flat(void);
 
 /* Aim one 16 KB window. A null write pointer makes the window read-only. */
+/*
+ * Read and write guest memory the way the bus engine does.
+ *
+ * Use these rather than indexing the tables by hand. The window size is
+ * not a constant anyone should be repeating: it went from 16 KB to 8 KB
+ * when the Timex arrived, and four places that had open-coded
+ * `z80_rpage[a >> 14][a & 0x3FFF]` silently started reading and writing
+ * the wrong addresses -- the tape loader put every block a page out,
+ * and the pace probe measured a floor that did not exist.
+ */
+static inline uint8_t z80_peek(const uint16_t a) {
+    return z80_rpage[a >> 13][a & 0x1FFF];
+}
+
+static inline void z80_poke(const uint16_t a, const uint8_t v) {
+    z80_wpage[a >> 13][a & 0x1FFF] = v;
+}
+
+/* One of the four 16 KB windows: fills both of its 8 KB halves. */
 void z80_map_page(unsigned slot, uint8_t *read_from, uint8_t *write_to);
+
+/* One of the eight 8 KB windows, for the machines that page that finely. */
+void z80_map_page8(unsigned slot, uint8_t *read_from, uint8_t *write_to);
 
 // ============================================================================
 // I/O

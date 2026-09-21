@@ -16,7 +16,11 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
-UF2="${1:-build/frank-dino.uf2}"
+# ${BUILD_DIR} as build.sh takes it, so a tree built somewhere else is
+# flashed from there rather than from a stale build/ of another
+# configuration -- see the note in swd_flash.sh.
+BUILD_DIR="${BUILD_DIR:-build}"
+UF2="${1:-${BUILD_DIR}/frank-dino.uf2}"
 
 if [[ ! -f "${UF2}" ]]; then
     echo "ERROR: ${UF2} not found. Run ./build.sh first." >&2

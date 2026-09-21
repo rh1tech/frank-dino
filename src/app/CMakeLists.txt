@@ -94,7 +94,9 @@ endif()
 add_subdirectory(${SRC_ROOT}/drivers/fatfs  drivers/fatfs)
 add_subdirectory(${SRC_ROOT}/drivers/sdcard drivers/sdcard)
 add_subdirectory(${SRC_ROOT}/drivers/audio drivers/audio)
+add_subdirectory(${SRC_ROOT}/drivers/miniz drivers/miniz)
 add_subdirectory(${SRC_ROOT}/drivers/psram drivers/psram)
+add_subdirectory(${SRC_ROOT}/drivers/usbdisk drivers/usbdisk)
 add_subdirectory(${SRC_ROOT}/spectrum    spectrum)
 add_subdirectory(${SRC_ROOT}/drivers/vga drivers/vga)
 add_subdirectory(${SRC_ROOT}/ui          ui)
@@ -139,7 +141,9 @@ target_link_libraries(frank-dino PRIVATE
         dino_test
         spectrum
         audio
+        miniz
         psram
+        usbdisk
         vga
         sdcard
 
@@ -195,12 +199,30 @@ endif()
 # Image
 # ---------------------------------------------------------------------------
 #
-# copy_to_ram, not XIP. The bus loop generates the Z80's clock edge by
-# edge, and a flash fetch that misses the XIP cache in the middle of it
-# stretches a clock phase by a microsecond. That is survivable — the CPU
-# is static — but it puts a factor of two of jitter into the one number
-# stage 0 exists to measure.
-pico_set_binary_type(frank-dino copy_to_ram)
+# XIP from flash, with the bus engine pinned in SRAM.
+#
+# This used to be copy_to_ram, and the reason was sound: the bus loop
+# generates the Z80's clock edge by edge, and a flash fetch that misses
+# the XIP cache in the middle of it stretches a clock phase by a
+# microsecond. That is survivable -- the CPU is static -- but it puts a
+# factor of two of jitter into the one number stage 0 exists to measure.
+#
+# The cure was worse than the disease. copy_to_ram puts the WHOLE image
+# in SRAM: 98 KB of code and 123 KB of constants, none of which the bus
+# loop ever executes, on a part with 512 KB where the guest alone wants
+# 128. Every feature after the first few was then a question of what to
+# take out.
+#
+# pico-speccy runs on the same chip and emulates the Z80 in software,
+# and it is an ordinary XIP build -- it pins the handful of functions
+# that matter with __not_in_flash_func() and leaves the rest in flash.
+# This does the same. What is pinned: the bus engine, the memory and I/O
+# handlers, the video scanline, the audio task, and the ROM images,
+# which the engine reads on every opcode fetch.
+#
+# The check that this is right is selftest's measured Z80 clock and the
+# pace floor it finds. If either moves, something on the path is still
+# in flash.
 pico_set_linker_script(frank-dino ${SRC_ROOT}/app/memmap.ld)
 
 pico_set_program_name(frank-dino "frank-dino")
