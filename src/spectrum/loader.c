@@ -14,6 +14,7 @@
 #include "ff.h"
 #include "launch.h"
 #include "spectrum.h"
+#include "tape.h"
 #include "z80_bus.h"
 
 #define FAIL(...) do { snprintf(detail, detail_len, __VA_ARGS__); return false; } while (0)
@@ -80,12 +81,17 @@ static bool load_sna(FIL *f, const uint32_t size, char *detail, const unsigned d
     sna_header(h, &st);
 
     /*
-     * One staging buffer, shared.
+     * The staging buffer is the tape's.
      *
-     * The two paths never both need one, and a 16 KB static apiece was
-     * 32 KB of a chip that had 12 % left.
+     * A 16 KB static here was 16 KB the chip did not have once the tape
+     * buffer arrived, and the two can never be wanted at the same time:
+     * a snapshot replaces the entire machine, so whatever tape was
+     * mounted was going to be irrelevant a moment later anyway. Ejecting
+     * it first makes that explicit rather than leaving a mounted tape
+     * pointing at a buffer this is about to overwrite.
      */
-    static uint8_t stage[SPEC_BANK_SIZE];
+    tape_eject();
+    uint8_t *const stage = tape_image;
 
     if (size == SNA_48_LEN) {
         spec_set_machine(MACHINE_48K);
@@ -162,6 +168,50 @@ static bool load_scr(FIL *f, char *detail, const unsigned detail_len) {
 }
 
 // ---------------------------------------------------------------------------
+// .TAP
+// ---------------------------------------------------------------------------
+/*
+ * Mount the tape, cold-start the machine, and type LOAD "" into it.
+ *
+ * The typing is the part worth explaining. Nothing about the tape trap
+ * needs it -- a tape sitting mounted will be picked up by a LOAD typed by
+ * hand -- but "select a file and watch it load" is the whole point of a
+ * browser, and the alternative is a status line telling the user to go
+ * and type something.
+ *
+ * What to type depends on the machine, in a way that is not cosmetic. A
+ * 48K boots into K mode, where the first keypress of a line is a keyword
+ * and LOAD is the J key; typing L, O, A, D there produces four different
+ * keywords. A 128K boots into a menu that has to be dismissed first, and
+ * then into an editor with no keyword mode at all, where LOAD is spelled
+ * out letter by letter.
+ */
+static bool load_tap(FIL *f, const uint32_t size, char *detail, const unsigned detail_len) {
+    if (size > TAPE_MAX_BYTES)
+        FAIL("that .tap is %luK; the limit is %uK",
+             (unsigned long)(size / 1024), TAPE_MAX_BYTES / 1024);
+
+    // Straight into the tape's own buffer: 64 KB is too much to have two of.
+    UINT got = 0;
+    if (f_read(f, tape_image, size, &got) != FR_OK || got != size)
+        FAIL("could not read the whole .tap");
+
+    if (!tape_mount(tape_image, size, detail, detail_len)) return false;
+
+    // Keep the message tape_mount() wrote, and add to it below.
+    char mounted[64];
+    snprintf(mounted, sizeof mounted, "%s", detail);
+
+    spec_set_machine(spec_machine);      // cold start, tape still mounted
+
+    // ENTER picks "128 BASIC" off the menu; the 48K has no menu to pick from.
+    spec_type(spec_machine == MACHINE_48K ? "j\"\"\r" : "\rload \"\"\r", 100);
+
+    snprintf(detail, detail_len, "%s -- loading", mounted);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 
 bool loader_load(const char *path, const file_kind_t kind,
                  char *detail, const unsigned detail_len) {
@@ -176,10 +226,10 @@ bool loader_load(const char *path, const file_kind_t kind,
         case FILE_SNA: ok = load_sna(&f, (uint32_t)fi.fsize, detail, detail_len); break;
         case FILE_SCR: ok = load_scr(&f, detail, detail_len); break;
 
-        // Not yet, and saying which is better than a generic refusal:
-        // these are the two the card is full of.
-        case FILE_TAP:
-        case FILE_TZX: snprintf(detail, detail_len, "tape loading is not implemented yet"); ok = false; break;
+        case FILE_TAP: ok = load_tap(&f, (uint32_t)fi.fsize, detail, detail_len); break;
+
+        // Not yet, and saying which is better than a generic refusal.
+        case FILE_TZX: snprintf(detail, detail_len, ".tzx is not implemented yet; .tap is"); ok = false; break;
         case FILE_Z80: snprintf(detail, detail_len, ".z80 snapshots are not implemented yet"); ok = false; break;
         case FILE_TRD: snprintf(detail, detail_len, "TR-DOS needs a Beta Disk interface"); ok = false; break;
         default:       snprintf(detail, detail_len, "nothing here knows what that file is"); ok = false; break;

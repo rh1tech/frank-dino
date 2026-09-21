@@ -199,6 +199,21 @@ void spec_begin_launch(uint8_t *page, uint16_t jp_addr);
 bool spec_launch_pending(void);
 
 // ============================================================================
+// Tape
+// ============================================================================
+//
+// The 48K BASIC ROM is where LD-BYTES lives, and it is a different image
+// on a 48K (its only ROM) than on a 128K or +2 (ROM 1). src/spectrum/tape.c
+// takes a copy of whichever it is, patches a stub into it and hands it
+// back here; NULL puts the real one back.
+//
+// The substitution happens inside the paging function rather than by
+// mapping the page directly, so that it survives the CPU paging the ROM
+// out and in again -- which a 128K game does every time it loads.
+const uint8_t *spec_rom_48k_image(void);
+void spec_set_tape_rom(const uint8_t *page);
+
+// ============================================================================
 // Keyboard
 // ============================================================================
 //
@@ -216,6 +231,17 @@ void spec_key_ascii(char c);
 
 /* Press or release a matrix position directly. row 0-7, bit 0-4. */
 void spec_key_set(uint8_t row, uint8_t bit, bool pressed);
+
+/*
+ * Type a string, one character every few frames.
+ *
+ * `s` must outlive the typing -- a string literal or a static buffer --
+ * because nothing here copies it. `delay_frames` is how long to wait
+ * before the first character, which is what lets a caller cold-start the
+ * machine and then type into the prompt the ROM has not put up yet.
+ */
+void spec_type(const char *s, unsigned delay_frames);
+void spec_type_cancel(void);
 
 /* Called once per frame to time out keys pressed by spec_key_ascii(). */
 void spec_key_tick(void);

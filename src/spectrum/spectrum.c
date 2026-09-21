@@ -15,6 +15,7 @@
 #include "audio.h"
 #include "ay.h"
 #include "dino.h"
+#include "tape.h"
 #include "z80_bus.h"
 
 // ============================================================================
@@ -99,6 +100,34 @@ static uint8_t ay_sel;          // which chip the ports are talking to
 // Paging
 // ============================================================================
 
+/*
+ * A stand-in for the 48K BASIC ROM, or NULL.
+ *
+ * src/spectrum/tape.c installs a patched copy of that ROM here so a call
+ * to LD-BYTES lands in its own code instead. It goes through the paging
+ * function rather than being mapped directly because the CPU can page the
+ * ROM out and back at any moment, and the patch has to survive that: a
+ * 128K game loading from tape sits in ROM 1 while it loads and returns to
+ * ROM 0 afterwards.
+ */
+static const uint8_t *tape_rom;
+
+static void apply_paging(void);
+
+const uint8_t *spec_rom_48k_image(void) {
+    return spec_machine == MACHINE_48K ? spec_rom48 : spec_rom1;
+}
+
+void spec_set_tape_rom(const uint8_t *page) {
+    tape_rom = page;
+    apply_paging();
+}
+
+/* The 48K BASIC ROM, or the patched copy standing in for it. */
+static const uint8_t *basic_rom(void) {
+    return tape_rom ? tape_rom : spec_rom_48k_image();
+}
+
 static void apply_paging(void) {
     const uint8_t v = spec_port_7ffd;
 
@@ -109,7 +138,7 @@ static void apply_paging(void) {
      * responsible for the memory map.
      */
     if (spec_machine == MACHINE_48K) {
-        z80_map_page(0, (uint8_t *)spec_rom48, NULL);
+        z80_map_page(0, (uint8_t *)basic_rom(), NULL);
         z80_map_page(1, spec_ram[5], spec_ram[5]);
         z80_map_page(2, spec_ram[2], spec_ram[2]);
         z80_map_page(3, spec_ram[0], spec_ram[0]);
@@ -120,7 +149,7 @@ static void apply_paging(void) {
     // Bottom window: ROM 1 (48K BASIC) when bit 4 is set, ROM 0 otherwise.
     // Read-only, which here means "its write pointer goes to the bucket".
     const uint8_t *rom0 = (spec_machine == MACHINE_PLUS2) ? spec_romp2 : spec_rom0;
-    z80_map_page(0, (uint8_t *)((v & 0x10) ? spec_rom1 : rom0), NULL);
+    z80_map_page(0, (uint8_t *)((v & 0x10) ? basic_rom() : rom0), NULL);
 
     // The two fixed windows never move. Mapped every time anyway, because
     // the cost is two stores on a path taken a few hundred times a second
@@ -191,6 +220,14 @@ bool spec_launch_pending(void) { return tramp_active; }
  * selected by A15/A1. Neither is visible in the low byte alone.
  */
 static void spec_io_out(const uint16_t port, const uint8_t value) {
+    /*
+     * The tape trap first, and it only ever answers when a patched ROM
+     * is mapped -- nothing else on the machine can reach the port it
+     * uses, because the only code that knows about it is code this
+     * firmware wrote into the ROM window itself.
+     */
+    if (tape_port_out(port, value)) return;
+
     if ((port & 0x0001) == 0) {                 // the ULA
         spec_border = value & 0x07;
 
@@ -252,6 +289,9 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
 }
 
 static uint8_t spec_io_in(const uint16_t port) {
+    uint8_t tape;
+    if (tape_port_in(port, &tape)) return tape;
+
     if ((port & 0x0001) == 0) {                 // the ULA: keyboard
         uint8_t result = 0x1F;                  // five keys, all up
 
@@ -426,8 +466,46 @@ void spec_key_ascii(char c) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Typing a whole line
+// ---------------------------------------------------------------------------
+/*
+ * One character per few frames, with a gap between them.
+ *
+ * The gap is the point. spec_key_ascii() presses a key and holds it for
+ * three frames, and the ROM's debounce will not register a second press
+ * until it has seen the key released -- so a string fed straight in
+ * arrives as one character. Feeding it on a timer, with the release
+ * visible in between, is what makes LOAD "" typeable from here.
+ *
+ * The initial delay exists because the thing that wants this is a tape
+ * being mounted, which cold-starts the machine first: the ROM needs a
+ * second to clear memory and put up a menu before it is listening.
+ */
+static const char *type_str;
+static unsigned    type_wait;
+
+#define TYPE_GAP_FRAMES   4
+
+void spec_type(const char *s, const unsigned delay_frames) {
+    type_str  = s;
+    type_wait = delay_frames;
+}
+
+void spec_type_cancel(void) { type_str = NULL; }
+
+static void type_tick(void) {
+    if (!type_str) return;
+    if (type_wait) { type_wait--; return; }
+    if (held_count) return;             // still finishing the last one
+
+    if (!*type_str) { type_str = NULL; return; }
+    spec_key_ascii(*type_str++);
+    type_wait = TYPE_GAP_FRAMES;
+}
+
 void spec_key_tick(void) {
-    if (!held_count) return;
+    if (!held_count) { type_tick(); return; }
     if (held_frames) { held_frames--; return; }
 
     for (unsigned i = 0; i < held_count; i++)
@@ -451,6 +529,7 @@ void spec_init(void) {
     spec_ay_writes = 0;
 
     esc_state      = 0;
+    type_str       = NULL;
     paging_locked  = false;
     spec_port_7ffd = 0;
     spec_border    = 7;
@@ -594,6 +673,10 @@ static void pause_point(void) {
 void spec_set_machine(const machine_t m) {
     if (m >= MACHINE_COUNT) return;
     spec_machine = m;
+    // A 48K's BASIC ROM and a 128K's ROM 1 are different images, so a
+    // patched copy of one is not a patched copy of the other. Anything
+    // mounted has to be re-patched before the new machine is started.
+    tape_machine_changed();
     spec_init();
 }
 
