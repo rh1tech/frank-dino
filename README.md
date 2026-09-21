@@ -126,6 +126,10 @@ Inside the browser: the arrows move, Enter opens, Backspace goes up, any
 letter or digit jumps to the next entry beginning with it, backslash
 opens the settings page, and Tab goes back to the machine.
 
+With a real keyboard (a `USB_KEYBOARD=ON` build) the browser is on **F1**
+rather than Tab, because every key a Spectrum has belongs to the matrix
+— and that build has no console to press Tab at.
+
 ## What the board gives the Z80
 
 | Part | This firmware |

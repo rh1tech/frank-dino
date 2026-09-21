@@ -18,7 +18,8 @@ target_sources(usbkbd INTERFACE ${CMAKE_CURRENT_LIST_DIR}/usbkbd.c)
 # goes on the include path of everything that pulls TinyUSB in.
 target_include_directories(usbkbd INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}
-        ${CMAKE_CURRENT_LIST_DIR}/../../spectrum)
+        ${CMAKE_CURRENT_LIST_DIR}/../../spectrum
+        ${CMAKE_CURRENT_LIST_DIR}/../../ui)
 
 target_link_libraries(usbkbd INTERFACE
         tinyusb_host

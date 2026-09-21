@@ -357,6 +357,19 @@ int main(void) {
         audio_task();
 #if USB_KEYBOARD
         usbkbd_task();
+
+        /*
+         * F1, asked for from inside a TinyUSB callback and acted on here.
+         *
+         * In this build the keyboard is the only input there is, so this
+         * is the only way into the browser -- there is no console to
+         * press Tab at.
+         */
+        if (usbkbd_take_menu_request() && spectrum_running) {
+            usbkbd_release_all();       // nothing left held on the way in
+            menu_run();
+            usbkbd_release_all();       // ...or on the way out
+        }
 #endif
         scr_pump();
 

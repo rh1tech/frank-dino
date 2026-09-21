@@ -43,6 +43,23 @@ multicolour effects — will run, and run wrong.
 returns whatever the ULA was fetching at that instant, which a few
 loading effects depend on and which needs the same shared clock.
 
+## Getting to the browser
+
+| | Console build | USB keyboard build |
+|---|---|---|
+| Open the file browser | **Tab** | **F1** |
+| Leave it | Tab | F1, Tab or Escape |
+
+It has to be F1 on a real keyboard because every key a Spectrum has
+belongs to the matrix, and Tab is a joystick fire button. And it has to
+be *something*, because a USB_KEYBOARD build has no console to press Tab
+at: S1 has given those pins to the host controller, so if the keyboard
+cannot reach the browser then nothing can.
+
+Inside the browser: the arrows move, Enter opens, Backspace goes up, any
+letter or digit jumps to the next entry beginning with it, and backslash
+opens the settings page.
+
 ## Settings
 
 Backslash in the file browser opens the settings page. Arrows move, left

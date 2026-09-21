@@ -18,13 +18,21 @@
 #include <bsp/board_api.h>
 #include <tusb.h>
 
+#include "menu.h"
 #include "settings.h"
 #include "spectrum.h"
 
 static bool    mounted;
 static uint8_t last_report[8];
+static bool    menu_wanted;
 
 bool usbkbd_present(void) { return mounted; }
+
+bool usbkbd_take_menu_request(void) {
+    const bool w = menu_wanted;
+    menu_wanted = false;
+    return w;
+}
 
 // ---------------------------------------------------------------------------
 // USB HID usage codes to the Spectrum's matrix
@@ -149,13 +157,17 @@ static int joy_dir(const uint8_t usage) {
     }
 }
 
-static void apply_report(const uint8_t *r) {
+void usbkbd_release_all(void) {
     for (uint8_t row = 0; row < 8; row++)
         for (uint8_t bit = 0; bit < 5; bit++)
             spec_key_set(row, bit, false);
+    for (uint8_t b = 0; b <= JOY_BIT_FIRE; b++) spec_joy_set(b, false);
+}
+
+static void apply_report(const uint8_t *r) {
+    usbkbd_release_all();
 
     const bool arrows_are_joy = settings.joystick != JOY_NONE && settings.cursor_as_joy;
-    for (uint8_t b = 0; b <= JOY_BIT_FIRE; b++) spec_joy_set(b, false);
 
     const uint8_t mods = r[0];
     bool caps = (mods & 0x22) != 0;         // either Shift
@@ -227,12 +239,94 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
     printf("[usbkbd] keyboard gone\n");
 }
 
+// ---------------------------------------------------------------------------
+// The menu, which is not the Spectrum
+// ---------------------------------------------------------------------------
+/*
+ * F1 opens the file browser, and while it is open the keyboard drives
+ * that instead of the machine.
+ *
+ * It has to be a key the Spectrum has not got, because every key it has
+ * belongs to the matrix -- and in a USB_KEYBOARD build there is no
+ * console to press Tab at, so if the keyboard cannot reach the browser
+ * then nothing can.
+ *
+ * What the browser wants is bytes, the same ones a terminal sends: a
+ * cursor key is ESC, '[' and a letter. That is why menu_key() feeds a
+ * queue rather than a single slot.
+ */
+#define HID_F1 0x3A
+
+static bool is_new(const uint8_t *now, const uint8_t *before, const uint8_t usage) {
+    for (int i = 2; i < 8; i++) if (before[i] == usage) return false;
+    for (int i = 2; i < 8; i++) if (now[i] == usage)    return true;
+    return false;
+}
+
+/* Send a cursor key as the three bytes the browser reassembles. */
+static void menu_arrow(const char last) {
+    menu_key(0x1B);
+    menu_key('[');
+    menu_key(last);
+}
+
+/*
+ * Turn newly-pressed keys into browser input.
+ *
+ * Newly pressed, not pressed: a boot-protocol keyboard repeats the same
+ * report while a key is held, and a menu that took every one of them
+ * would scroll a directory past in a blink.
+ */
+static void feed_menu(const uint8_t *now, const uint8_t *before) {
+    for (int i = 2; i < 8; i++) {
+        const uint8_t u = now[i];
+        if (!u || !is_new(now, before, u)) continue;
+
+        switch (u) {
+            case 0x52: menu_arrow('A'); break;      // up
+            case 0x51: menu_arrow('B'); break;      // down
+            case 0x4F: menu_arrow('C'); break;      // right
+            case 0x50: menu_arrow('D'); break;      // left
+            case 0x28: menu_key('\r'); break;       // enter
+            case 0x2A: menu_key(0x7F); break;       // backspace
+            case HID_F1:
+            case 0x29:                              // escape
+            case 0x2B: menu_key('\t'); break;       // tab: leave
+            case 0x31: menu_key('\\'); break;       // backslash: settings
+            default: {
+                // Everything printable, so that typing a letter jumps to
+                // the next file beginning with it.
+                if (u >= 0x04 && u <= 0x1D)      menu_key((char)('a' + (u - 0x04)));
+                else if (u >= 0x1E && u <= 0x26) menu_key((char)('1' + (u - 0x1E)));
+                else if (u == 0x27)              menu_key('0');
+                else if (u == 0x2D)              menu_key('-');
+                else if (u == 0x2C)              menu_key(' ');
+                break;
+            }
+        }
+    }
+}
+
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
                                 uint8_t const *report, uint16_t len) {
     if (tuh_hid_interface_protocol(dev_addr, instance) == HID_ITF_PROTOCOL_KEYBOARD &&
         len >= 8) {
+        uint8_t before[8];
+        memcpy(before, last_report, 8);
         memcpy(last_report, report, 8);
-        apply_report(last_report);
+
+        if (menu_is_open()) {
+            feed_menu(last_report, before);
+        } else if (is_new(last_report, before, HID_F1)) {
+            /*
+             * Asked for, not opened. This runs inside tuh_task(), and
+             * the browser is modal and calls tuh_task() itself -- so it
+             * is started from the main loop once this has returned.
+             */
+            menu_wanted = true;
+        } else {
+            apply_report(last_report);
+        }
     }
 
     // Ask for the next one. Forgetting this is the classic way to get a

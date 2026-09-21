@@ -42,3 +42,15 @@ void usbkbd_task(void);
 
 /* Whether anything has enumerated, for the boot report. */
 bool usbkbd_present(void);
+
+/*
+ * Has F1 been pressed since this was last asked?
+ *
+ * The browser is modal and services the host stack itself, so it cannot
+ * be started from inside a TinyUSB callback. The callback raises this
+ * and the main loop acts on it once tuh_task() has returned.
+ */
+bool usbkbd_take_menu_request(void);
+
+/* Let go of every key and every joystick direction. */
+void usbkbd_release_all(void);

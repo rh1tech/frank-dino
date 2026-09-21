@@ -14,6 +14,9 @@
 #include <pico/stdlib.h>
 
 #include "audio.h"
+#if USB_KEYBOARD
+#include "usbkbd.h"
+#endif
 #include "loader.h"
 #include "options.h"
 #include "settings.h"
@@ -39,7 +42,7 @@ static bool  loaded_something;
 static char  status[VGA_COLS];
 
 /*
- * A mailbox for keys that arrive from somewhere other than the console.
+ * A small queue of keys that arrive from somewhere other than the console.
  *
  * While the menu is open it reads stdin itself, because it is modal: the
  * main loop is blocked inside menu_run() and cannot deliver anything.
@@ -47,10 +50,15 @@ static char  status[VGA_COLS];
  * keypress -- the menu drew once and then waited for ever for a key that
  * only the blocked loop could have handed it.
  *
- * The mailbox survives for the USB keyboard, which arrives through a
- * TinyUSB callback rather than through stdin.
+ * The queue is for the USB keyboard, which arrives through a TinyUSB
+ * callback rather than through stdin. A queue and not a single slot,
+ * because a cursor key is three bytes -- ESC, '[', then a letter -- and
+ * a mailbox that holds one of them delivers the last and loses the shape.
  */
-static volatile int pending_key = -1;
+#define KEYQ_SIZE 16
+
+static volatile uint8_t keyq[KEYQ_SIZE];
+static volatile uint8_t keyq_head, keyq_tail;
 
 /*
  * The settings page asking for the listing to be read again.
@@ -62,7 +70,12 @@ static volatile int pending_key = -1;
 bool menu_rescan_wanted;
 
 bool menu_is_open(void) { return open_; }
-void menu_key(const char c) { pending_key = (unsigned char)c; }
+void menu_key(const char c) {
+    const uint8_t h = keyq_head;
+    if ((uint8_t)(h - keyq_tail) >= KEYQ_SIZE) return;   // full; drop it
+    keyq[h % KEYQ_SIZE] = (uint8_t)c;
+    keyq_head = (uint8_t)(h + 1);
+}
 
 // ---------------------------------------------------------------------------
 // Drawing
@@ -228,8 +241,23 @@ int menu_wait_key(void) {
     for (;;) {
         audio_task();
 
-        const int k = pending_key;
-        if (k >= 0) { pending_key = -1; return k; }
+#if USB_KEYBOARD
+        /*
+         * And keep the host stack running.
+         *
+         * This is modal: the main loop is inside it, so nothing else is
+         * calling tuh_task(). Without this the keyboard's reports stop
+         * being collected the moment the menu opens, and the menu waits
+         * for ever for a key it has made itself unable to receive.
+         */
+        usbkbd_task();
+#endif
+
+        if (keyq_tail != keyq_head) {
+            const uint8_t k = keyq[keyq_tail % KEYQ_SIZE];
+            keyq_tail = (uint8_t)(keyq_tail + 1);
+            return k;
+        }
 
         const int c = getchar_timeout_us(0);
         if (c != PICO_ERROR_TIMEOUT) return c;
