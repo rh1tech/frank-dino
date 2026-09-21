@@ -15,6 +15,9 @@
 #include "audio.h"
 #include "ay.h"
 #include "beta.h"
+#include "dck.h"
+#include "divmmc.h"
+#include "fdc.h"
 #include "dino.h"
 #include "settings.h"
 #include "tape.h"
@@ -28,6 +31,23 @@
 // microSD slot that nothing reads yet, and a machine that cannot start
 // without a file on a card is a machine that cannot be tested by a
 // script. See roms/README.md for where these two came from.
+/*
+ * The ROM masters live in flash; what the CPU reads is a copy in SRAM.
+ *
+ * The bus engine reads the bottom window on every opcode fetch, and an
+ * XIP miss there stretches a clock phase by a microsecond -- so the
+ * pages that are mapped have to be in SRAM. But only the running
+ * machine's are mapped, and ten images at sixteen kilobytes is a hundred
+ * and sixty kilobytes of a part with five hundred and twelve.
+ *
+ * So these stay in flash and rom_window[] below holds the set the
+ * current machine can page. Filling it costs a memcpy on a machine
+ * switch, which already resets the machine, and it means adding a
+ * machine costs flash rather than SRAM.
+ */
+/* Overridable so the host tests can supply a Mach-O form of the same
+ * thing and link the real ROM images rather than a stand-in. */
+#ifndef IMPORT_BIN
 #define IMPORT_BIN(file, sym) asm (\
     ".section .rodata." #sym "\n" \
     ".balign 4\n"                 \
@@ -36,19 +56,125 @@
     ".incbin \"" file "\"\n"      \
     ".balign 4\n"                 \
     ".section \".text\"\n")
+#endif
 
 IMPORT_BIN("roms/128-0.rom", spec_rom0);
 IMPORT_BIN("roms/128-1.rom", spec_rom1);
 IMPORT_BIN("roms/48.rom",    spec_rom48);
 IMPORT_BIN("roms/plus2.rom", spec_romp2);
+IMPORT_BIN("roms/plus3-0.rom", spec_romp3_0);
+IMPORT_BIN("roms/plus3-1.rom", spec_romp3_1);
+IMPORT_BIN("roms/plus3-2.rom", spec_romp3_2);
+IMPORT_BIN("roms/plus3-3.rom", spec_romp3_3);
+IMPORT_BIN("roms/scorpion-0.rom", spec_romsc_0);
+IMPORT_BIN("roms/scorpion-1.rom", spec_romsc_1);
+IMPORT_BIN("roms/scorpion-2.rom", spec_romsc_2);
+IMPORT_BIN("roms/scorpion-3.rom", spec_romsc_3);
+IMPORT_BIN("roms/profi-0.rom", spec_rompr_0);
+IMPORT_BIN("roms/profi-1.rom", spec_rompr_1);
+IMPORT_BIN("roms/profi-2.rom", spec_rompr_2);
+IMPORT_BIN("roms/profi-3.rom", spec_rompr_3);
+IMPORT_BIN("roms/timex-home.rom", spec_romtx_home);
+IMPORT_BIN("roms/timex-exrom.rom", spec_romtx_ex);
+IMPORT_BIN("roms/esxdos.rom", spec_romesx);
 IMPORT_BIN("roms/pentagon-0.rom", spec_rompent);
 IMPORT_BIN("roms/trdos.rom", spec_romtrd);
 extern const uint8_t spec_rom0[SPEC_BANK_SIZE];
 extern const uint8_t spec_rom1[SPEC_BANK_SIZE];
 extern const uint8_t spec_rom48[SPEC_BANK_SIZE];
 extern const uint8_t spec_romp2[SPEC_BANK_SIZE];
+extern const uint8_t spec_romp3_0[SPEC_BANK_SIZE];
+extern const uint8_t spec_romp3_1[SPEC_BANK_SIZE];
+extern const uint8_t spec_romp3_2[SPEC_BANK_SIZE];
+extern const uint8_t spec_romp3_3[SPEC_BANK_SIZE];
+extern const uint8_t spec_romsc_0[SPEC_BANK_SIZE];
+extern const uint8_t spec_romsc_1[SPEC_BANK_SIZE];
+extern const uint8_t spec_romsc_2[SPEC_BANK_SIZE];
+extern const uint8_t spec_romsc_3[SPEC_BANK_SIZE];
+extern const uint8_t spec_rompr_0[SPEC_BANK_SIZE];
+extern const uint8_t spec_rompr_1[SPEC_BANK_SIZE];
+extern const uint8_t spec_rompr_2[SPEC_BANK_SIZE];
+extern const uint8_t spec_rompr_3[SPEC_BANK_SIZE];
+extern const uint8_t spec_romtx_home[SPEC_BANK_SIZE];
+extern const uint8_t spec_romtx_ex[8192];
+extern const uint8_t spec_romesx[8192];
 extern const uint8_t spec_rompent[SPEC_BANK_SIZE];
 extern const uint8_t spec_romtrd[SPEC_BANK_SIZE];
+
+/*
+ * The pages the running machine can put in the bottom window.
+ *
+ * Four ROM slots because that is what the widest machine here pages --
+ * a +3 selects one of four with #7FFD bit 4 and #1FFD bit 2 -- plus the
+ * Beta Disk's, which can replace any of them. Machines with fewer ROMs
+ * leave the spare slots holding whatever was copied last; nothing maps
+ * them, so nothing reads them.
+ */
+enum { ROMW_0 = 0, ROMW_1, ROMW_2, ROMW_3, ROMW_TRDOS, ROMW_SLOTS };
+static uint8_t rom_window[ROMW_SLOTS][SPEC_BANK_SIZE] __attribute__((aligned(4)));
+
+/*
+ * Which window slot holds the 48K BASIC ROM on this machine.
+ *
+ * It is the one with LD-BYTES in it, so it is the one the tape trap
+ * patches -- and it moves: a 48K has it as its only ROM, the 128K
+ * family as ROM 1, and a +3 as ROM 3.
+ */
+static unsigned basic_slot(const machine_t m) {
+    if (m == MACHINE_48K)   return ROMW_0;
+    if (m == MACHINE_PLUS3) return ROMW_3;
+    if (m == MACHINE_TIMEX) return ROMW_0;      /* not a Sinclair ROM; no trap lands */
+    return ROMW_1;
+}
+
+uint8_t *spec_basic_slot(void) { return rom_window[basic_slot(spec_machine)]; }
+
+/* The flash master a slot is filled from, per machine. */
+static void rom_load_window(const machine_t m) {
+    if (m == MACHINE_SCORPION || m == MACHINE_PROFI) {
+        /*
+         * Four each: 0 BASIC-128, 1 BASIC-48, 2 the service monitor and
+         * 3 TR-DOS. The Scorpion's ROM number is built from three
+         * latches and the Profi's from two, but the slots mean the same
+         * thing in both.
+         */
+        const uint8_t *const *r = (m == MACHINE_SCORPION)
+            ? (const uint8_t *const[]){ spec_romsc_0, spec_romsc_1, spec_romsc_2, spec_romsc_3 }
+            : (const uint8_t *const[]){ spec_rompr_0, spec_rompr_1, spec_rompr_2, spec_rompr_3 };
+        for (int i = 0; i < 4; i++) memcpy(rom_window[i], r[i], SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_TRDOS], spec_romtrd, SPEC_BANK_SIZE);
+        return;
+    }
+
+    if (m == MACHINE_TIMEX) {
+        /* One 16 KB home ROM, and the 8 KB EX-ROM in the slot above it. */
+        memcpy(rom_window[ROMW_0], spec_romtx_home, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_1], spec_romtx_home, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_2], spec_romtx_ex, 8192);
+        memcpy(rom_window[ROMW_TRDOS], spec_romtrd, SPEC_BANK_SIZE);
+        return;
+    }
+
+    if (m == MACHINE_PLUS3) {
+        /* Four of its own: 0 editor, 1 syntax, 2 +3DOS, 3 48K BASIC. */
+        memcpy(rom_window[ROMW_0], spec_romp3_0, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_1], spec_romp3_1, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_2], spec_romp3_2, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_3], spec_romp3_3, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_TRDOS], spec_romtrd, SPEC_BANK_SIZE);
+        return;
+    }
+
+    const uint8_t *r0 = (m == MACHINE_PLUS2)    ? spec_romp2
+                      : (m == MACHINE_PENTAGON) ? spec_rompent
+                      : (m == MACHINE_48K)      ? spec_rom48
+                                                : spec_rom0;
+    const uint8_t *r1 = (m == MACHINE_48K) ? spec_rom48 : spec_rom1;
+
+    memcpy(rom_window[ROMW_0], r0, SPEC_BANK_SIZE);
+    memcpy(rom_window[ROMW_1], r1, SPEC_BANK_SIZE);
+    memcpy(rom_window[ROMW_TRDOS], spec_romtrd, SPEC_BANK_SIZE);
+}
 
 machine_t spec_machine = MACHINE_128K;
 
@@ -56,6 +182,10 @@ const char *spec_machine_name(void) {
     switch (spec_machine) {
         case MACHINE_48K:      return "ZX Spectrum 48K";
         case MACHINE_PLUS2:    return "ZX Spectrum +2";
+        case MACHINE_PLUS3:    return "ZX Spectrum +3";
+        case MACHINE_SCORPION: return "Scorpion ZS-256";
+        case MACHINE_PROFI:    return "Profi 1024";
+        case MACHINE_TIMEX:    return "Timex TC2068";
         case MACHINE_PENTAGON: return "Pentagon 128";
         default:               return "ZX Spectrum 128K";
     }
@@ -92,9 +222,63 @@ uint32_t spec_frame_tstates(void) {
 // ============================================================================
 uint8_t spec_ram[SPEC_RAM_BANKS][SPEC_BANK_SIZE] __attribute__((aligned(4)));
 
+/* The banks above the first eight, and the one of them that is mapped. */
+static uint8_t spec_ram_ext[SPEC_MAX_BANKS - SPEC_RAM_BANKS][SPEC_BANK_SIZE]
+    __attribute__((section(".psram")));
+static uint8_t bank_stage[SPEC_BANK_SIZE] __attribute__((aligned(4)));
+static int     staged_bank = -1;
+
+void spec_bank_flush(void) {
+    if (staged_bank < (int)SPEC_RAM_BANKS) return;
+    memcpy(spec_ram_ext[staged_bank - SPEC_RAM_BANKS], bank_stage, SPEC_BANK_SIZE);
+    staged_bank = -1;
+}
+
+/*
+ * This runs inside an OUT, on the clock path.
+ *
+ * A switch between two high banks is two 16 KB PSRAM transfers, a few
+ * hundred microseconds, and for that long the Z80's clock stops
+ * advancing. The CPU is static so nothing is lost, but the frame it
+ * happens in is late -- which is the price of a 1 MB machine on a part
+ * with 512 KB, and the reason the early return below matters: the cost
+ * is per actual change of the mapped high bank, not per paging write.
+ */
+uint8_t *spec_bank_ptr(const unsigned bank) {
+    if (bank < SPEC_RAM_BANKS) return spec_ram[bank];
+    if (bank >= SPEC_MAX_BANKS) return spec_ram[bank & 7u];   /* nothing there */
+    if (staged_bank == (int)bank) return bank_stage;
+
+    /*
+     * The outgoing bank has to go back first. A program that pages one
+     * high bank out, writes to another and pages the first back in
+     * would otherwise find its own writes in the wrong place -- which
+     * is the bug this whole arrangement exists to avoid and the only
+     * one it can introduce.
+     */
+    spec_bank_flush();
+    memcpy(bank_stage, spec_ram_ext[bank - SPEC_RAM_BANKS], SPEC_BANK_SIZE);
+    staged_bank = (int)bank;
+    return bank_stage;
+}
+
 volatile uint8_t  spec_screen_bank = 5;
+volatile uint8_t  spec_port_1ffd   = 0;   /* the +3's and Scorpion's second latch */
+volatile uint8_t  spec_port_dffd   = 0;   /* the Profi's third */
+volatile uint8_t  spec_timex_hsr   = 0;   /* the Timex's 8 KB chunk select */
+volatile bool     spec_timex_exrom = false;
 volatile uint8_t  spec_border      = 7;
 volatile bool     spec_flash       = false;
+
+/* ULA+, see spectrum.h. */
+volatile bool    spec_ulaplus_on;
+volatile uint8_t spec_ulaplus_reg;
+uint8_t          spec_ulaplus_pal[64];
+volatile bool    spec_ulaplus_dirty;
+
+/* Timex SCLD, see spectrum.h. */
+volatile uint8_t spec_timex_mode;
+volatile uint8_t spec_timex_ink;
 volatile uint32_t spec_frames      = 0;
 volatile uint8_t  spec_port_7ffd   = 0;
 
@@ -167,25 +351,61 @@ static volatile uint8_t sd_level[4];
  * 128K game loading from tape sits in ROM 1 while it loads and returns to
  * ROM 0 afterwards.
  */
-static const uint8_t *tape_rom;
 
 static void apply_paging(void);
 
-const uint8_t *spec_rom_48k_image(void) {
-    return spec_machine == MACHINE_48K ? spec_rom48 : spec_rom1;
-}
-
-void spec_set_tape_rom(const uint8_t *page) {
-    tape_rom = page;
-    apply_paging();
-}
-
-/* The 48K BASIC ROM, or the patched copy standing in for it. */
+/*
+ * The 48K BASIC ROM as the CPU sees it.
+ *
+ * The window slot itself, patched in place by the tape trap rather than
+ * copied into a private buffer first. There used to be a second 16 KB
+ * of SRAM holding that copy, which was the same image twice over -- and
+ * worse, a copy that could be of the WRONG machine's ROM, because a
+ * 48K's BASIC and a 128K's ROM 1 are different images.
+ *
+ * Patching the window cannot go stale: rom_load_window() refills it
+ * from flash on every reset, and spec_init() asks the tape to put its
+ * stub back afterwards.
+ */
 static const uint8_t *basic_rom(void) {
-    return tape_rom ? tape_rom : spec_rom_48k_image();
+    return rom_window[basic_slot(spec_machine)];
 }
 
-static void apply_paging(void) {
+static void apply_machine_paging(void);
+static void apply_divmmc(void);
+
+/*
+ * The map, then what is laid over it.
+ *
+ * apply_machine_paging() has a return for every machine, so an overlay
+ * cannot be a few lines at the bottom of it -- it has to be here, after
+ * whichever arm ran. The Beta Disk is handled inside because its ROM
+ * replaces a whole 16 KB window and every arm needs to know; DivMMC is
+ * two 8 KB windows on top of any of them.
+ */
+static void __not_in_flash_func(apply_paging)(void) {
+    apply_machine_paging();
+    apply_divmmc();
+}
+
+void apply_paging_hook(void) { apply_paging(); }
+
+/*
+ * The interface overlay: DivMMC replaces the bottom two 8 KB windows.
+ *
+ * It sits on top of whatever the machine's own paging worked out, the
+ * way the Beta Disk's ROM does -- so the body below decides the map and
+ * this has the last word on the first sixteen kilobytes of it.
+ */
+static void __not_in_flash_func(apply_divmmc)(void) {
+    if (!divmmc_mapped()) return;
+    uint8_t *lo = divmmc_page_lo();
+    z80_map_page8(0, lo, divmmc_lo_writable() ? lo : NULL);
+    uint8_t *hi = divmmc_page_hi();
+    z80_map_page8(1, hi, hi);
+}
+
+static void __not_in_flash_func(apply_machine_paging)(void) {
     const uint8_t v = spec_port_7ffd;
 
     /*
@@ -198,7 +418,7 @@ static void apply_paging(void) {
      * of the function only decides what is underneath it.
      */
     if (unlikely(beta_rom_paged())) {
-        z80_map_page(0, (uint8_t *)spec_romtrd, NULL);
+        z80_map_page(0, rom_window[ROMW_TRDOS], NULL);
         if (spec_machine == MACHINE_48K) {
             z80_map_page(1, spec_ram[5], spec_ram[5]);
             z80_map_page(2, spec_ram[2], spec_ram[2]);
@@ -228,12 +448,157 @@ static void apply_paging(void) {
         return;
     }
 
+    if (spec_machine == MACHINE_TIMEX) {
+        /*
+         * The Timex pages in eight 8 KB chunks, which is why the bus
+         * engine has eight windows.
+         *
+         * A clear bit in the HSR means HOME -- the ordinary machine, a
+         * 16 KB ROM and 48 KB of RAM. A set bit means the chunk comes
+         * from the cartridge dock or the EX-ROM instead, chosen for the
+         * WHOLE map by bit 7 of the SCLD's port.
+         *
+         * The EX-ROM is one 8 KB image and appears in every slot the HSR
+         * selects, which is what Fuse and MAME both do. The dock holds
+         * whatever .dck is mounted, chunk by chunk, and a chunk the
+         * cartridge does not fill reads as an open bus.
+         */
+        uint8_t *home_rd[8] = {
+            rom_window[ROMW_0], rom_window[ROMW_0] + 8192,
+            spec_ram[5], spec_ram[5] + 8192,
+            spec_ram[2], spec_ram[2] + 8192,
+            spec_ram[0], spec_ram[0] + 8192,
+        };
+        uint8_t *home_wr[8] = {
+            NULL, NULL,
+            spec_ram[5], spec_ram[5] + 8192,
+            spec_ram[2], spec_ram[2] + 8192,
+            spec_ram[0], spec_ram[0] + 8192,
+        };
+
+        for (unsigned i = 0; i < 8; i++) {
+            if (!(spec_timex_hsr & (1u << i))) {
+                z80_map_page8(i, home_rd[i], home_wr[i]);
+            } else if (spec_timex_exrom) {
+                z80_map_page8(i, rom_window[ROMW_2], NULL);
+            } else {
+                /* The dock. A chunk the cartridge did not fill holds
+                 * 0xFF, which is what an empty socket reads. */
+                uint8_t *c = dck_chunk(i);
+                z80_map_page8(i, c, dck_writable(i) ? c : NULL);
+            }
+        }
+        spec_screen_bank = 5;
+        return;
+    }
+
+    if (spec_machine == MACHINE_SCORPION) {
+        const uint8_t w = spec_port_1ffd;
+
+        /*
+         * The ROM number, from MAME's hardware-derived function:
+         *
+         *     rom = 1FFD D1 ? 2 : ((dos << 1) | 7FFD D4)
+         *
+         * and the quirk that IS the hardware comes with it -- in DOS
+         * with the 128 ROM selected the SERVICE page appears, not
+         * TR-DOS. Normal TR-DOS software always runs with D4 set, which
+         * is why nobody trips over it.
+         */
+        const bool dos = beta_rom_paged();
+        const unsigned rn = (w & 0x02u) ? 2u
+                          : ((dos ? 2u : 0u) | ((v & 0x10u) ? 1u : 0u));
+
+        /* D0 puts RAM bank 0 at #0000 instead of any ROM. */
+        if (w & 0x01u) z80_map_page(0, spec_ram[0], spec_ram[0]);
+        else           z80_map_page(0, (uint8_t *)((rn == 1) ? basic_rom()
+                                                            : rom_window[rn]), NULL);
+
+        z80_map_page(1, spec_ram[5], spec_ram[5]);
+        z80_map_page(2, spec_ram[2], spec_ram[2]);
+
+        /* 256 KB: #1FFD D4 is the fourth bit of the #C000 page. */
+        const unsigned bank = (v & 0x07u) | ((w & 0x10u) >> 1);
+        uint8_t *p = spec_bank_ptr(bank);
+        z80_map_page(3, p, p);
+
+        spec_screen_bank = (v & 0x08) ? 7 : 5;
+        return;
+    }
+
+    if (spec_machine == MACHINE_PROFI) {
+        const uint8_t d = spec_port_dffd;
+
+        /* D4 maps RAM page 0 at #0000; otherwise the ordinary pair. */
+        if (d & 0x10u) z80_map_page(0, spec_ram[0], spec_ram[0]);
+        else           z80_map_page(0, (uint8_t *)((v & 0x10) ? basic_rom()
+                                                             : rom_window[ROMW_0]), NULL);
+
+        z80_map_page(1, spec_ram[5], spec_ram[5]);
+
+        /* D6 (SCR) puts page 6 at #8000 in place of page 2. */
+        const unsigned b2 = (d & 0x40u) ? 6u : 2u;
+        z80_map_page(2, spec_ram[b2], spec_ram[b2]);
+
+        /*
+         * 1 MB: #7FFD's three bits are the page within a group and
+         * #DFFD's three are the group, so eight groups of eight.
+         */
+        const unsigned bank = (v & 0x07u) | ((d & 0x07u) << 3);
+        uint8_t *p = spec_bank_ptr(bank);
+        z80_map_page(3, p, p);
+
+        spec_screen_bank = (v & 0x08) ? 7 : 5;
+        return;
+    }
+
+    if (spec_machine == MACHINE_PLUS3) {
+        const uint8_t w = spec_port_1ffd;
+
+        if (w & 0x01u) {
+            /*
+             * Special mode: no ROM at all, four banks of RAM straight
+             * through, chosen by bits 2-1. This is how +3DOS gets a
+             * contiguous 64K to work in, and it is the reason the +3
+             * needs a second latch rather than another bit in #7FFD.
+             */
+            static const uint8_t cfg[4][4] = {
+                { 0, 1, 2, 3 },
+                { 4, 5, 6, 7 },
+                { 4, 5, 6, 3 },
+                { 4, 7, 6, 3 },
+            };
+            const uint8_t *map = cfg[(w >> 1) & 3u];
+            for (int i = 0; i < 4; i++)
+                z80_map_page(i, spec_ram[map[i]], spec_ram[map[i]]);
+            /* The screen still follows #7FFD bit 3, whatever is paged. */
+            spec_screen_bank = (v & 0x08) ? 7 : 5;
+            return;
+        }
+
+        /*
+         * Ordinary mode: one of FOUR ROMs, numbered by #1FFD bit 2 as
+         * the high bit and #7FFD bit 4 as the low one.
+         *
+         * ROM 3 is the 48K BASIC, so it is the one the tape trap's
+         * patched copy stands in for -- the other three have no
+         * LD-BYTES to trap.
+         */
+        const unsigned rn = (unsigned)((v & 0x10) ? 1u : 0u) | ((w & 0x04u) ? 2u : 0u);
+        const uint8_t *rom = (rn == 3) ? basic_rom() : rom_window[rn];
+        z80_map_page(0, (uint8_t *)rom, NULL);
+
+        z80_map_page(1, spec_ram[5], spec_ram[5]);
+        z80_map_page(2, spec_ram[2], spec_ram[2]);
+        const uint8_t b3 = v & 0x07;
+        z80_map_page(3, spec_ram[b3], spec_ram[b3]);
+        spec_screen_bank = (v & 0x08) ? 7 : 5;
+        return;
+    }
+
     // Bottom window: ROM 1 (48K BASIC) when bit 4 is set, ROM 0 otherwise.
     // Read-only, which here means "its write pointer goes to the bucket".
-    const uint8_t *rom0 = spec_machine == MACHINE_PLUS2    ? spec_romp2
-                        : spec_machine == MACHINE_PENTAGON ? spec_rompent
-                                                           : spec_rom0;
-    z80_map_page(0, (uint8_t *)((v & 0x10) ? basic_rom() : rom0), NULL);
+    z80_map_page(0, (uint8_t *)((v & 0x10) ? basic_rom() : rom_window[ROMW_0]), NULL);
 
     // The two fixed windows never move. Mapped every time anyway, because
     // the cost is two stores on a path taken a few hundred times a second
@@ -275,7 +640,9 @@ static void update_opfetch_hook(void);
  * times a second -- so it is not installed at all unless one of the two
  * actually wants it. That is what update_opfetch_hook() is for.
  */
-static void spec_opfetch(const uint16_t addr) {
+static void __not_in_flash_func(spec_opfetch)(const uint16_t addr) {
+    if (settings.esxdos) divmmc_opfetch(addr);
+
     if (unlikely(tramp_active)) {
         /*
          * The first opcode fetch after the trampoline's jump is the
@@ -327,7 +694,15 @@ static void spec_opfetch(const uint16_t addr) {
 }
 
 static void update_opfetch_hook(void) {
-    z80_opfetch_cb = (tramp_active || settings.betadisk) ? spec_opfetch : NULL;
+    /*
+     * The hook costs a load and a predicted branch on every opcode
+     * fetch, so it is installed only when something needs it: a
+     * snapshot trampoline waiting to unmap itself, the Beta Disk, or
+     * DivMMC -- the last two because both decide where they are paged
+     * by watching where the CPU is fetching from.
+     */
+    z80_opfetch_cb = (tramp_active || settings.betadisk || settings.esxdos)
+                         ? spec_opfetch : NULL;
 }
 
 void spec_begin_launch(uint8_t *page, const uint16_t jp_addr) {
@@ -357,7 +732,70 @@ bool spec_launch_pending(void) { return tramp_active; }
  * which of the five bits comes back clear, and the paging latch is
  * selected by A15/A1. Neither is visible in the low byte alone.
  */
-static void spec_io_out(const uint16_t port, const uint8_t value) {
+static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t value) {
+    /*
+     * ULA+ first: both its ports are odd, so an ordinary ULA write would
+     * claim them before anything else got a look. Theirs decodes the
+     * whole sixteen bits, which is what keeps #FF3B away from the
+     * paging port it shares a low byte with.
+     */
+    /*
+     * The SCLD's one port, decoded as pico-speccy's Ports.cpp decodes it.
+     *
+     * The LOW BYTE alone, because that is what a real Timex answers
+     * (MAME's tc2048_io and ts2068_io both map 0xFF mirrored across the
+     * high byte, and Fuse's periph mask is 0x00FF). Testing the whole
+     * sixteen bits would almost never match: `OUT (#FF),A` puts **A** on
+     * the high address byte, so the address is A<<8 | #FF and not #00FF.
+     *
+     * The A8=0 qualifier stays, though, because here the SCLD is a CARD
+     * on an ordinary Sinclair machine rather than a Timex -- and on that
+     * machine the SAA1099 shares the #FF family, at #00FF for data and
+     * #01FF for the register. Their note says the qualifier is exactly
+     * what keeps the two apart.
+     *
+     * And nothing in the family answers while the TR-DOS ROM is paged.
+     */
+    if ((settings.timex || spec_machine == MACHINE_TIMEX)
+        && (port & 0xFFu) == 0xFFu
+        && (spec_machine == MACHINE_TIMEX || !(port & 0x0100u))
+        && !beta_rom_paged()) {
+        spec_timex_mode = (uint8_t)(value & 0x07u);
+        spec_timex_ink  = (uint8_t)((value >> 3) & 0x07u);
+        /*
+         * Bit 7 picks what the #F4 window shows for the whole map --
+         * the dock (0) or the EX-ROM (1). It lives in the video port
+         * because the SCLD is one chip doing both jobs.
+         */
+        const bool ex = (value & 0x80u) != 0;
+        if (spec_machine == MACHINE_TIMEX && ex != spec_timex_exrom) {
+            spec_timex_exrom = ex;
+            apply_paging();
+        }
+        return;
+    }
+
+    if (settings.ulaplus) {
+        if (port == 0xBF3Bu) { spec_ulaplus_reg = value; return; }
+        if (port == 0xFF3Bu) {
+            const uint8_t reg = spec_ulaplus_reg;
+            if ((reg & 0xC0u) == 0x00u) {
+                spec_ulaplus_pal[reg & 0x3Fu] = value;
+                spec_ulaplus_dirty = true;
+            } else if ((reg & 0xC0u) == 0x40u) {
+                const bool on = (value & 1u) != 0;
+                if (on != spec_ulaplus_on) {
+                    spec_ulaplus_on = on;
+                    /* The attribute's top two bits become the palette
+                     * group, so there is no FLASH bit left to honour. */
+                    if (on) spec_flash = false;
+                    spec_ulaplus_dirty = true;
+                }
+            }
+            return;
+        }
+    }
+
     /*
      * The tape trap first, and it only ever answers when a patched ROM
      * is mapped -- nothing else on the machine can reach the port it
@@ -366,6 +804,15 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
      */
     if (tape_port_out(port, value)) return;
     if (beta_port_out(port, value)) return;
+
+    /*
+     * The +3's disk controller. Only a +3 has one, and fdc_port_out()
+     * says so itself -- the ports it answers, #2FFD and #3FFD, are in
+     * the same #FD family the AY and the paging latches live in, and
+     * letting them through on a 128K would take writes the AY wanted.
+     */
+    if (fdc_port_out(port, value)) return;
+    if (divmmc_port_out(port, value)) return;
 
     if ((port & 0x0001) == 0) {                 // the ULA
         spec_border = value & 0x07;
@@ -410,6 +857,25 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
     }
 
     /*
+     * The Profi's #DFFD, decoded on all sixteen bits as theirs is.
+     *
+     * Above the AY, and that order is the whole point: #DFFD is A15
+     * high with A14 high and A1 low, which is also the AY's register
+     * select -- so with the AY first a Profi's third latch is never
+     * reachable, and a Profi has an AY always. Their Ports::output
+     * takes #DFFD before its AY arms for the same reason.
+     *
+     * Not gated by the paging lock, and D4 clears the lock outright --
+     * which is how a Profi gets back out of a locked 128K map.
+     */
+    if (spec_machine == MACHINE_PROFI && port == 0xDFFDu) {
+        spec_port_dffd = value;
+        if (value & 0x10u) paging_locked = false;
+        apply_paging();
+        return;
+    }
+
+    /*
      * The AY, on two ports that are both "A15 high".
      *
      * Register select is A15 and A14 both high (0xFFFD); data is A15 high
@@ -439,10 +905,62 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
         return;
     }
 
+    /*
+     * The Scorpion's #1FFD: A15=A14=0, A1=0, and A5=1.
+     *
+     * Their decode, and the A5 is the part worth keeping: without it an
+     * OUT (n),A with n below 0x20 lands here and repages the machine.
+     * Never gated by the paging lock either -- #7FFD D5 freezes only
+     * #7FFD on real hardware, and #1FFD stays live until reset.
+     */
+    if (spec_machine == MACHINE_SCORPION && (port & 0xC002u) == 0
+        && (port & 0x0020u)) {
+        spec_port_1ffd = value;
+        apply_paging();
+        return;
+    }
+
+    /*
+     * The Timex's horizontal select register, #F4: one bit per 8 KB
+     * chunk. Decoded on the low byte, like everything else in that
+     * machine's port map.
+     */
+    if (spec_machine == MACHINE_TIMEX && (port & 0xFFu) == 0xF4u) {
+        spec_timex_hsr = value;
+        apply_paging();
+        return;
+    }
+
+    /*
+     * The +3's second latch, #1FFD: A15=0, A14=0, A13=0, A12=1, A1=0.
+     *
+     * Decoded as (port & 0xF002) == 0x1000, which is the mask the +3's
+     * own hardware uses -- the same shape as #7FFD's (port & 0x8002) == 0
+     * one bit narrower. The paging lock covers it too: once #7FFD bit 5
+     * is set the machine cannot page again by any route.
+     */
+    if (spec_machine == MACHINE_PLUS3 && (port & 0xF002u) == 0x1000u
+        && !paging_locked) {
+        spec_port_1ffd = value;
+        apply_paging();
+        return;
+    }
+
+    /*
+     * ...and #7FFD last, because its decode is the loosest of them.
+     *
+     * (port & 0x8002) == 0 is A15=0 and A1=0, which is also true of
+     * #1FFD -- so a Scorpion or a +3 writing its second latch would be
+     * taken as writing its first if this arm came first. Their Ports.cpp
+     * solves it the same way, by order: the tight decodes above get
+     * their ports, and whatever is left over and looks like #7FFD is
+     * #7FFD.
+     */
     if (spec_machine != MACHINE_48K && (port & 0x8002) == 0 && !paging_locked) {
         spec_port_7ffd = value;
         if (value & 0x20) paging_locked = true;
         apply_paging();
+        return;
     }
 }
 
@@ -546,10 +1064,19 @@ static uint8_t fuller_byte(void) {
 
 // ---------------------------------------------------------------------------
 
-static uint8_t spec_io_in(const uint16_t port) {
+static uint8_t __not_in_flash_func(spec_io_in)(const uint16_t port) {
+    if (settings.ulaplus && port == 0xFF3Bu) {
+        const uint8_t reg = spec_ulaplus_reg;
+        if ((reg & 0xC0u) == 0x00u) return spec_ulaplus_pal[reg & 0x3Fu];
+        if ((reg & 0xC0u) == 0x40u) return spec_ulaplus_on ? 1u : 0u;
+        return 0xFFu;
+    }
+
     uint8_t v;
     if (tape_port_in(port, &v)) return v;
     if (beta_port_in(port, &v)) return v;
+    if (fdc_port_in(port, &v)) return v;
+    if (divmmc_port_in(port, &v)) return v;
 
     if (settings.joystick == JOY_KEMPSTON &&
         (port & 0xFF) == (settings.kempston_port ? 0xDF : 0x1F))
@@ -865,6 +1392,24 @@ void spec_key_tick(void) {
 // ============================================================================
 
 void spec_init(void) {
+    /*
+     * Fill the ROM window before anything can page out of it.
+     *
+     * Here rather than in spec_set_machine(), because main.c calls
+     * spec_init() directly at boot and an unfilled window is sixteen
+     * kilobytes of zeroes for the CPU to execute -- which looks exactly
+     * like a dead Z80.
+     *
+     * Eighty kilobytes of memcpy out of flash, a millisecond or two, on
+     * a path that is already resetting the machine.
+     */
+    rom_load_window(spec_machine);
+    /*
+     * ...and the tape trap goes back over LD-BYTES, because the refill
+     * above just replaced the page it was patched into.
+     */
+    tape_repatch_rom();
+
     memset(spec_ram, 0, sizeof spec_ram);
     memset((void *)kbd, 0x1F, sizeof kbd);      // every key up
     held_count = 0;
@@ -885,6 +1430,11 @@ void spec_init(void) {
     paging_locked  = false;
 
     spec_port_7ffd = 0;
+    spec_port_1ffd = 0;
+    spec_port_dffd = 0;
+    spec_timex_hsr = 0;
+    spec_timex_exrom = false;
+    spec_bank_flush();
     spec_border    = 7;
     spec_frames    = 0;
 
@@ -904,6 +1454,8 @@ void spec_init(void) {
      * still has its banks -- is what a Beta Disk 128 is.
      */
     beta_reset();
+    fdc_reset();
+    divmmc_reset();
     const bool beta_boot = settings.betadisk && beta_take_boot_request();
     if (beta_boot && spec_machine != MACHINE_48K) spec_port_7ffd = 0x10;
     beta_set_rom_paged(beta_boot);
@@ -1198,6 +1750,17 @@ static void pause_point(void) {
 
 void spec_set_machine(const machine_t m) {
     if (m >= MACHINE_COUNT) return;
+    /*
+     * Leaving the Timex ejects whatever is in its dock.
+     *
+     * The cartridge lives in the RAM banks only that machine leaves
+     * idle -- see dck.c -- so on any other machine those banks are the
+     * guest's and the cartridge is already gone. Saying so is better
+     * than letting it come back as noise.
+     */
+    if (spec_machine == MACHINE_TIMEX && m != MACHINE_TIMEX) dck_eject();
+    /* ...and arriving at one with no cartridge fills the dock with 0xFF. */
+    if (m == MACHINE_TIMEX && !dck_mounted()) dck_eject();
     spec_machine = m;
     // A 48K's BASIC ROM and a 128K's ROM 1 are different images, so a
     // patched copy of one is not a patched copy of the other. Anything

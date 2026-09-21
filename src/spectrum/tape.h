@@ -65,6 +65,9 @@ bool tape_mount(const uint8_t *image, uint32_t len, char *detail, unsigned detai
  */
 bool tape_mount_tzx(uint32_t len, char *detail, unsigned detail_len);
 
+/* The same, for a .pzx already in tape_image. */
+bool tape_mount_pzx(uint32_t len, char *detail, unsigned detail_len);
+
 /* Forget it and put the real ROM back. */
 void tape_eject(void);
 
@@ -94,6 +97,14 @@ extern uint8_t tape_image[TAPE_MAX_BYTES];
  * Does nothing when no tape is mounted.
  */
 void tape_machine_changed(void);
+
+/*
+ * Put the LD-BYTES stub back after the ROM window has been refilled.
+ *
+ * Called from spec_init(), which reloads the window from flash on every
+ * reset and would otherwise wipe the trap out from under a mounted tape.
+ */
+void tape_repatch_rom(void);
 
 /* Ports, called from the bus handlers. True if this was ours. */
 bool tape_port_out(uint16_t port, uint8_t value);

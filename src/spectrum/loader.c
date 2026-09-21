@@ -14,6 +14,9 @@
 #include "ff.h"
 #include "launch.h"
 #include "beta.h"
+#include "dck.h"
+#include "divmmc.h"
+#include "fdc.h"
 #include "settings.h"
 #include "spectrum.h"
 #include "tape.h"
@@ -31,7 +34,7 @@ static uint16_t rd16(const uint8_t *p) { return (uint16_t)(p[0] | (p[1] << 8)); 
  * here that could disagree with it.
  */
 static uint8_t peek(const uint16_t addr) {
-    return z80_rpage[addr >> 14][addr & 0x3FFF];
+    return z80_peek(addr);
 }
 
 // ---------------------------------------------------------------------------
@@ -86,11 +89,13 @@ static bool load_sna(FIL *f, const uint32_t size, char *detail, const unsigned d
      * One staging buffer, for the bank a 128K snapshot writes first and
      * names last.
      *
-     * Deliberately in SRAM rather than in the PSRAM the tape uses: a
-     * snapshot is the one thing this machine must be able to load on a
-     * board with no PSRAM fitted.
+     * In the PSRAM: it is touched once per snapshot load, with the Z80
+     * stopped, which is the whole test for what belongs over there. It
+     * used to be in SRAM so a board with no PSRAM could still load a
+     * snapshot -- but there is no such board, U7 is soldered down, and
+     * main() now refuses to start without it.
      */
-    static uint8_t stage[SPEC_BANK_SIZE];
+    static uint8_t stage[SPEC_BANK_SIZE] __attribute__((section(".psram")));
 
     if (size == SNA_48_LEN) {
         spec_set_machine(MACHINE_48K);
@@ -215,7 +220,7 @@ static int rd(reader_t *r) {
 
 /* Where a guest address lives right now. ROM writes fall in the bucket. */
 static void poke(const uint16_t addr, const uint8_t v) {
-    z80_wpage[addr >> 14][addr & 0x3FFF] = v;
+    z80_poke(addr, v);
 }
 
 /*
@@ -441,7 +446,10 @@ static bool load_z80(FIL *f, const uint32_t size, char *detail, const unsigned d
  * then into an editor with no keyword mode at all, where LOAD is spelled
  * out letter by letter.
  */
-static bool load_tap(FIL *f, const uint32_t size, const bool tzx,
+/* Which of the three tape formats is in the file. */
+typedef enum { TAPE_RAW = 0, TAPE_TZX, TAPE_PZX } tape_format_t;
+
+static bool load_tap(FIL *f, const uint32_t size, const tape_format_t fmt,
                      char *detail, const unsigned detail_len) {
     if (size > TAPE_MAX_BYTES)
         FAIL("that tape is %luK; the limit is %uK",
@@ -452,10 +460,12 @@ static bool load_tap(FIL *f, const uint32_t size, const bool tzx,
     if (f_read(f, tape_image, size, &got) != FR_OK || got != size)
         FAIL("could not read the whole tape");
 
-    // A .TZX is converted to a .TAP in place before it is mounted; see
-    // src/spectrum/tape.c for what survives that and what does not.
-    const bool ok = tzx ? tape_mount_tzx(size, detail, detail_len)
-                        : tape_mount(tape_image, size, detail, detail_len);
+    // A .TZX or a .PZX is converted to a .TAP in place before it is
+    // mounted; see src/spectrum/tape.c for what survives that and what
+    // does not.
+    const bool ok = (fmt == TAPE_TZX) ? tape_mount_tzx(size, detail, detail_len)
+                  : (fmt == TAPE_PZX) ? tape_mount_pzx(size, detail, detail_len)
+                  : tape_mount(tape_image, size, detail, detail_len);
     if (!ok) return false;
 
     // Keep the message tape_mount() wrote, and add to it below.
@@ -506,7 +516,80 @@ static void disk_autorun(void) {
  * way a Beta Disk 128 comes up, so that a disk with a `boot` file on it
  * starts by itself.
  */
-static bool load_trd(FIL *f, const uint32_t size, char *detail, const unsigned detail_len) {
+/*
+ * A .dsk goes in the +3's drive, and switches the machine to a +3.
+ *
+ * A disk image is only meaningful on the machine whose controller can
+ * read it, so mounting one on a 48K would be a mount nothing could ever
+ * use. The .trd path above makes the same decision the other way, by
+ * turning the Beta Disk on.
+ */
+/*
+ * A .dck goes in the Timex's dock, and switches the machine to a Timex.
+ *
+ * Like the .trd and the .dsk above: a cartridge is only meaningful on
+ * the machine that has a dock to put it in.
+ *
+ * This one takes the path rather than a handle, because the format is
+ * walked with seeks -- the block headers are scattered through the file
+ * and reading it into a buffer first would need the buffer to be the
+ * size of the file.
+ */
+/*
+ * A .mmc or .hdf goes in DivMMC's card slot, and turns the interface on.
+ *
+ * Like the .trd and the .dsk: an image is only meaningful on a machine
+ * with the interface that reads it. The Beta Disk goes off at the same
+ * time -- both claim a fetch at #3D00-#3DFF, so with the two on they
+ * fight over the bottom of the address space.
+ */
+static bool load_mmc(const char *path, char *detail, const unsigned detail_len) {
+    if (!divmmc_mount(path, detail, detail_len)) return false;
+
+    char mounted[80];
+    snprintf(mounted, sizeof mounted, "%s", detail);
+    settings.esxdos = 1;
+    settings.betadisk = 0;
+    spec_set_machine(spec_machine);      /* cold start with esxDOS in */
+
+    snprintf(detail, detail_len, "%s -- esxDOS on", mounted);
+    return true;
+}
+
+static bool load_dck(const char *path, char *detail, const unsigned detail_len) {
+    if (!dck_mount(path, detail, detail_len)) return false;
+
+    char mounted[80];
+    snprintf(mounted, sizeof mounted, "%s", detail);
+    spec_set_machine(MACHINE_TIMEX);
+    snprintf(detail, detail_len, "%s -- in the dock", mounted);
+    return true;
+}
+
+static bool load_dsk(FIL *f, const uint32_t size, const char *path,
+                     char *detail, const unsigned detail_len) {
+    if (size > DSK_MAX_BYTES)
+        FAIL("that .dsk is %luK; the limit is %uK",
+             (unsigned long)(size / 1024), DSK_MAX_BYTES / 1024);
+
+    UINT got = 0;
+    if (f_read(f, dsk_image, size, &got) != FR_OK || got != size)
+        FAIL("could not read the whole .dsk");
+
+    if (!fdc_mount(size, path, detail, detail_len)) return false;
+
+    char mounted[80];
+    snprintf(mounted, sizeof mounted, "%s", detail);
+
+    /* The +3 boots from the drive by itself when there is a disk in it. */
+    spec_set_machine(MACHINE_PLUS3);
+
+    snprintf(detail, detail_len, "%s -- booting", mounted);
+    return true;
+}
+
+static bool load_trd(FIL *f, const uint32_t size, const char *path,
+                     char *detail, const unsigned detail_len) {
     if (size > TRD_MAX_BYTES)
         FAIL("that .trd is %luK; the limit is %uK",
              (unsigned long)(size / 1024), TRD_MAX_BYTES / 1024);
@@ -515,7 +598,7 @@ static bool load_trd(FIL *f, const uint32_t size, char *detail, const unsigned d
     if (f_read(f, trd_image, size, &got) != FR_OK || got != size)
         FAIL("could not read the whole .trd");
 
-    if (!beta_mount(size, detail, detail_len)) return false;
+    if (!beta_mount(size, path, detail, detail_len)) return false;
 
     char mounted[80];
     snprintf(mounted, sizeof mounted, "%s", detail);
@@ -617,7 +700,12 @@ static bool load_scl(FIL *f, char *detail, const unsigned detail_len) {
     vol[0xF4] = 0;                              // no deleted files
     memset(&vol[0xF5], ' ', 8);                 // the label, which a .scl has not got
 
-    if (!beta_mount(TRD_SIZE, detail, detail_len)) return false;
+    /*
+     * NULL, not the .scl's own path: what is in trd_image now is a .trd
+     * built from it, and writing that back over the .scl would replace a
+     * 100 KB archive with a 640 KB disk under the same name.
+     */
+    if (!beta_mount(TRD_SIZE, NULL, detail, detail_len)) return false;
 
     char mounted[80];
     snprintf(mounted, sizeof mounted, "%s", detail);
@@ -646,11 +734,15 @@ bool loader_load(const char *path, const file_kind_t kind,
         case FILE_SNA: ok = load_sna(&f, (uint32_t)fi.fsize, detail, detail_len); break;
         case FILE_SCR: ok = load_scr(&f, detail, detail_len); break;
 
-        case FILE_TAP: ok = load_tap(&f, (uint32_t)fi.fsize, false, detail, detail_len); break;
-        case FILE_TZX: ok = load_tap(&f, (uint32_t)fi.fsize, true,  detail, detail_len); break;
+        case FILE_TAP: ok = load_tap(&f, (uint32_t)fi.fsize, TAPE_RAW, detail, detail_len); break;
+        case FILE_TZX: ok = load_tap(&f, (uint32_t)fi.fsize, TAPE_TZX, detail, detail_len); break;
+        case FILE_PZX: ok = load_tap(&f, (uint32_t)fi.fsize, TAPE_PZX, detail, detail_len); break;
         case FILE_Z80: ok = load_z80(&f, (uint32_t)fi.fsize, detail, detail_len); break;
-        case FILE_TRD: ok = load_trd(&f, (uint32_t)fi.fsize, detail, detail_len); break;
+        case FILE_TRD: ok = load_trd(&f, (uint32_t)fi.fsize, path, detail, detail_len); break;
         case FILE_SCL: ok = load_scl(&f, detail, detail_len); break;
+        case FILE_DSK: ok = load_dsk(&f, (uint32_t)fi.fsize, path, detail, detail_len); break;
+        case FILE_DCK: ok = load_dck(path, detail, detail_len); break;
+        case FILE_MMC: ok = load_mmc(path, detail, detail_len); break;
         default:       snprintf(detail, detail_len, "nothing here knows what that file is"); ok = false; break;
     }
 

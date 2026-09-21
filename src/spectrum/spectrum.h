@@ -47,11 +47,55 @@ typedef enum : uint8_t {
     MACHINE_48K = 0,
     MACHINE_128K,
     MACHINE_PLUS2,
+    MACHINE_PLUS3,
     MACHINE_PENTAGON,
+    MACHINE_SCORPION,       /* ZS-256: 256 KB, a service ROM and TR-DOS */
+    MACHINE_PROFI,          /* Profi 1024: 1 MB through #DFFD */
+    MACHINE_TIMEX,          /* TC2068: the SCLD, a dock and an EX-ROM */
     MACHINE_COUNT,
 } machine_t;
 
 extern machine_t spec_machine;
+
+/*
+ * The +3's second paging latch, port #1FFD.
+ *
+ * Bit 0 picks between the ordinary 128K map and the "special" all-RAM
+ * one. In the ordinary map bit 2 is the high bit of a two-bit ROM
+ * number, whose low bit is #7FFD bit 4 -- so the +3 pages one of FOUR
+ * ROMs where a 128K pages one of two. In the special map bits 1-2 pick
+ * one of four fixed bank arrangements and no ROM is mapped at all,
+ * which is how +3DOS gets 64K of contiguous RAM.
+ *
+ * Bits 3-4 are the disk motor and drive select, which the FDC reads.
+ */
+extern volatile uint8_t spec_port_1ffd;
+
+/*
+ * The Profi's extra paging latch, port #DFFD, decoded on all sixteen
+ * bits as their Ports.cpp decodes it.
+ *
+ *   bits 0-2  the upper RAM page GROUP: with #7FFD bits 0-2 this makes
+ *             eight groups of eight, which is the 1 MB
+ *   bit 4     RAM page 0 at #0000 instead of ROM; setting it also
+ *             clears the paging lock, unconditionally
+ *   bit 5     the CP/M extended-periphery mode
+ *   bit 6     RAM page 6 at #8000 instead of page 2
+ *   bit 7     the DS80 512x240 video mode, which this board does not
+ *             have a renderer for and ignores
+ */
+extern volatile uint8_t spec_port_dffd;
+
+/*
+ * The Timex's horizontal select register, port #F4, and the DOCK/EX-ROM
+ * select that rides in bit 7 of the SCLD's own port #FF.
+ *
+ * One bit of the HSR per 8 KB chunk: set means that chunk comes from
+ * the cartridge dock or the EX-ROM instead of the ordinary machine.
+ * This is the reason the bus engine pages in eight windows and not four.
+ */
+extern volatile uint8_t spec_timex_hsr;
+extern volatile bool    spec_timex_exrom;
 
 const char *spec_machine_name(void);
 
@@ -98,6 +142,42 @@ uint32_t spec_frame_tstates(void);
 
 extern uint8_t spec_ram[SPEC_RAM_BANKS][SPEC_BANK_SIZE];
 
+/*
+ * Machines with more than 128 KB, on a part with 512 KB.
+ *
+ * The bus engine reads guest RAM on every memory cycle, so what is
+ * MAPPED has to be in SRAM -- a PSRAM miss there stretches a clock
+ * phase by about a microsecond. But a Scorpion's 256 KB and a Profi's
+ * 1 MB are mostly not mapped: the first eight banks are the 128K
+ * machine every one of them also is, and the rest only ever appear in
+ * the window at #C000, one at a time.
+ *
+ * So banks 0-7 stay in SRAM and everything above lives in the PSRAM,
+ * with one 16 KB staging page in SRAM holding whichever high bank is
+ * currently mapped. Switching costs a write-back and a read -- two
+ * 16 KB transfers on a paging port write, which is a few hundred
+ * microseconds on a path that happens hundreds of times a second and
+ * not hundreds of thousands.
+ *
+ * This is pico-speccy's idea, from the tiers their MemESP::ram[] pages
+ * between; the shape here is simpler because only one window can hold a
+ * high bank.
+ */
+#define SPEC_MAX_BANKS 64                   /* 1 MB, which is the Profi */
+uint8_t *spec_bank_ptr(unsigned bank);
+
+/* Push the staged bank back before anything reads the PSRAM copy. */
+void spec_bank_flush(void);
+
+/*
+ * Re-apply the memory map.
+ *
+ * Exposed for the interfaces that page themselves -- the Beta Disk and
+ * DivMMC both decide from the outside what the bottom of the address
+ * space holds, and both have to be able to say so.
+ */
+void apply_paging_hook(void);
+
 // ============================================================================
 // State the video driver reads
 // ============================================================================
@@ -110,6 +190,46 @@ extern volatile uint8_t spec_border;
 
 /* Flips every 16 frames; inverts any cell whose attribute has bit 7. */
 extern volatile bool spec_flash;
+
+/*
+ * ULA+, from pico-speccy's Ports.cpp and Video.cpp.
+ *
+ * Two odd ports -- 0xBF3B selects a register, 0xFF3B reads or writes it
+ * -- and sixty-four palette entries in G3R3B2. With the palette enabled
+ * the attribute byte stops meaning FLASH and BRIGHT and starts meaning
+ * "which of four groups of sixteen": bits 7-6 pick the group, 5-3 the
+ * paper within it, 2-0 the ink. FLASH goes away with them, which is why
+ * turning it on clears the flash counter.
+ *
+ * Sixty-four arbitrary colours out of a two-bit DAC is only possible
+ * because every Spectrum pixel is already doubled into a 2x2 block of
+ * output pixels -- which is exactly one Bayer cell. See vga.c.
+ */
+extern volatile bool    spec_ulaplus_on;    // the palette is enabled
+extern volatile uint8_t spec_ulaplus_reg;
+extern uint8_t          spec_ulaplus_pal[64];
+/* Raised when an entry changed, so the video driver rebuilds its tables. */
+extern volatile bool    spec_ulaplus_dirty;
+
+/*
+ * The Timex SCLD's video modes, from port #FF.
+ *
+ * Bits 0-2 pick the mode and bits 3-5 the hi-res colour:
+ *
+ *   0  the ordinary screen
+ *   1  the second screen, the one at #6000
+ *   2  hi-colour -- the same bitmap, but one attribute per PIXEL row
+ *      instead of per character row, read from #6000 at the bitmap's own
+ *      scrambled offset
+ *   6  hi-res -- 512x192 monochrome, built by taking byte-columns
+ *      alternately from the two areas: #4000 supplies the first eight
+ *      pixels of each pair and #6000 the next eight
+ *
+ * Both areas are in bank 5, which is 16 KB at #4000, so the second is
+ * simply +0x2000 into the same bank.
+ */
+extern volatile uint8_t spec_timex_mode;    // 0, 1, 2 or 6
+extern volatile uint8_t spec_timex_ink;     // hi-res ink, 0-7
 
 /* Frames since reset, and the paging port's last value, for the report. */
 extern volatile uint32_t spec_frames;
@@ -235,15 +355,24 @@ bool spec_launch_pending(void);
 // ============================================================================
 //
 // The 48K BASIC ROM is where LD-BYTES lives, and it is a different image
-// on a 48K (its only ROM) than on a 128K or +2 (ROM 1). src/spectrum/tape.c
-// takes a copy of whichever it is, patches a stub into it and hands it
-// back here; NULL puts the real one back.
+// on a 48K (its only ROM) than on a 128K or +2 (ROM 1), or a +3 (ROM 3).
+// src/spectrum/tape.c patches a stub over LD-BYTES in whichever window
+// slot holds it.
 //
-// The substitution happens inside the paging function rather than by
-// mapping the page directly, so that it survives the CPU paging the ROM
-// out and in again -- which a 128K game does every time it loads.
-const uint8_t *spec_rom_48k_image(void);
-void spec_set_tape_rom(const uint8_t *page);
+// The substitution is in the window and not a copy of it, so it survives
+// the CPU paging the ROM out and in again -- which a 128K game does every
+// time it loads -- and it cannot outlive the ROM it was made for, because
+// a reset refills the window from flash and puts the stub back afterwards.
+
+/*
+ * The window slot holding the 48K BASIC ROM on the current machine.
+ *
+ * The tape trap patches its LD-BYTES in place. It is a window slot and
+ * not a copy, so a reset restores the pristine image for free -- and
+ * there is no second 16 KB of the same ROM in the SRAM.
+ */
+uint8_t *spec_basic_slot(void);
+
 
 // ============================================================================
 // Keyboard

@@ -47,11 +47,10 @@ uint32_t tape_block_index(void) { return block_no; }
  * A copy of the machine's ROM with twenty bytes changed.
  *
  * Copied rather than served with a compare on every read: the ROM read
- * path is z80_rpage[a>>14][a&0x3FFF] with no branch in it, and putting
+ * path is z80_rpage[a>>13][a&0x1FFF] with no branch in it, and putting
  * one there to check for a single address would cost more, on every
  * instruction the machine ever executes, than 16 KB of RAM does once.
  */
-static uint8_t patched_rom[SPEC_BANK_SIZE] __attribute__((aligned(4)));
 
 /*
  * The port the stub talks through.
@@ -133,12 +132,25 @@ static bool     last_ok;
 
 // ---------------------------------------------------------------------------
 
+/*
+ * Put the stub over LD-BYTES, in the ROM window itself.
+ *
+ * The 48K ROM is what has LD-BYTES in it: on a 128K that is ROM 1,
+ * which is also the one a tape-loading program will have paged in, and
+ * on a +3 it is ROM 3. spec_basic_slot() knows which.
+ *
+ * Patching the live page rather than a copy of it is what removed a
+ * second sixteen kilobytes of the same ROM from the SRAM. It is safe
+ * because the window is refilled from flash on every reset and this is
+ * called again afterwards -- so the patch can never be left over a ROM
+ * it was not made for.
+ */
 static void install(void) {
-    // The 48K ROM is what has LD-BYTES in it: on a 128K that is ROM 1,
-    // which is also the one a tape-loading program will have paged in.
-    memcpy(patched_rom, spec_rom_48k_image(), SPEC_BANK_SIZE);
-    memcpy(&patched_rom[TRAP_ADDR], stub, sizeof stub);
-    spec_set_tape_rom(patched_rom);
+    memcpy(spec_basic_slot() + TRAP_ADDR, stub, sizeof stub);
+}
+
+void tape_repatch_rom(void) {
+    if (mounted) install();
 }
 
 void tape_machine_changed(void) {
@@ -147,11 +159,6 @@ void tape_machine_changed(void) {
 
 bool tape_mount(const uint8_t *image, const uint32_t len,
                 char *detail, const unsigned detail_len) {
-    if (!psram_size()) {
-        snprintf(detail, detail_len, "tapes need the PSRAM, and none was found");
-        return false;
-    }
-
     if (image != tape_image) {
         if (len > TAPE_MAX_BYTES) {
             snprintf(detail, detail_len, "tape is %luK; the limit is %uK",
@@ -313,6 +320,81 @@ static uint32_t tzx_to_tap(const uint32_t len) {
     return out;
 }
 
+/*
+ * .pzx to .tap, in place, the same way tzx_to_tap() works above.
+ *
+ * The chunk layout is pico-speccy's Tape_PZX.cpp: a four-byte tag, a
+ * four-byte size, then that many bytes. Only DATA carries anything this
+ * firmware can use -- PULS, PAUS, BRWS and STOP describe the shape of
+ * the signal, and a ROM trap has no signal to shape.
+ *
+ * A DATA chunk begins with a 32-bit count whose top bit is the initial
+ * level and whose low 31 bits are a count of BITS, then a 16-bit tail,
+ * then two pulse counts and their two pulse sequences, and only then the
+ * data. What comes out of it is exactly a .tap block's contents -- flag
+ * byte, data, checksum -- so the conversion is to skip the timing and
+ * keep the bytes.
+ *
+ * A block whose bit count is not a whole number of bytes cannot be a
+ * ROM-loadable block, and is dropped rather than rounded: rounding it
+ * would hand LD-BYTES a checksum it computes over a byte that was never
+ * there.
+ */
+#define PZX_TAG(a, b, c, d) \
+    ((uint32_t)(a) | ((uint32_t)(b) << 8) | ((uint32_t)(c) << 16) | ((uint32_t)(d) << 24))
+
+static uint32_t pzx_to_tap(const uint32_t len) {
+    uint32_t in = 0, out = 0;
+
+    while (in + 8 <= len) {
+        const uint32_t tag  = at32(in);
+        const uint32_t size = at32(in + 4);
+        const uint32_t body = in + 8;
+        if (body + size > len || size > len) return out;    /* truncated */
+
+        if (tag == PZX_TAG('D', 'A', 'T', 'A') && size >= 8) {
+            const uint32_t count = at32(body);
+            const uint32_t bits  = count & 0x7FFFFFFFu;
+            const uint8_t  p0    = tape_image[body + 6];
+            const uint8_t  p1    = tape_image[body + 7];
+            const uint32_t data  = body + 8 + 2u * p0 + 2u * p1;
+            const uint32_t bytes = bits >> 3;
+
+            if ((bits & 7u) == 0 && bytes && data + bytes <= body + size) {
+                /*
+                 * The output always trails the input -- eight bytes of
+                 * chunk header and at least eight of DATA header become
+                 * two bytes of length -- so this can move over itself.
+                 */
+                tape_image[out++] = (uint8_t)(bytes & 0xFF);
+                tape_image[out++] = (uint8_t)(bytes >> 8);
+                memmove(&tape_image[out], &tape_image[data], bytes);
+                out += bytes;
+            }
+        }
+
+        in = body + size;
+    }
+
+    return out;
+}
+
+bool tape_mount_pzx(const uint32_t len, char *detail, const unsigned detail_len) {
+    if (len < 8 || at32(0) != PZX_TAG('P', 'Z', 'X', 'T')) {
+        snprintf(detail, detail_len, "that is not a .pzx");
+        return false;
+    }
+
+    const uint32_t converted = pzx_to_tap(len);
+    if (converted < 4) {
+        snprintf(detail, detail_len,
+                 "no ROM-loadable blocks: this .pzx is a custom loader");
+        return false;
+    }
+
+    return tape_mount(tape_image, converted, detail, detail_len);
+}
+
 bool tape_mount_tzx(const uint32_t len, char *detail, const unsigned detail_len) {
     if (len < 10 || memcmp(tape_image, "ZXTape!\x1A", 8) != 0) {
         snprintf(detail, detail_len, "that is not a .tzx");
@@ -331,7 +413,11 @@ bool tape_mount_tzx(const uint32_t len, char *detail, const unsigned detail_len)
 
 void tape_eject(void) {
     mounted = false;
-    spec_set_tape_rom(NULL);
+    /*
+     * The stub stays in the window until the next reset refills it from
+     * flash, which is when a tape stops mattering anyway -- and every
+     * path that ejects a tape resets the machine or is about to.
+     */
 }
 
 // ---------------------------------------------------------------------------
@@ -381,7 +467,7 @@ static bool serve(void) {
     // offers it and a tape that verifies is a tape that loaded.
     if (want_flags & 0x01)
         for (uint16_t i = 0; i < count; i++)
-            z80_wpage[(uint16_t)(dest + i) >> 14][(uint16_t)(dest + i) & 0x3FFF] = body[1 + i];
+            z80_poke((uint16_t)(dest + i), body[1 + i]);
 
     // Checksum over flag and data, which is what the last byte is.
     uint8_t sum = 0;
@@ -390,7 +476,7 @@ static bool serve(void) {
     return sum == body[avail + 1] && want <= avail;
 }
 
-bool tape_port_out(const uint16_t port, const uint8_t value) {
+bool __not_in_flash_func(tape_port_out)(const uint16_t port, const uint8_t value) {
     if (!mounted || (port & 0xFF) != TAPE_PORT) return false;
 
     switch (step) {
@@ -405,7 +491,7 @@ bool tape_port_out(const uint16_t port, const uint8_t value) {
     return true;
 }
 
-bool tape_port_in(const uint16_t port, uint8_t *value) {
+bool __not_in_flash_func(tape_port_in)(const uint16_t port, uint8_t *value) {
     if (!mounted || (port & 0xFF) != TAPE_PORT) return false;
     *value = last_ok ? 1 : 0;
     step = 0;              // resynchronise, in case a sequence was cut short

@@ -91,8 +91,8 @@ uint32_t selftest_probe_pace_floor(void) {
          * byte is really at the bottom of the array and indexing
          * z80_mem[0x4000] would be reading off the end of it.
          */
-        const uint16_t got = (uint16_t)z80_rpage[PROG_CHECKSUM_RESULT >> 14][PROG_CHECKSUM_RESULT & 0x3FFF] |
-                             ((uint16_t)z80_rpage[(PROG_CHECKSUM_RESULT + 1) >> 14][(PROG_CHECKSUM_RESULT + 1) & 0x3FFF] << 8);
+        const uint16_t got = (uint16_t)z80_peek(PROG_CHECKSUM_RESULT)
+                           | ((uint16_t)z80_peek(PROG_CHECKSUM_RESULT + 1) << 8);
         if (got != PROG_CHECKSUM_EXPECTED) break;
         last_good = p;
     }

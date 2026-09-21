@@ -172,7 +172,7 @@ uint8_t ay_read(const ay_t *ay) { return ay->reg[ay->latched]; }
 
 // ---------------------------------------------------------------------------
 
-int32_t ay_render(ay_t *ay, const uint32_t ticks) {
+int32_t __not_in_flash_func(ay_render)(ay_t *ay, const uint32_t ticks) {
     /*
      * Chip clocks to counter ticks, with the remainder kept per chip.
      *

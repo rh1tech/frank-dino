@@ -31,6 +31,8 @@
 
 #include "dino.h"
 #include "screen.h"
+#include "ui_report.h"
+#include "usbdisk.h"
 #include "audio.h"
 #if USB_KEYBOARD
 #include "usbkbd.h"
@@ -59,30 +61,6 @@
  * 16 KB out of 512 KB.
  */
 static uint32_t core1_stack[4096] __attribute__((aligned(8)));
-
-// ============================================================================
-// The header
-// ============================================================================
-static void draw_header(void) {
-    /*
-     * The same header the menus use: a band with the rainbow mark, not a
-     * box with a border round the whole screen. The border was inherited
-     * from frank-xt8086's report page and belongs to a different design;
-     * this one is pico-speccy's, so the start-up screen may as well look
-     * like the rest of the firmware.
-     */
-    char right[40];
-    snprintf(right, sizeof right, "dino_z80   Z84C00 + RP2350B");
-
-    char sub[80];
-    snprintf(sub, sizeof sub, "%u MHz   640x480 over HDMI   console 115200 on J1",
-             (unsigned)(clock_get_hz(clk_sys) / MHZ));
-
-    char title[40];
-    snprintf(title, sizeof title, "frank-dino  %s", FIRMWARE_VERSION);
-
-    scr_page(title, right, sub);
-}
 
 // ============================================================================
 // Core 1: the CPU
@@ -278,14 +256,44 @@ int main(void) {
      * without the chip reports zero and carries on -- but what is put
      * there has to know, which is why the size is kept.
      */
-    psram_init();       // reported on the boot screen and the settings page
+    /*
+     * The PSRAM, and the board does not run without it.
+     *
+     * U7 is soldered down, not an option: the guest's disk and tape
+     * images, the menus' framebuffer, the machines with more than
+     * 128 KB and the inflate window all live over there, and a board
+     * that comes up without it is a board with a fault. So this is a
+     * stop, not a degradation -- there is no useful subset to fall back
+     * to and pretending otherwise only hides the fault.
+     *
+     * The console is the one diagnostic channel that does not itself
+     * need the PSRAM: the menus draw into it, so a board without it
+     * cannot put a message on the screen.
+     */
+    if (!psram_init()) {
+        for (;;) {
+            printf("[dino] FATAL: no PSRAM answered on XIP CS1 (U7, GP47).\n"
+                   "       This board cannot run without it. Check U7 and R-pullup on GP47.\n");
+            sleep_ms(2000);
+        }
+    }
 
     // Video before anything else that might fail, so a failure has
     // somewhere to be seen from the far end of an HDMI cable. The DMA
     // interrupt it installs belongs to this core and stays here.
     vga_init();
     scr_init();
-    draw_header();
+
+    /*
+     * The report takes the screen here, in the menus' own window.
+     *
+     * After vga_init() because it sets the video mode, and after
+     * psram_init() because the surface it draws on is over there. With
+     * no PSRAM fitted it declines and the eighty-column text mode stays
+     * up, which is the only configuration that still sees the old
+     * report.
+     */
+    ui_report_begin();
 
     // Before core 1 exists: it claims DMA channels and a pacing timer,
     // and core 1 starts pushing samples the moment the Spectrum starts.
@@ -314,10 +322,15 @@ int main(void) {
      * boot screen, which is on display for longer than that anyway.
      */
     const absolute_time_t usb_deadline = make_timeout_time_ms(1500);
-    while (!usbkbd_present() && absolute_time_diff_us(get_absolute_time(), usb_deadline) > 0)
+    while (!usbkbd_present() && !usbkbd_pad_present()
+           && absolute_time_diff_us(get_absolute_time(), usb_deadline) > 0)
         usbkbd_task();
 
-    if (usbkbd_present())
+    if (usbkbd_present() && usbkbd_pad_present())
+        scr_pass("USB keyboard", "with a gamepad, on the USB-A port");
+    else if (usbkbd_pad_present())
+        scr_pass("USB gamepad", "enumerated on the USB-A port");
+    else if (usbkbd_present())
         scr_pass("USB keyboard", "enumerated on the USB-A port");
     else
         scr_log(ATTR(C_ICON_Y, C_PANEL),
@@ -346,6 +359,18 @@ int main(void) {
     if (settings_load()) printf("[cfg] settings loaded\n");
     else                 printf("[cfg] defaults\n");
 
+    /*
+     * The flat memory stage 0 tests the bus with is RAM bank 0.
+     *
+     * Safe because the order is: core 1 runs the self-test, and only
+     * afterwards does spec_init() lay a machine over the banks. The test
+     * fills it with patterns and the machine overwrites them, which is
+     * exactly the right relationship -- and it is sixteen kilobytes of
+     * .bss that used to exist for the first second after reset and then
+     * never again. See z80_bus.h.
+     */
+    z80_mem = spec_ram[0];
+
     multicore_launch_core1_with_stack(core1_main, core1_stack, sizeof core1_stack);
 
     /*
@@ -360,6 +385,16 @@ int main(void) {
         audio_task();
 #if USB_KEYBOARD
         usbkbd_task();
+
+        /*
+         * Mount or unmount a USB stick as it comes and goes.
+         *
+         * In the loop, because a stick may be plugged in at any moment.
+         * Here and not in the TinyUSB callback because f_mount() reads
+         * the medium, and reading the medium needs tuh_task() to run --
+         * so mounting from inside tuh_task() would wait for itself.
+         */
+        usbdisk_task();
 
         /*
          * F1, asked for from inside a TinyUSB callback and acted on here.

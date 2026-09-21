@@ -16,9 +16,13 @@ target_sources(spectrum INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/storage.c
         ${CMAKE_CURRENT_LIST_DIR}/loader.c
         ${CMAKE_CURRENT_LIST_DIR}/tape.c
+        ${CMAKE_CURRENT_LIST_DIR}/dck.c
+        ${CMAKE_CURRENT_LIST_DIR}/divmmc.c
+        ${CMAKE_CURRENT_LIST_DIR}/fdc.c
+        ${CMAKE_CURRENT_LIST_DIR}/zip.c
         ${CMAKE_CURRENT_LIST_DIR}/settings.c
         ${CMAKE_CURRENT_LIST_DIR}/beta.c)
 
 target_include_directories(spectrum INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
-target_link_libraries(spectrum INTERFACE dino_core audio fatfs psram hardware_gpio)
+target_link_libraries(spectrum INTERFACE dino_core audio fatfs miniz psram hardware_gpio)

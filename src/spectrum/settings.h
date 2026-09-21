@@ -60,6 +60,29 @@ typedef enum : uint8_t {
  * has no attenuator between GP46 and the encoder, so the level has to
  * come out of the mix.
  */
+/*
+ * Which of three palettes the menu draws itself in.
+ *
+ * The menu is pico-speccy's, and so are two of these. Theirs is designed
+ * in a slate theme -- 0x1C232F for a panel, 0x101116 behind it -- whose
+ * darks sit nowhere near the four levels a two-resistor ladder can make,
+ * so their VGA driver offers it two ways: dithered across a 2x2 block of
+ * output pixels, or rounded onto the grid by hand.
+ *
+ * On this board the dither is a visible checkerboard. It has only the
+ * one doubled pixel to work in, and the step it has to fill -- black to
+ * 0x555555 -- is a third of full scale, so a panel that should be a flat
+ * near-black comes out as grey speckle. It is kept because it is their
+ * code and on some displays it is the closer answer, but it is not the
+ * default here.
+ */
+typedef enum : uint8_t {
+    UI_THEME_BLACK = 0,     // on the grid, panels black -- the default
+    UI_THEME_NAVY,          // pico-speccy's own on-grid table, panels navy
+    UI_THEME_SLATE,         // their slate theme, Bayer-dithered
+    UI_THEME_COUNT,
+} ui_theme_t;
+
 typedef enum : uint8_t {
     OUTPUT_JACK = 0,    // the 3.5 mm jack or the buzzer, through Q1
     OUTPUT_HDMI,        // the MS9288A's line input, which wants a third of it
@@ -98,6 +121,46 @@ typedef struct {
 
     // --- video ---
     uint8_t scanlines;      // dim every second output line
+    /*
+     * ULA+: sixty-four programmable colours through ports #BF3B/#FF3B.
+     *
+     * Off by default, as it is on a real machine: the attribute byte
+     * means something different while it is on, so software that does
+     * not know about it would come out in whatever the palette happened
+     * to hold. Turning it on only makes the ports answer -- the guest
+     * still has to enable the palette itself.
+     */
+    uint8_t ulaplus;
+    /*
+     * Gigascreen: show both screens at once instead of alternately.
+     *
+     * The trick the software plays is to write two pictures, into banks
+     * 5 and 7, and flip the ULA between them every frame -- at 50 Hz the
+     * eye averages the pair and sees colours the fifteen do not contain.
+     * On a fifty-hertz television it flickers; on anything since, it
+     * flickers worse.
+     *
+     * pico-speccy answers that by blending the two into one displayed
+     * colour, and so does this -- but where theirs has a framebuffer and
+     * a 120-entry blend table, this has neither, so the blend happens in
+     * the 2x2 output block every Spectrum pixel already occupies. Half
+     * the block is bank 5 and half is bank 7, and the averaging is the
+     * eye's, in space rather than in time. No flicker at all.
+     *
+     * With it on the ULA's own screen-select bit is ignored: both are
+     * always on screen, so there is nothing left for it to select.
+     */
+    uint8_t gigascreen;
+    /*
+     * The Timex SCLD's video modes, through port #FF.
+     *
+     * Off by default because #FF is the floating-bus address: a great
+     * deal of ordinary software writes to it by accident, and a machine
+     * that switched to hi-res because a game happened to OUT there would
+     * look broken with no way to guess why.
+     */
+    uint8_t timex;
+    uint8_t ui_theme;       // ui_theme_t: which of the three menu palettes
 
     // --- input ---
     uint8_t joystick;       // joystick_t
@@ -109,6 +172,23 @@ typedef struct {
 
     // --- storage ---
     uint8_t betadisk;       // the Beta Disk interface and its TR-DOS ROM
+    /*
+     * The write-protect tab, for both drives.
+     *
+     * On means the guest's writes never reach the image at all, which is
+     * what the switch does on the real interface -- not "refuse to save
+     * afterwards" but "the disk does not change". Off by default,
+     * because a game that saves progress should be able to.
+     */
+    uint8_t disk_wrprot;
+    /*
+     * DivMMC, and esxDOS in its EEPROM.
+     *
+     * Off by default and mutually exclusive with the Beta Disk in
+     * practice: both page themselves in on a fetch at #3D00-#3DFF, so
+     * with the two on they fight over the bottom of the address space.
+     */
+    uint8_t esxdos;
     uint8_t tape_autostart; // type LOAD "" after mounting a .tap
 } settings_t;
 

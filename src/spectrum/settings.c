@@ -44,6 +44,12 @@ static const field_t fields[] = {
     { "soundrive",      &settings.soundrive,      1  },
 
     { "scanlines",      &settings.scanlines,      1  },
+    { "ulaplus",        &settings.ulaplus,        1  },
+    { "disk_wrprot",    &settings.disk_wrprot,    1  },
+    { "esxdos",         &settings.esxdos,         1  },
+    { "gigascreen",     &settings.gigascreen,     1  },
+    { "timex",          &settings.timex,          1  },
+    { "ui_theme",       &settings.ui_theme,       UI_THEME_COUNT - 1 },
 
     { "joystick",       &settings.joystick,       JOY_COUNT - 1 },
     { "kempston_port",  &settings.kempston_port,  1  },
@@ -89,6 +95,12 @@ void settings_defaults(void) {
         .soundrive      = 0,
 
         .scanlines      = 0,
+        .ulaplus        = 0,
+        .disk_wrprot    = 0,
+        .esxdos         = 0,
+        .gigascreen     = 0,
+        .timex          = 0,
+        .ui_theme       = UI_THEME_BLACK,
 
         .joystick       = JOY_KEMPSTON,
         .kempston_port  = 0,
