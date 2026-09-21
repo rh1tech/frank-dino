@@ -19,6 +19,7 @@
 #include "divmmc.h"
 #include "fdc.h"
 #include "saa.h"
+#include "tapein.h"
 #include "dino.h"
 #include "settings.h"
 #include "tape.h"
@@ -339,6 +340,14 @@ static uint8_t ay_sel;          // which chip the ports are talking to
 
 // The last byte written to the ULA's port, which the EAR bit reads back.
 static volatile uint8_t last_fe;
+/*
+ * How far into the frame the machine has run, in T-states.
+ *
+ * Only the tape input needs it: their sampler is indexed by position
+ * within the frame, so that the buffer is read across at the speed the
+ * frame actually took rather than the speed it was supposed to take.
+ */
+static uint32_t frame_pos;
 
 /*
  * Two ways of bolting a real DAC onto a machine that has none.
@@ -1144,8 +1153,21 @@ static uint8_t __not_in_flash_func(spec_io_in)(const uint16_t port) {
          * apart, and one written for an issue 2 reads the key rows as
          * permanently pressed on an issue 3.
          */
-        const uint8_t ear = settings.issue2 ? ((last_fe & 0x18) ? 0x40 : 0)
-                                            : ((last_fe & 0x10) ? 0x40 : 0);
+        /*
+         * The EAR bit, from a real tape if one is playing.
+         *
+         * Their rule: the live input wins only when no image is
+         * mounted. With a tape mounted the ROM trap is doing the
+         * loading and there is nothing to decode; without one, the
+         * bit is whatever the machine last wrote to the ULA, which is
+         * what a Spectrum with nothing plugged in reads back.
+         */
+        uint8_t ear;
+        if (unlikely(tapein_running()) && !tape_mounted())
+            ear = tapein_level(frame_pos) ? 0x40 : 0;
+        else
+            ear = settings.issue2 ? ((last_fe & 0x18) ? 0x40 : 0)
+                                  : ((last_fe & 0x10) ? 0x40 : 0);
         return (uint8_t)(result | 0xA0 | ear);
     }
 
@@ -1566,6 +1588,15 @@ uint32_t spec_samples_per_frame(void) { return samples_per_frame; }
 
 static uint32_t ay_tick_frac;
 
+/*
+ * How far into the frame the machine has run, in T-states.
+ *
+ * Only the tape input needs it: their sampler is indexed by position
+ * within the frame, so that the buffer is read across at the speed the
+ * frame actually took rather than the speed it was supposed to take.
+ */
+static uint32_t frame_pos;
+
 __force_inline static uint32_t ay_ticks_for_one_sample(void) {
     ay_tick_frac += AY_TICKS_Q16;
     const uint32_t t = ay_tick_frac >> 16;
@@ -1576,6 +1607,7 @@ __force_inline static uint32_t ay_ticks_for_one_sample(void) {
 __force_inline static void run_slice(const uint32_t tstates, const uint32_t num) {
     (void)num;
     z80_run(tstates);
+    frame_pos += tstates;
 
     /*
      * The mix, once per sample.
@@ -1856,6 +1888,11 @@ static void track_ring(void) {
 
 static void run_frame(void) {
     track_ring();
+
+    /* Swap the tape input's buffers before the machine runs into the
+     * frame they describe. */
+    frame_pos = 0;
+    if (unlikely(tapein_running())) tapein_frame_started(spec_frame_tstates());
 
     /*
      * The whole main loop of the machine, sliced.

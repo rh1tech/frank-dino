@@ -28,6 +28,7 @@
 
 #include "audio.h"
 #include "beta.h"
+#include "tapein.h"
 #include "dck.h"
 #include "divmmc.h"
 #include "fdc.h"
@@ -715,8 +716,21 @@ static const ui_node_t input_kids[] = {
     UI_BOOL ("Cursor keys as joy", &settings.cursor_as_joy, NULL),
 };
 
+/*
+ * The tape input shares GP45 with the console's RX -- the schematic
+ * calls the net TAPE_UART_RX -- so switching it on takes the pin and
+ * nothing typed at the console arrives until it goes off again.
+ */
+static void real_player_changed(void) {
+    if (settings.real_player) tapein_start();
+    else                      tapein_stop();
+    say(settings.real_player ? "Tape input on J9; console RX is off"
+                             : "Tape input off; console RX is back");
+}
+
 static const ui_node_t storage_kids[] = {
     UI_BOOL   ("Auto-start tapes", &settings.tape_autostart, NULL),
+    UI_BOOL   ("Real tape on J9",  &settings.real_player, real_player_changed),
     UI_BOOL   ("Write-protect disks", &settings.disk_wrprot, NULL),
     UI_ACTIONV("Eject tape",       tape_action, tape_info),
     UI_BOOL   ("Beta Disk (TR-DOS)", &settings.betadisk, betadisk_changed),

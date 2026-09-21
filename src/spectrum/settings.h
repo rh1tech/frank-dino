@@ -119,6 +119,7 @@ typedef struct {
     uint8_t covox;          // 8-bit DAC on port #FB
     uint8_t soundrive;      // four 8-bit DACs on #0F/#1F/#4F/#5F
     uint8_t saa;            // a SAA1099 on the #FF family, as the Profi has
+    uint8_t real_player;    // load from a cassette on J9 rather than an image
 
     // --- video ---
     uint8_t scanlines;      // dim every second output line

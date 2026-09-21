@@ -43,6 +43,7 @@ static const field_t fields[] = {
     { "covox",          &settings.covox,          1  },
     { "soundrive",      &settings.soundrive,      1  },
     { "saa",            &settings.saa,            1  },
+    { "real_player",    &settings.real_player,    1  },
 
     { "scanlines",      &settings.scanlines,      1  },
     { "ulaplus",        &settings.ulaplus,        1  },
@@ -95,6 +96,7 @@ void settings_defaults(void) {
         .covox          = 0,
         .soundrive      = 0,
         .saa            = 0,
+        .real_player    = 0,
 
         .scanlines      = 0,
         .ulaplus        = 0,

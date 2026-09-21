@@ -45,6 +45,7 @@
 #include "psram.h"
 #include "settings.h"
 #include "spectrum.h"
+#include "tapein.h"
 #include "vga.h"
 #include "z80_bus.h"
 
@@ -357,6 +358,9 @@ int main(void) {
      * return value only says whether a file was found.
      */
     if (settings_load()) printf("[cfg] settings loaded\n");
+
+    /* Takes GP45 off the console; see tapein.h. */
+    if (settings.real_player) tapein_start();
     else                 printf("[cfg] defaults\n");
 
     /*

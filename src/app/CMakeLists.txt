@@ -97,6 +97,7 @@ add_subdirectory(${SRC_ROOT}/drivers/audio drivers/audio)
 add_subdirectory(${SRC_ROOT}/drivers/miniz drivers/miniz)
 add_subdirectory(${SRC_ROOT}/drivers/psram drivers/psram)
 add_subdirectory(${SRC_ROOT}/drivers/usbdisk drivers/usbdisk)
+add_subdirectory(${SRC_ROOT}/drivers/tapein drivers/tapein)
 add_subdirectory(${SRC_ROOT}/spectrum    spectrum)
 add_subdirectory(${SRC_ROOT}/drivers/vga drivers/vga)
 add_subdirectory(${SRC_ROOT}/ui          ui)
@@ -144,6 +145,7 @@ target_link_libraries(frank-dino PRIVATE
         miniz
         psram
         usbdisk
+        tapein
         vga
         sdcard
 

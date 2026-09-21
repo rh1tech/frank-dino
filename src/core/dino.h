@@ -120,6 +120,16 @@
 #define UART_TX_PIN      44
 #define UART_RX_PIN      45
 
+/*
+ * The tape input (J9) and the console's RX are the same net.
+ *
+ * The schematic calls it TAPE_UART_RX: the comparator on the tape
+ * sheet drives the pin the UART receives on, so GP45 is one or the
+ * other and never both. Loading from a real tape costs the console's
+ * receive side for as long as it is switched on.
+ */
+#define TAPEIN_PIN       UART_RX_PIN
+
 #define SPEAKER_PIN      46     // through S2, to the jack / buzzer / HDMI audio
 #define PSRAM_CS_PIN     47     // ESP-PSRAM64H (U7) on XIP CS1, 10k pull-up
 
