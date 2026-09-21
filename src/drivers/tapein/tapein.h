@@ -81,3 +81,13 @@ uint8_t tapein_probe(void);
 
 /* What the probe said last, including the one tapein_start() runs. */
 extern uint8_t tapein_last_probe;
+
+/*
+ * What the line is doing, as a short line of text for the menu.
+ *
+ * "idle" when nothing is crossing the comparator, "nothing connected"
+ * when the pin is not even being driven, and a frequency otherwise --
+ * named when it is one the ROM is listening for. Reading it clears the
+ * counters, so it shows the moment rather than the session.
+ */
+void tapein_stats(char *out, unsigned len);

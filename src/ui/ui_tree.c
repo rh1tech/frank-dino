@@ -728,9 +728,19 @@ static void real_player_changed(void) {
                              : "Tape input off; console RX is back");
 }
 
+static bool real_player_on(void) { return settings.real_player != 0; }
+
+/* Live, so the level can be set by watching it rather than by guessing. */
+static const char *tapein_info(void) {
+    static char buf[32];
+    tapein_stats(buf, sizeof buf);
+    return buf;
+}
+
 static const ui_node_t storage_kids[] = {
     UI_BOOL   ("Auto-start tapes", &settings.tape_autostart, NULL),
     UI_BOOL   ("Real tape on J9",  &settings.real_player, real_player_changed),
+    UI_ACTIONV_EN("  Tape input",  NULL, tapein_info, real_player_on),
     UI_BOOL   ("Write-protect disks", &settings.disk_wrprot, NULL),
     UI_ACTIONV("Eject tape",       tape_action, tape_info),
     UI_BOOL   ("Beta Disk (TR-DOS)", &settings.betadisk, betadisk_changed),

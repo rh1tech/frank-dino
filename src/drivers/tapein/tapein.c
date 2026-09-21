@@ -10,6 +10,7 @@
 
 #include "tapein.h"
 
+#include <stdio.h>
 #include <string.h>
 
 #include <hardware/gpio.h>
@@ -39,6 +40,20 @@ static uint32_t frame_tstates;          /* how long this frame is */
 static repeating_timer_t timer;
 static bool running;
 
+/*
+ * What the line has been doing lately, counted as it arrives.
+ *
+ * Measuring this from the buffer afterwards would mean walking 2500
+ * bits, and the only place that could happen is the frame boundary on
+ * core 1 -- which is the one place on this machine with nothing to
+ * spare. Counting a transition as it is sampled is two compares.
+ */
+static volatile uint32_t tr_count;      /* transitions since last read */
+static volatile uint32_t run_sum;       /* total length of closed runs */
+static volatile uint32_t run_n;         /* how many closed runs */
+static uint32_t cur_run;
+static uint8_t  last_level;
+
 uint8_t tapein_probe(void);
 
 /*
@@ -61,6 +76,17 @@ static bool __not_in_flash_func(tapein_tick)(repeating_timer_t *rt) {
 
     unsigned wait = 20;
     while (lock_in && wait) --wait;
+
+    if (v != last_level) {
+        tr_count++;
+        /* Runs of one sample are noise, and very long ones are silence;
+         * neither says anything about the pitch of a tone. */
+        if (cur_run >= 2u && cur_run <= 600u) { run_sum += cur_run; run_n++; }
+        cur_run = 1;
+        last_level = v;
+    } else if (cur_run < 0xFFFFu) {
+        cur_run++;
+    }
 
     uint8_t *const p = (a_in ? buf_b : buf_a) + (at >> 3);
     const unsigned bit = at & 7u;
@@ -158,6 +184,29 @@ uint8_t tapein_probe(void) {
 }
 
 bool tapein_running(void) { return running; }
+
+void tapein_stats(char *out, const unsigned len) {
+    if (!running) { snprintf(out, len, "off"); return; }
+
+    const uint32_t tr = tr_count, sum = run_sum, n = run_n;
+    tr_count = 0; run_sum = 0; run_n = 0;
+
+    if (tapein_last_probe == 2u) { snprintf(out, len, "nothing connected"); return; }
+    if (!n || tr < 8u)           { snprintf(out, len, "idle"); return; }
+
+    /*
+     * A run is half a cycle, so the frequency is half the reciprocal of
+     * its length. The named ones are what the ROM is listening for: its
+     * leader is 807 Hz and its bits are about 2.1 kHz.
+     */
+    const uint32_t half_us = (sum * 1000000u / TAPEIN_SAMPLE_HZ) / n;
+    const uint32_t hz = half_us ? 500000u / half_us : 0u;
+
+    const char *what = (hz > 700u  && hz < 950u)  ? " header"
+                     : (hz > 1700u && hz < 2600u) ? " data"
+                                                  : "";
+    snprintf(out, len, "%lu Hz%s", (unsigned long)hz, what);
+}
 
 void tapein_frame_started(const uint32_t tstates) {
     if (!running) return;
