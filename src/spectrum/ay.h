@@ -29,11 +29,24 @@
 // transposes everything the chip plays.
 #define AY_CLOCK_HZ 1773400u
 
-// The chip's own dividers. Tone and noise counters step at the chip clock
-// over sixteen; the envelope steps at the chip clock over two hundred and
-// fifty six. Both are properties of the silicon, not choices.
-#define AY_TONE_DIV 16u
-#define AY_ENV_DIV  256u
+/*
+ * Every counter in the chip is clocked at the chip clock over eight.
+ *
+ * The datasheet quotes results rather than mechanism -- tone frequency
+ * fclock/(16*TP), noise fclock/(16*NP), envelope fclock/(256*EP) -- and
+ * it is easy to read those as the divisors. They are not. The counters
+ * all run at fclock/8; a tone *toggles* its output when its counter
+ * reaches TP, so a full cycle is 2*TP counts and the frequency works out
+ * as fclock/(16*TP). The envelope's quoted figure is the rate of the
+ * whole 32-step cycle, so its step rate is 32 times that, which is
+ * fclock/(8*EP) -- a counter at fclock/8 expiring every EP.
+ *
+ * Taking 16 and 256 as the divisors puts every tone an octave low and
+ * every envelope four times too slow. It is hard to hear and trivial to
+ * measure, which is what ay_selftest() is for: it reported 125 Hz where
+ * arithmetic said 260.18.
+ */
+#define AY_COUNTER_DIV 8u
 
 typedef struct {
     uint8_t  reg[16];
@@ -76,3 +89,16 @@ uint8_t ay_read(const ay_t *ay);
  * aliasing into something else at 44.1 kHz.
  */
 int32_t ay_render(ay_t *ay, uint32_t ticks);
+
+/*
+ * Check the model against arithmetic, with no audio hardware involved.
+ *
+ * Programs a known tone period, renders a tenth of a second, and counts
+ * the transitions in what comes out. The expected frequency is just
+ * clock/(16*period), so this either matches or it does not — and unlike
+ * listening to the board, it cannot be confused by a keyclick, a mixer
+ * setting or a BASIC editor that will not take an ENTER.
+ *
+ * Fills `detail` either way.
+ */
+bool ay_selftest(char *detail, unsigned detail_len);

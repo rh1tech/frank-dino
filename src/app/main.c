@@ -38,6 +38,7 @@
 #include "ff.h"
 #include "diskio.h"   // after ff.h: it uses FatFs's own typedefs
 #include "selftest.h"
+#include "ay.h"
 #include "launch.h"
 #include "spectrum.h"
 #include "vga.h"
@@ -176,7 +177,10 @@ static void core1_main(void) {
      * machine spins in the probe for ever and the screen stays black,
      * which it duly did.
      */
-    char detail[72];
+    char detail[80];
+    if (ay_selftest(detail, sizeof detail)) scr_pass("AY-3-8912", "%s", detail);
+    else                                    scr_fail("AY-3-8912", "%s", detail);
+
     const bool tramp_ok = spec_launch_selftest(detail, sizeof detail);
     spec_init();
 

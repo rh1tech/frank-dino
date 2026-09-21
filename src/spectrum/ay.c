@@ -8,8 +8,10 @@
 
 #include "ay.h"
 
+#include <stdio.h>
 #include <string.h>
 
+#include "audio.h"
 #include "dino.h"
 
 /*
@@ -111,15 +113,14 @@ __force_inline static void env_step(ay_t *ay) {
 // ---------------------------------------------------------------------------
 
 int32_t ay_render(ay_t *ay, const uint32_t ticks) {
-    // The counters step at the chip clock over sixteen; work in those
-    // units and keep the remainder in the chip, not in a static.
+    // Work in counter ticks and keep the remainder in the chip, not in a
+    // static -- TurboSound has two of these.
     const uint32_t tsum = ticks + ay->tone_rem;
-    const uint32_t tone_ticks = tsum / AY_TONE_DIV;
-    ay->tone_rem = tsum % AY_TONE_DIV;
+    const uint32_t tone_ticks = tsum / AY_COUNTER_DIV;
+    ay->tone_rem = tsum % AY_COUNTER_DIV;
 
-    const uint32_t esum = ticks + ay->env_rem;
-    uint32_t envt = esum / AY_ENV_DIV;
-    ay->env_rem = esum % AY_ENV_DIV;
+    // The envelope counter is the same rate; only what it counts differs.
+    uint32_t envt = tone_ticks;
 
     while (envt--) {
         const uint16_t period = (uint16_t)(ay->reg[11] | (ay->reg[12] << 8));
@@ -203,8 +204,73 @@ int32_t ay_render(ay_t *ay, const uint32_t ticks) {
         }
     }
 
-    // Three channels at full scale would be 3 * 65535; bring that back to
-    // something the mixer can add the beeper to without clipping on the
-    // first loud chord.
-    return (int32_t)(acc / (int32_t)steps / 8);
+    /*
+     * Headroom, worked out rather than guessed.
+     *
+     * Three channels at full scale is 3 x 65535. Two chips of that plus
+     * the beeper has to stay inside a signed 16-bit sample, so each chip
+     * gets an eighth of the range: 196605/16 is 12287, twice that is
+     * 24574, and the beeper's +/-6000 on top reaches 30574 -- just under
+     * 32767 with nothing to spare but nothing lost either.
+     *
+     * The first version divided by 8 and reached 57150. That clipped on
+     * every loud passage, which a spectrum analyser showed as a peak
+     * pinned at full scale and a thousand clipped samples in six seconds.
+     */
+    return (int32_t)(acc / (int32_t)steps / 16);
+}
+
+// ---------------------------------------------------------------------------
+// Proving it
+// ---------------------------------------------------------------------------
+
+bool ay_selftest(char *detail, const unsigned detail_len) {
+    // 426 puts the tone at 1773400/(16*426) = 260.2 Hz, near middle C and
+    // comfortably inside the range 44100 Hz can resolve without the
+    // averaging in ay_render() smearing it.
+    const uint16_t period = 426;
+    // fclock/(16*TP), which is the datasheet's formula and what a tuner
+    // would read if this chip were on a bench.
+    const uint32_t expect_mhz = AY_CLOCK_HZ * 1000u / (16u * period);   // milli-Hz
+
+    ay_t chip;
+    ay_reset(&chip);
+    ay_select(&chip, 0);  ay_write(&chip, (uint8_t)(period & 0xFF));
+    ay_select(&chip, 1);  ay_write(&chip, (uint8_t)(period >> 8));
+    ay_select(&chip, 7);  ay_write(&chip, 0x3E);   // tone A only; every bit is a disable
+    ay_select(&chip, 8);  ay_write(&chip, 0x0F);   // channel A at full volume
+
+    // A tenth of a second at the audio rate, advanced by exactly the chip
+    // cycles each sample covers -- the same call the frame loop makes.
+    const uint32_t samples = AUDIO_RATE_HZ / 10u;
+    const uint32_t ticks   = AY_CLOCK_HZ / AUDIO_RATE_HZ;
+    (void)AY_COUNTER_DIV;
+
+    int32_t prev = ay_render(&chip, ticks);
+    int32_t mid  = prev / 2;
+    uint32_t crossings = 0;
+    bool high = prev > mid;
+
+    for (uint32_t i = 1; i < samples; i++) {
+        const int32_t v = ay_render(&chip, ticks);
+        if (v > 0 && (uint32_t)v > (uint32_t)mid * 3u / 2u) mid = v / 2;   // track the level
+        const bool now = v > mid;
+        if (now != high) { crossings++; high = now; }
+    }
+
+    // Two crossings per cycle, over a tenth of a second.
+    const uint32_t got_mhz = crossings * 1000u * 10u / 2u;
+
+    const uint32_t lo = expect_mhz - expect_mhz / 20u, hi = expect_mhz + expect_mhz / 20u;
+    if (got_mhz < lo || got_mhz > hi) {
+        snprintf(detail, detail_len, "period %u gave %lu.%02lu Hz, wanted %lu.%02lu",
+                 period, (unsigned long)(got_mhz / 1000), (unsigned long)((got_mhz % 1000) / 10),
+                 (unsigned long)(expect_mhz / 1000), (unsigned long)((expect_mhz % 1000) / 10));
+        return false;
+    }
+
+    snprintf(detail, detail_len, "tone %lu.%02lu Hz from period %u (wanted %lu.%02lu)",
+             (unsigned long)(got_mhz / 1000), (unsigned long)((got_mhz % 1000) / 10), period,
+             (unsigned long)(expect_mhz / 1000), (unsigned long)((expect_mhz % 1000) / 10));
+    return true;
 }

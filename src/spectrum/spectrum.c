@@ -291,9 +291,11 @@ static const key_t key_digits[10] = {
 // is a press it can miss entirely.
 #define KEY_HOLD_FRAMES 3
 
-static struct { uint8_t row, bit; } held[3];
+static struct { uint8_t row, bit; } held[4];
 static unsigned held_count;
 static unsigned held_frames;
+
+#define SYM() hold(R_SPACE, 1)      // SYMBOL SHIFT, which most symbols need
 
 static void hold(const uint8_t row, const uint8_t bit) {
     if (held_count >= count_of(held)) return;
@@ -344,14 +346,46 @@ void spec_key_ascii(char c) {
     }
     if (c >= '0' && c <= '9') { hold(key_digits[c - '0'].row, key_digits[c - '0'].bit); return; }
 
+    /*
+     * Everything else is a chord.
+     *
+     * A Spectrum keyboard has forty keys and no punctuation at all: every
+     * symbol is SYMBOL SHIFT with a letter or a digit, and the pairings
+     * are printed on the keys rather than following any pattern. This is
+     * that table. Without it a BASIC line containing a colon or a bracket
+     * cannot be typed, which rules out most of the useful ones.
+     */
     switch (c) {
         case '\r': case '\n': hold(R_ENTER,  0); break;
-        case ' ':             hold(R_SPACE,  0); break;
-        // Backspace is CAPS SHIFT + 0 on a Spectrum; there is no key for it.
-        case 0x7F: case '\b': hold(R_CSZXCV, 0); hold(R_09876, 0); break;
-        case '.':             hold(R_SPACE,  1); hold(R_SPACE, 2); break;   // SYM+M
-        case ',':             hold(R_SPACE,  1); hold(R_SPACE, 3); break;   // SYM+N
-        case '"':             hold(R_SPACE,  1); hold(R_POIUY, 0); break;   // SYM+P
+        case ' ':              hold(R_SPACE,  0); break;
+        case 0x7F: case '\b':  hold(R_CSZXCV, 0); hold(R_09876, 0); break;  // DELETE
+
+        case '!': SYM(); hold(R_12345, 0); break;
+        case '@': SYM(); hold(R_12345, 1); break;
+        case '#': SYM(); hold(R_12345, 2); break;
+        case '$': SYM(); hold(R_12345, 3); break;
+        case '%': SYM(); hold(R_12345, 4); break;
+        case '&': SYM(); hold(R_09876, 4); break;
+        case '\'':SYM(); hold(R_09876, 3); break;
+        case '(': SYM(); hold(R_09876, 2); break;
+        case ')': SYM(); hold(R_09876, 1); break;
+        case '_': SYM(); hold(R_09876, 0); break;
+
+        case '<': SYM(); hold(R_QWERT, 3); break;   // R
+        case '>': SYM(); hold(R_QWERT, 4); break;   // T
+        case ';': SYM(); hold(R_POIUY, 1); break;   // O
+        case '"': SYM(); hold(R_POIUY, 0); break;   // P
+        case '-': SYM(); hold(R_ENTER, 3); break;   // J
+        case '+': SYM(); hold(R_ENTER, 2); break;   // K
+        case '=': SYM(); hold(R_ENTER, 1); break;   // L
+        case '^': SYM(); hold(R_ENTER, 4); break;   // H
+        case ':': SYM(); hold(R_CSZXCV, 1); break;  // Z
+        case '?': SYM(); hold(R_CSZXCV, 3); break;  // C
+        case '/': SYM(); hold(R_CSZXCV, 4); break;  // V
+        case '*': SYM(); hold(R_SPACE, 4); break;   // B
+        case ',': SYM(); hold(R_SPACE, 3); break;   // N
+        case '.': SYM(); hold(R_SPACE, 2); break;   // M
+
         default: held_frames = 0; break;
     }
 }
@@ -433,8 +467,8 @@ __force_inline static void run_slice(const uint32_t tstates) {
      * under its own sound effects. This is the compromise every emulator
      * makes; it is a mix decision, not a measurement.
      */
-    if (spec_beeper) s += 8000;
-    else             s -= 8000;
+    if (spec_beeper) s += 6000;
+    else             s -= 6000;
 
     audio_push(s);
 }
