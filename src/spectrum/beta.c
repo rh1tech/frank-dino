@@ -8,6 +8,9 @@
 
 #include "beta.h"
 
+#include "settings.h"
+#include "storage.h"
+
 #include <stdio.h>
 #include <string.h>
 
@@ -18,6 +21,12 @@
 #include "settings.h"
 
 uint8_t trd_image[TRD_MAX_BYTES] __attribute__((section(".psram")));
+
+/* Where the image came from, and whether the guest has changed it. */
+static char image_path[STORAGE_MAX_PATH];
+static bool image_dirty;
+
+bool beta_dirty(void) { return image_dirty; }
 
 // ---------------------------------------------------------------------------
 // The disk
@@ -132,20 +141,12 @@ void beta_reset(void) {
     if (!mounted) wd.status |= ST_NOTREADY;
 }
 
-bool beta_mount(const uint32_t len, char *detail, const unsigned detail_len) {
-    if (!psram_size()) {
-        snprintf(detail, detail_len, "disks need the PSRAM, and none was found");
-        return false;
-    }
-    if (len < TRD_TRACK * TRD_SIDES || len > TRD_MAX_BYTES) {
-        snprintf(detail, detail_len, "a .trd of %luK is not a disk",
-                 (unsigned long)(len / 1024));
-        return false;
-    }
-
+bool beta_mount(const uint32_t len, const char *path, char *detail, const unsigned detail_len) {
     image_len = len;
     tracks    = len / (TRD_TRACK * TRD_SIDES);
     mounted   = true;
+    image_dirty = false;
+    snprintf(image_path, sizeof image_path, "%s", path ? path : "");
     beta_reset();
 
     /*
@@ -165,8 +166,24 @@ bool beta_mount(const uint32_t len, char *detail, const unsigned detail_len) {
     return true;
 }
 
+bool beta_save(char *detail, const unsigned detail_len) {
+    if (!mounted)        { snprintf(detail, detail_len, "No disk is in the drive."); return false; }
+    if (!image_path[0])  { snprintf(detail, detail_len, "This disk came from nowhere to put it back."); return false; }
+    if (!image_dirty)    { snprintf(detail, detail_len, "Nothing has changed."); return true; }
+
+    if (!storage_write(image_path, trd_image, image_len)) {
+        snprintf(detail, detail_len, "The card would not take it.");
+        return false;
+    }
+    image_dirty = false;
+    snprintf(detail, detail_len, "Saved %s", image_path);
+    return true;
+}
+
 void beta_eject(void) {
     mounted = false;
+    image_dirty = false;
+    image_path[0] = 0;
     beta_reset();
 }
 
@@ -415,7 +432,7 @@ static void command(const uint8_t cmd) {
 #define BETA_SELECTED(p) (((p) & 0x03) == 0x03)
 #define BETA_REG(p)      (((p) >> 5) & 0x07)
 
-bool beta_port_out(const uint16_t port, const uint8_t value) {
+bool __not_in_flash_func(beta_port_out)(const uint16_t port, const uint8_t value) {
     // Only while the ROM is in. That is the real interface's rule, and it
     // is what lets a Kempston joystick share #1F with the status register.
     if (!settings.betadisk || !rom_paged || !BETA_SELECTED(port)) return false;
@@ -428,7 +445,11 @@ bool beta_port_out(const uint16_t port, const uint8_t value) {
         case 3:                                                 // #7F, data
             wd.data = value;
             if (wd.left && wd.writing) {
-                if (!wd.from_idfield && wd.addr < image_len) trd_image[wd.addr] = value;
+                if (!wd.from_idfield && wd.addr < image_len
+                    && !settings.disk_wrprot) {
+                    trd_image[wd.addr] = value;
+                    image_dirty = true;
+                }
                 wd.addr++;
                 if (--wd.left == 0) end_transfer();
             }
@@ -450,7 +471,7 @@ bool beta_port_out(const uint16_t port, const uint8_t value) {
     return true;
 }
 
-bool beta_port_in(const uint16_t port, uint8_t *value) {
+bool __not_in_flash_func(beta_port_in)(const uint16_t port, uint8_t *value) {
     if (!settings.betadisk || !rom_paged || !BETA_SELECTED(port)) return false;
 
     switch (BETA_REG(port)) {

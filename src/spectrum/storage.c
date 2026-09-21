@@ -39,11 +39,17 @@ static bool ext_is(const char *name, const char *ext) {
 file_kind_t storage_kind(const char *name) {
     if (ext_is(name, "tap")) return FILE_TAP;
     if (ext_is(name, "tzx")) return FILE_TZX;
+    if (ext_is(name, "pzx")) return FILE_PZX;
     if (ext_is(name, "sna")) return FILE_SNA;
     if (ext_is(name, "z80")) return FILE_Z80;
     if (ext_is(name, "trd")) return FILE_TRD;
     if (ext_is(name, "scl")) return FILE_SCL;
     if (ext_is(name, "scr")) return FILE_SCR;
+    if (ext_is(name, "dsk")) return FILE_DSK;
+    if (ext_is(name, "dck")) return FILE_DCK;
+    if (ext_is(name, "mmc")) return FILE_MMC;
+    if (ext_is(name, "hdf")) return FILE_MMC;
+    if (ext_is(name, "zip")) return FILE_ZIP;
     return FILE_OTHER;
 }
 
@@ -73,7 +79,13 @@ static int cmp(const storage_entry_t *a, const storage_entry_t *b) {
 }
 
 int storage_list(const char *dir, storage_entry_t *out, const int max) {
-    if (!mounted || max <= 0) return -1;
+    if (max <= 0) return -1;
+    /*
+     * The card has to be mounted for its own volume, but not for the
+     * USB stick's: a board with no card in it should still browse a
+     * stick, and f_opendir knows which volume "1:/" means.
+     */
+    if (!mounted && (dir[0] != '1' || dir[1] != ':')) return -1;
 
     DIR d;
     if (f_opendir(&d, dir) != FR_OK) return -1;
@@ -112,6 +124,30 @@ int32_t storage_size(const char *path) {
     FILINFO fi;
     if (!mounted || f_stat(path, &fi) != FR_OK) return -1;
     return (int32_t)fi.fsize;
+}
+
+bool storage_write(const char *path, const void *buf, const uint32_t len) {
+    FIL f;
+    if (f_open(&f, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return false;
+
+    /*
+     * In chunks, because FatFs takes a UINT and a Profi-sized image is
+     * comfortably past what one call should be asked to do in one go on
+     * a card that may be slow.
+     */
+    const uint8_t *p = (const uint8_t *)buf;
+    uint32_t left = len;
+    bool ok = true;
+    while (left && ok) {
+        const UINT want = left > 32768u ? 32768u : (UINT)left;
+        UINT put = 0;
+        ok = (f_write(&f, p, want, &put) == FR_OK && put == want);
+        p += put;
+        left -= put;
+    }
+    ok = (f_close(&f) == FR_OK) && ok;
+    if (!ok) f_unlink(path);
+    return ok;
 }
 
 int32_t storage_read(const char *path, void *buf, const uint32_t max) {

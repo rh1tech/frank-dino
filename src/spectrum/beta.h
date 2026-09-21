@@ -56,8 +56,28 @@
 #define TRD_MAX_BYTES (640 * 1024)
 extern uint8_t trd_image[TRD_MAX_BYTES];
 
-/* Take an image that is already in trd_image. */
-bool beta_mount(uint32_t len, char *detail, unsigned detail_len);
+/*
+ * Take an image that is already in trd_image.
+ *
+ * `path` is where it came from, remembered so the guest's writes can go
+ * back to it. NULL means nowhere -- the image is then read-only in the
+ * sense that matters, because there is no file to put it back into.
+ */
+bool beta_mount(uint32_t len, const char *path, char *detail, unsigned detail_len);
+
+/*
+ * Whether the guest has written to the disk since it was mounted or last
+ * saved, and putting those writes back on the card.
+ *
+ * Not automatic. A .trd is somebody's disk image and overwriting it is
+ * not a thing to do quietly -- so the controller records that it is
+ * dirty, the UI says so, and the saving is asked for. It is also what
+ * makes a write-protect switch mean something: with it on the writes
+ * never reach the image at all, which is what the switch does on the
+ * real interface.
+ */
+bool beta_dirty(void);
+bool beta_save(char *detail, unsigned detail_len);
 void beta_eject(void);
 bool beta_mounted(void);
 

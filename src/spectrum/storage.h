@@ -30,11 +30,16 @@ typedef enum : uint8_t {
     FILE_DIR,
     FILE_TAP,          // tape image
     FILE_TZX,          // tape image, the richer format
+    FILE_PZX,          // tape image, the one that describes pulses
     FILE_SNA,          // snapshot
     FILE_Z80,          // snapshot, the common one
     FILE_TRD,          // TR-DOS disk image
     FILE_SCL,          // the same disk with the empty space left out
     FILE_SCR,          // a bare screen dump
+    FILE_DSK,          // a +3 disk image
+    FILE_DCK,          // a Timex dock cartridge
+    FILE_MMC,          // an esxDOS card image (.mmc / .hdf)
+    FILE_ZIP,          // an archive; what is inside decides what it is
 } file_kind_t;
 
 typedef struct {
@@ -62,6 +67,16 @@ int storage_list(const char *dir, storage_entry_t *out, int max);
 
 /* What the extension says a file is. */
 file_kind_t storage_kind(const char *name);
+
+/*
+ * Write `len` bytes over `path`, replacing whatever was there.
+ *
+ * Used to put a disk image back after the guest has written to it. Truncates
+ * on failure rather than leaving a half-written file looking whole: a .trd
+ * that is the right length and the wrong contents is worse than one that is
+ * obviously broken.
+ */
+bool storage_write(const char *path, const void *buf, uint32_t len);
 
 /* Read a whole file into `buf`. Returns bytes read, or -1. */
 int32_t storage_read(const char *path, void *buf, uint32_t max);
