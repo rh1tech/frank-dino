@@ -163,6 +163,14 @@ static void psram_test_action(void) {
              (unsigned long)bad);
 }
 
+static void tone_action(void) {
+    const bool on = !spec_test_tone_is_on();
+    spec_test_tone(on);
+    snprintf(status, sizeof status,
+             on ? "441 Hz square into the mixer -- leave the menu to hear it"
+                : "Test tone off.");
+}
+
 static void trace_changed(void) {
     z80_trace_on = settings.bus_trace != 0;
     if (z80_trace_on) z80_trace_reset();
@@ -243,9 +251,10 @@ static const char *kbd_info(void) {
  */
 static const char *audio_info(void) {
     static char buf[40];
-    snprintf(buf, sizeof buf, "%lu/frame  %lu under  %lu over",
+    snprintf(buf, sizeof buf, "%lu/fr %lu-%lu-%lu",
              (unsigned long)spec_samples_per_frame(),
-             (unsigned long)audio_underruns, (unsigned long)audio_overruns);
+             (unsigned long)audio_underruns, (unsigned long)audio_overruns,
+             (unsigned long)audio_clips);
     return buf;
 }
 
@@ -367,6 +376,7 @@ static const row_t rows[] = {
     CHOICE("Record the bus",     &settings.bus_trace,      off_on,    trace_changed),
     ACTION("Show the bus trace",        trace_action),
     ACTION("Test the PSRAM",            psram_test_action),
+    ACTION("Test tone (441 Hz)",        tone_action),
     ACTION("Re-read the card",          rescan_action),
     ACTION("Save settings to the card", save_action),
     ACTION("Restore defaults",          defaults_action),

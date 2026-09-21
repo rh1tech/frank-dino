@@ -599,6 +599,58 @@ static uint8_t spec_io_in(const uint16_t port) {
     return 0xFF;
 }
 
+/*
+ * A known tone, for measuring the sound path rather than listening to it.
+ *
+ * Generated here and not by the AY, which matters: the 128K ROM's
+ * interrupt routine writes the chip's registers fifty times a second
+ * whether anything is playing or not, so a tone programmed into the AY
+ * from outside survives about twenty milliseconds. What came out was a
+ * dense inharmonic mess that looked like terrible distortion and was
+ * nothing of the kind.
+ *
+ * 441 Hz because 44100 divides by it exactly: a hundred samples to the
+ * cycle, so the square wave is the same every cycle and anything in the
+ * spectrum that is not 441 Hz and its odd harmonics was put there by
+ * this firmware or by the board.
+ */
+#define TEST_TONE_HZ      441u
+#define TEST_TONE_SAMPLES (AUDIO_RATE_HZ / TEST_TONE_HZ)   /* exactly 100 */
+
+/*
+ * A sine and not a square, because this is a measuring instrument.
+ *
+ * A square wave's harmonics run past Nyquist and fold back, so a
+ * spectrum of one is dense whatever the DAC does and there is no way to
+ * tell the folding from the distortion. A sine puts everything in one
+ * bin and makes every other bin evidence.
+ *
+ * Amplitude 8000 of 32767, which is -12 dBFS: loud enough to measure,
+ * quiet enough that nothing downstream clips.
+ */
+static const int16_t test_tone_wave[TEST_TONE_SAMPLES] = {
+         0,    502,   1003,   1499,   1990,   2472,   2945,   3406,   3854,   4287,
+      4702,   5099,   5476,   5832,   6164,   6472,   6755,   7010,   7239,   7438,
+      7608,   7749,   7858,   7937,   7984,   8000,   7984,   7937,   7858,   7749,
+      7608,   7438,   7239,   7010,   6755,   6472,   6164,   5832,   5476,   5099,
+      4702,   4287,   3854,   3406,   2945,   2472,   1990,   1499,   1003,    502,
+         0,   -502,  -1003,  -1499,  -1990,  -2472,  -2945,  -3406,  -3854,  -4287,
+     -4702,  -5099,  -5476,  -5832,  -6164,  -6472,  -6755,  -7010,  -7239,  -7438,
+     -7608,  -7749,  -7858,  -7937,  -7984,  -8000,  -7984,  -7937,  -7858,  -7749,
+     -7608,  -7438,  -7239,  -7010,  -6755,  -6472,  -6164,  -5832,  -5476,  -5099,
+     -4702,  -4287,  -3854,  -3406,  -2945,  -2472,  -1990,  -1499,  -1003,   -502,
+};
+
+static volatile bool test_tone_on;
+static uint32_t      test_tone_phase;
+
+void spec_test_tone(const bool on) {
+    test_tone_on    = on;
+    test_tone_phase = 0;
+}
+
+bool spec_test_tone_is_on(void) { return test_tone_on; }
+
 // ============================================================================
 // Keyboard
 // ============================================================================
@@ -968,6 +1020,16 @@ __force_inline static void run_slice(const uint32_t tstates, const uint32_t num)
     if (unlikely(settings.soundrive))
         for (unsigned i = 0; i < 4; i++) s += ((int32_t)sd_level[i] - 128) * 32;
 
+    /*
+     * The test tone replaces the mix rather than joining it, so what is
+     * measured is the path and not the path plus whatever the machine
+     * happened to be doing.
+     */
+    if (unlikely(test_tone_on)) {
+        if (++test_tone_phase >= TEST_TONE_SAMPLES) test_tone_phase = 0;
+        s = test_tone_wave[test_tone_phase];
+    }
+
     audio_push(s * settings.volume / 10);
 }
 
@@ -1094,6 +1156,10 @@ uint32_t spec_tune_clock(void) {
 static volatile bool pause_req, paused;
 
 void spec_pause(void) {
+    // Silence rather than a held sample: a machine that has stopped
+    // should not leave its last twenty microseconds droning under the
+    // menu, and it makes the underrun counter mean something.
+    audio_set_enabled(false);
     pause_req = true;
     // A machine that is not running cannot acknowledge, and one that has
     // not started yet never will -- so this waits, but not for ever.
@@ -1102,7 +1168,12 @@ void spec_pause(void) {
         tight_loop_contents();
 }
 
-void spec_resume(void)    { pause_req = false; }
+void spec_resume(void) {
+    // The counters are about the running machine; see audio.h.
+    audio_reset_stats();
+    audio_set_enabled(true);
+    pause_req = false;
+}
 bool spec_is_paused(void) { return paused; }
 
 static void pause_point(void) {

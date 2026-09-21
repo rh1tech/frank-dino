@@ -131,6 +131,20 @@ extern volatile uint8_t  spec_port_7ffd;
 // with everything else that is a preference.
 extern volatile uint32_t spec_ay_writes;
 
+/*
+ * Put a known 441 Hz sine straight into the mixer.
+ *
+ * For measuring the sound path instead of listening to it. Not played
+ * through the AY, deliberately: the 128K ROM rewrites the chip's
+ * registers fifty times a second, so a tone programmed into it from
+ * outside lasts one frame. And a sine rather than a square, because a
+ * square wave's harmonics fold back from past Nyquist and make every
+ * spectrum dense -- with a sine, 44100 divides by 441 exactly, so there
+ * are a hundred samples to the cycle and every bin but one is evidence.
+ */
+void spec_test_tone(bool on);
+bool spec_test_tone_is_on(void);
+
 /* True while the beeper bit is set. The mixer samples it; nothing drives
  * the pin directly any more — see src/drivers/audio/audio.h. */
 extern volatile bool spec_beeper;

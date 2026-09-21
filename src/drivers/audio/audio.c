@@ -24,15 +24,38 @@
 #include "dino.h"
 
 // ---------------------------------------------------------------------------
-// The carrier
+// The carrier, and how the eight bits are made to sound like more
 // ---------------------------------------------------------------------------
-//
-// 8-bit duty at clk_sys/256 — about 1.5 MHz at 378 MHz of system clock.
-// Well above anything audible, and well above what C67/C68 and the
-// MS9288A's analogue input will pass, so the pin's average is what comes
-// out and the carrier itself does not.
-#define PWM_WRAP 255u
-#define PWM_MID  128u
+/*
+ * Eight bits of duty at clk_sys/256 — 1.97 MHz at 504 MHz.
+ *
+ * The carrier has to stay up there. There is no reconstruction filter on
+ * this board: GP46 goes through R18 to the transistor and the jack, and
+ * through a 1 uF coupling cap to the MS9288A's audio input, and that is
+ * the whole of it. Dropping the carrier to 246 kHz to buy three more
+ * bits of duty was measured and was a bad trade -- the idle noise on the
+ * HDMI path went from -72 dBFS to -35, because a full-scale square wave
+ * at 246 kHz aliases straight into the audible band and nothing on the
+ * board stops it.
+ *
+ * So the resolution comes from time instead. The duty is rewritten eight
+ * times per audio sample, and each rewrite is quantised with the error
+ * from the last one fed back into it -- first-order noise shaping at
+ * 352.8 kHz. That does not make the quantisation noise smaller, it moves
+ * it: the feedback loop is a high-pass on the error, so the noise ends
+ * up near 176 kHz instead of spread flat across the audio band. Which is
+ * safe where the carrier was not, because this noise is one part in 256
+ * of full scale rather than all of it.
+ */
+#define PWM_BITS  8u
+#define PWM_WRAP  ((1u << PWM_BITS) - 1u)
+#define PWM_MID   (1u << (PWM_BITS - 1))
+#define PWM_SHIFT (16u - PWM_BITS)
+
+// How many times the duty is rewritten per audio sample. Eight is three
+// octaves of oversampling, which a first-order shaper turns into about
+// twenty-seven decibels in the part of the band that matters.
+#define AUDIO_OSR 8u
 
 static uint  slice, chan;
 static int   dma_a = -1, dma_b = -1;
@@ -45,6 +68,10 @@ static volatile int refill = -1;
 
 volatile uint32_t audio_underruns;
 volatile uint32_t audio_overruns;
+volatile uint32_t audio_clips;
+
+// The quantisation error carried from the previous sample. See audio_task().
+static int32_t shape_err;
 
 // ---------------------------------------------------------------------------
 // The ring between the cores
@@ -97,6 +124,10 @@ static void dma_isr(void) {
     }
 }
 
+void audio_reset_stats(void) {
+    audio_underruns = audio_overruns = audio_clips = 0;
+}
+
 void audio_task(void) {
     const int which = refill;
     if (which < 0) return;
@@ -106,24 +137,55 @@ void audio_task(void) {
 
     uint32_t t = ring_tail;
     for (uint32_t i = 0; i < AUDIO_BLOCK; i++) {
-        if (t != ring_head) {
+        // One input sample feeds AUDIO_OSR outputs. The shaper below is
+        // what turns those eight identical values into eight different
+        // duties whose average is finer than any one of them.
+        if ((i % AUDIO_OSR) != 0) {
+            /* keep last_sample */
+        } else if (t != ring_head) {
             last_sample = ring[t & RING_MASK];
             t++;
-        } else {
-            // Hold, do not silence. See audio.h.
+        } else if (!mute) {
+            /*
+             * Hold, do not silence. See audio.h.
+             *
+             * Not counted while muted: the machine is paused then and
+             * produces nothing at all, so the ring is empty by
+             * definition and counting it swamps the figure that matters
+             * -- how often the running machine falls behind.
+             */
             audio_underruns++;
         }
 
-        // Signed 16-bit down to an 8-bit duty around mid-scale, clipped
-        // rather than wrapped: a wrap turns a loud passage into noise,
-        // and a clip at least sounds like the thing that was too loud.
-        int32_t s = last_sample >> 8;
-        if (s >  127) s =  127;
-        if (s < -128) s = -128;
+        /*
+         * Sixteen bits down to eleven, with the error carried forward.
+         *
+         * A plain shift throws five bits away and leaves their noise
+         * spread flat across the band. Adding what was thrown away back
+         * into the next sample -- first-order error feedback -- does not
+         * make the noise smaller, it moves it: the loop is a high-pass
+         * on the error, so most of it ends up near the sample rate where
+         * nothing can hear it and the transducer cannot reproduce it.
+         * A few adds per sample for several decibels in the part of the
+         * band that matters.
+         */
+        int32_t v = last_sample + shape_err;
+        if (v >  32767) v =  32767;
+        if (v < -32768) v = -32768;
+
+        // Clipped rather than wrapped: a wrap turns a loud passage into
+        // noise, and a clip at least sounds like the thing that was too
+        // loud. Counted, because "is it clipping" should not be a guess.
+        int32_t s = v >> PWM_SHIFT;
+        const int32_t hi = (int32_t)PWM_MID - 1, lo = -(int32_t)PWM_MID;
+        if (s > hi) { s = hi; audio_clips++; }
+        if (s < lo) { s = lo; audio_clips++; }
+
+        shape_err = v - (s << PWM_SHIFT);
         // Muting writes the idle level but still consumes the samples:
         // stopping the drain would back the ring up and make un-muting
         // play a second of stale audio.
-        buf[which][i] = mute ? PWM_MID : (uint16_t)(s + PWM_MID);
+        buf[which][i] = mute ? (uint16_t)PWM_MID : (uint16_t)(s + (int32_t)PWM_MID);
     }
     ring_tail = t;
 }
@@ -151,7 +213,11 @@ void audio_init(void) {
     // needs servicing per sample: the two channels chain to each other
     // for ever and only raise an interrupt when a block has drained.
     pacer = dma_claim_unused_timer(true);
-    const uint32_t den = (clock_get_hz(clk_sys) + AUDIO_RATE_HZ / 2) / AUDIO_RATE_HZ;
+    // Paced at the oversampled rate: the duty is rewritten AUDIO_OSR
+    // times per audio sample, which is where the extra resolution comes
+    // from. See the top of this file.
+    const uint32_t out_hz = AUDIO_RATE_HZ * AUDIO_OSR;
+    const uint32_t den = (clock_get_hz(clk_sys) + out_hz / 2) / out_hz;
     dma_timer_set_fraction(pacer, 1, (uint16_t)(den > 0xFFFFu ? 0xFFFFu : den));
 
     dma_a = dma_claim_unused_channel(true);
@@ -178,6 +244,8 @@ void audio_init(void) {
     dma_channel_start(dma_a);
     running = true;
 
-    printf("[audio] PWM DAC on GP%d, %lu Hz, %u-sample blocks\n",
-           SPEAKER_PIN, (unsigned long)(clock_get_hz(clk_sys) / den), (unsigned)AUDIO_BLOCK);
+    printf("[audio] PWM DAC on GP%d: %u-bit duty at %lu Hz carrier, rewritten %lu times a second\n",
+           SPEAKER_PIN, (unsigned)PWM_BITS,
+           (unsigned long)(clock_get_hz(clk_sys) / (PWM_WRAP + 1u)),
+           (unsigned long)(clock_get_hz(clk_sys) / den));
 }

@@ -46,9 +46,11 @@
 #define AUDIO_RATE_HZ 44100u
 #define AUDIO_SAMPLES_PER_FRAME 882u
 
-// Samples per DMA block. 256 is ~5.8 ms of latency and ~170 refills a
-// second, comfortably slower than anything else core 0 does.
-#define AUDIO_BLOCK 256u
+// Duty values per DMA block. 2048 at the oversampled rate is ~5.8 ms of
+// latency and ~170 refills a second, comfortably slower than anything
+// else core 0 does -- and it is 256 audio samples, because the duty is
+// rewritten eight times per sample. See AUDIO_OSR in audio.c.
+#define AUDIO_BLOCK 2048u
 
 /*
  * Take over GP46 and start the DAC.
@@ -85,3 +87,25 @@ void audio_set_enabled(bool on);
 /* Diagnostics, for the report and for knowing whether to believe the sound. */
 extern volatile uint32_t audio_underruns;
 extern volatile uint32_t audio_overruns;
+
+/*
+ * Samples that did not fit in the DAC's range.
+ *
+ * A clip is not a fault in itself -- the mix is allowed to be loud --
+ * but a steady stream of them is the difference between "this tune is
+ * distorted" and "this firmware is distorting it", and that should not
+ * be a guess.
+ */
+extern volatile uint32_t audio_clips;
+
+/*
+ * Zero the three counters.
+ *
+ * Called when the machine resumes, because the interesting number is
+ * "since it started running" and not "since power-on". While the menu
+ * is open the machine is paused and produces nothing, so the DAC
+ * underruns continuously and by design -- without this, that one figure
+ * swamps everything and the counter cannot answer the question it
+ * exists for.
+ */
+void audio_reset_stats(void);
