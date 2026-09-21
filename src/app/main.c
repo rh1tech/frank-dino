@@ -40,6 +40,7 @@
 #include "selftest.h"
 #include "ay.h"
 #include "launch.h"
+#include "settings.h"
 #include "spectrum.h"
 #include "vga.h"
 #include "z80_bus.h"
@@ -156,7 +157,7 @@ static void core1_main(void) {
     scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, keys over the console.");
 #endif
     scr_log(ATTR(C_GREY, C_BLACK), "Sound: beeper + %s on GP46, %u Hz PWM DAC.",
-            spec_turbosound ? "TurboSound (2x AY-3-8912)" : "AY-3-8912",
+            settings.turbosound ? "TurboSound (2x AY-3-8912)" : "AY-3-8912",
             (unsigned)AUDIO_RATE_HZ);
     scr_blank();
     scr_log(ATTR(C_LCYAN, C_BLACK), "Starting...");
@@ -165,7 +166,7 @@ static void core1_main(void) {
     // anyone sees this screen.
     sleep_ms(1500);
 
-    spec_init();
+    spec_set_machine((machine_t)settings.machine);
 
     /*
      * Prove the snapshot machinery before anything depends on it, then
@@ -196,6 +197,21 @@ static void core1_main(void) {
             (unsigned long)z80_get_pace(),
             (unsigned long)((uint64_t)fps * SPEC_TSTATES_PER_FRAME / 1000000000ull),
             (unsigned long)(((uint64_t)fps * SPEC_TSTATES_PER_FRAME / 1000000ull) % 1000));
+
+    /*
+     * Start the machine the user actually sees, after the tuning and not
+     * before it.
+     *
+     * The tuner runs the Spectrum at deliberately wrong speeds for
+     * eighty-odd frames while it converges -- which is exactly the first
+     * second and a half of the 128K ROM's own start-up, RAM test and
+     * all. Living through that left the machine with a black screen and
+     * a ROM that had given up, while every path that cold-started it
+     * afterwards (the browser's machine key, loading a snapshot) worked
+     * perfectly. So: tune on a machine that is about to be thrown away,
+     * then start a fresh one.
+     */
+    spec_set_machine((machine_t)settings.machine);
 
     vga_set_mode(VGA_MODE_SPECTRUM);
     spectrum_running = true;
@@ -251,6 +267,17 @@ int main(void) {
      */
     if (storage_mount()) printf("[sd] card mounted\n");
     else                 printf("[sd] no card\n");
+
+    /*
+     * Settings before core 1, because core 1 starts a machine with them.
+     *
+     * settings_load() falls back to the defaults on a card that has no
+     * config -- or on no card at all -- so there is nothing to handle
+     * here: after this call the settings are always valid, and the
+     * return value only says whether a file was found.
+     */
+    if (settings_load()) printf("[cfg] settings loaded\n");
+    else                 printf("[cfg] defaults\n");
 
     multicore_launch_core1_with_stack(core1_main, core1_stack, sizeof core1_stack);
 

@@ -13,6 +13,7 @@
 
 #include "ff.h"
 #include "launch.h"
+#include "settings.h"
 #include "spectrum.h"
 #include "tape.h"
 #include "z80_bus.h"
@@ -457,6 +458,11 @@ static bool load_tap(FIL *f, const uint32_t size, char *detail, const unsigned d
     // Keep the message tape_mount() wrote, and add to it below.
     char mounted[64];
     snprintf(mounted, sizeof mounted, "%s", detail);
+
+    if (!settings.tape_autostart) {
+        snprintf(detail, detail_len, "%s -- type LOAD \"\"", mounted);
+        return true;
+    }
 
     spec_set_machine(spec_machine);      // cold start, tape still mounted
 

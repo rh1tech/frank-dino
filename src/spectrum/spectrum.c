@@ -15,6 +15,7 @@
 #include "audio.h"
 #include "ay.h"
 #include "dino.h"
+#include "settings.h"
 #include "tape.h"
 #include "z80_bus.h"
 
@@ -54,9 +55,26 @@ const char *spec_machine_name(void) {
     }
 }
 
+/*
+ * Overclocking a real Z80, in halves.
+ *
+ * The clock is generated here, edge by edge, and the part in the socket
+ * is a Z84C00-10 -- so a faster Z80 is not a trick, it is the CPU
+ * actually running faster. turbo_num() is the multiplier over two: 2 is
+ * 3.5 MHz, 3 is 5.3, 4 is 7.
+ *
+ * What changes is how much work fits between two interrupts. The frame
+ * is still a fiftieth of a second, so a faster CPU means more T-states
+ * in it -- which is why the frame length is a function rather than a
+ * constant, and why the AY has to be told about it: the chip has its own
+ * 1.7734 MHz and must keep it, or every tune plays sharp.
+ */
+static inline uint32_t turbo_num(void) { return 2u + settings.turbo; }
+
 uint32_t spec_frame_tstates(void) {
-    return spec_machine == MACHINE_48K ? SPEC_TSTATES_PER_FRAME_48
-                                       : SPEC_TSTATES_PER_FRAME;
+    const uint32_t base = spec_machine == MACHINE_48K ? SPEC_TSTATES_PER_FRAME_48
+                                                      : SPEC_TSTATES_PER_FRAME;
+    return base * turbo_num() / 2;
 }
 
 // ============================================================================
@@ -78,23 +96,52 @@ static bool paging_locked = false;
 // Keyboard: bit set = key up. Five keys per half-row, bits 0-4.
 static volatile uint8_t kbd[8];
 
+/*
+ * The matrix, as the ULA sees it.
+ *
+ * Row order is address-line order — row 0 is A8 — and within a row bit 0
+ * is the key nearest the outside of the keyboard. Both halves run inward
+ * from the edges, which is why 1-5 and 0-6 look reversed with respect to
+ * each other and are not a typo.
+ */
+enum { R_CSZXCV = 0, R_ASDFG, R_QWERT, R_12345, R_09876, R_POIUY, R_ENTER, R_SPACE };
+
 // ---------------------------------------------------------------------------
 // Sound
 // ---------------------------------------------------------------------------
 volatile bool     spec_beeper;
-/*
- * TurboSound on by default.
- *
- * A real TurboSound board is always both chips; software that does not
- * know about it simply never writes 0xFE or 0xFF to the select port, and
- * the 128K ROM only ever names registers 0-13. Turning it off is for
- * chasing a program that does write one of those as a register number.
- */
-volatile bool     spec_turbosound = true;
 volatile uint32_t spec_ay_writes;
+
+/*
+ * Does this machine have an AY at all?
+ *
+ * A 128K and a +2 always do. A 48K never did from Sinclair, but half the
+ * clones and a good many add-on boards put one on the same two ports,
+ * and a fair amount of 48K music expects to find it -- so it is an
+ * option rather than a fact about the machine.
+ */
+static inline bool have_ay(void) {
+    return spec_machine != MACHINE_48K || settings.ay48;
+}
 
 static ay_t    ay[2];
 static uint8_t ay_sel;          // which chip the ports are talking to
+
+// The last byte written to the ULA's port, which the EAR bit reads back.
+static volatile uint8_t last_fe;
+
+/*
+ * Two ways of bolting a real DAC onto a machine that has none.
+ *
+ * Covox is one 8-bit latch on port #FB, and SounDrive (the "Covox quad")
+ * is four of them, two per side. Both are just a byte that goes straight
+ * to the speaker, so there is nothing to model: the mixer adds the
+ * latched value in and the guest does the rest. Off by default, because
+ * a machine that never had one must not have writes to those ports turn
+ * into noise.
+ */
+static volatile uint8_t covox_level;
+static volatile uint8_t sd_level[4];
 
 // ============================================================================
 // Paging
@@ -249,6 +296,25 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
          * top of its range.
          */
         spec_beeper = (value & 0x10) != 0;
+        last_fe     = value;
+    }
+
+    /*
+     * Covox on #FB and SounDrive on #0F/#1F/#4F/#5F.
+     *
+     * Decoded on the low byte alone, which is how the cards themselves
+     * did it. #1F is also where a Kempston joystick answers -- but that
+     * is a read and this is a write, so the two never meet.
+     */
+    if (settings.covox && (port & 0xFF) == 0xFB) covox_level = value;
+    if (settings.soundrive) {
+        switch (port & 0xFF) {
+            case 0x0F: sd_level[0] = value; break;
+            case 0x1F: sd_level[1] = value; break;
+            case 0x4F: sd_level[2] = value; break;
+            case 0x5F: sd_level[3] = value; break;
+            default: break;
+        }
     }
 
     /*
@@ -258,7 +324,7 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
      * with A14 low (0xBFFD). As everywhere else on this machine the
      * decode is partial, and as everywhere else programs rely on it.
      */
-    if (spec_machine != MACHINE_48K && (port & 0xC002) == 0xC000) {   // select
+    if (have_ay() && (port & 0xC002) == 0xC000) {   // select
         /*
          * TurboSound steals the top of the register range.
          *
@@ -268,14 +334,14 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
          * does not exist, which is why this only acts when the second
          * chip has been turned on.
          */
-        if (spec_turbosound && (value & 0xFE) == 0xFE) {
+        if (settings.turbosound && (value & 0xFE) == 0xFE) {
             ay_sel = (uint8_t)(value & 1 ? 0 : 1);   // 0xFF = first, 0xFE = second
         } else {
             ay_select(&ay[ay_sel], value);
         }
         return;
     }
-    if (spec_machine != MACHINE_48K && (port & 0xC002) == 0x8000) {   // data
+    if (have_ay() && (port & 0xC002) == 0x8000) {   // data
         ay_write(&ay[ay_sel], value);
         spec_ay_writes++;
         return;
@@ -288,9 +354,116 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
     }
 }
 
+// ---------------------------------------------------------------------------
+// Joysticks
+// ---------------------------------------------------------------------------
+/*
+ * One set of five bits, read five different ways.
+ *
+ * Nothing about a Spectrum joystick is standard, because the machine has
+ * no joystick port: every interface is somebody's add-on and they agree
+ * about nothing. Kempston put it on a port of its own, active high.
+ * Sinclair wired two of them straight onto keyboard rows -- so a
+ * Sinclair joystick IS keys 6-0 and 1-5, and a game reading it is
+ * reading the keyboard. The Cursor interface picked a third set of keys.
+ * Fuller used yet another port, with the bits in a different order and
+ * inverted.
+ *
+ * So the state is held once, in joy_state, and each interface is a way
+ * of presenting it. The Sinclairs and the Cursor are folded into the
+ * matrix at read time rather than pressed into it, which keeps a real
+ * key and a joystick direction from cancelling each other out when they
+ * happen to be the same key.
+ */
+static volatile uint8_t joy_state;      // bits per JOY_BIT_*
+
+void spec_joy_set(const uint8_t bit, const bool pressed) {
+    if (bit > JOY_BIT_FIRE) return;
+    if (pressed) joy_state |=  (uint8_t)(1u << bit);
+    else         joy_state &= (uint8_t)~(1u << bit);
+}
+
+uint8_t spec_joy_state(void) { return joy_state; }
+
+#define JOY(b) (joy_state & (1u << (b)))
+
+/* Which bits of half-row `row` a keyboard-wired joystick is holding down. */
+static uint8_t joy_row_mask(const unsigned row) {
+    uint8_t m = 0;
+    switch (settings.joystick) {
+        case JOY_SINCLAIR1:             // keys 6 7 8 9 0, on half-row 4
+            if (row != R_09876) break;
+            if (JOY(JOY_BIT_LEFT))  m |= 1u << 4;   // 6
+            if (JOY(JOY_BIT_RIGHT)) m |= 1u << 3;   // 7
+            if (JOY(JOY_BIT_DOWN))  m |= 1u << 2;   // 8
+            if (JOY(JOY_BIT_UP))    m |= 1u << 1;   // 9
+            if (JOY(JOY_BIT_FIRE))  m |= 1u << 0;   // 0
+            break;
+
+        case JOY_SINCLAIR2:             // keys 1 2 3 4 5, on half-row 3
+            if (row != R_12345) break;
+            if (JOY(JOY_BIT_LEFT))  m |= 1u << 0;   // 1
+            if (JOY(JOY_BIT_RIGHT)) m |= 1u << 1;   // 2
+            if (JOY(JOY_BIT_DOWN))  m |= 1u << 2;   // 3
+            if (JOY(JOY_BIT_UP))    m |= 1u << 3;   // 4
+            if (JOY(JOY_BIT_FIRE))  m |= 1u << 4;   // 5
+            break;
+
+        case JOY_CURSOR:                // 5 6 7 8 and 0 -- the ROM's own arrows
+            if (row == R_12345 && JOY(JOY_BIT_LEFT))  m |= 1u << 4;   // 5
+            if (row == R_09876) {
+                if (JOY(JOY_BIT_DOWN))  m |= 1u << 4;   // 6
+                if (JOY(JOY_BIT_UP))    m |= 1u << 3;   // 7
+                if (JOY(JOY_BIT_RIGHT)) m |= 1u << 2;   // 8
+                if (JOY(JOY_BIT_FIRE))  m |= 1u << 0;   // 0
+            }
+            break;
+
+        default: break;                 // Kempston and Fuller have their own ports
+    }
+    return m;
+}
+
+/*
+ * Kempston: its own port, active high, and only five bits of it.
+ *
+ * The decode is A5 low and nothing else, which is why #1F is the usual
+ * name for it and why it collides with a good deal else. Some interfaces
+ * sat on #DF instead; a few games only find one or the other.
+ */
+static uint8_t kempston_byte(void) {
+    uint8_t v = 0;
+    if (JOY(JOY_BIT_RIGHT)) v |= 0x01;
+    if (JOY(JOY_BIT_LEFT))  v |= 0x02;
+    if (JOY(JOY_BIT_DOWN))  v |= 0x04;
+    if (JOY(JOY_BIT_UP))    v |= 0x08;
+    if (JOY(JOY_BIT_FIRE))  v |= 0x10;
+    return v;
+}
+
+/* Fuller: port #7F, inverted, and in a different order again. */
+static uint8_t fuller_byte(void) {
+    uint8_t v = 0;
+    if (JOY(JOY_BIT_UP))    v |= 0x01;
+    if (JOY(JOY_BIT_DOWN))  v |= 0x02;
+    if (JOY(JOY_BIT_LEFT))  v |= 0x04;
+    if (JOY(JOY_BIT_RIGHT)) v |= 0x08;
+    if (JOY(JOY_BIT_FIRE))  v |= 0x80;
+    return (uint8_t)~v;
+}
+
+// ---------------------------------------------------------------------------
+
 static uint8_t spec_io_in(const uint16_t port) {
     uint8_t tape;
     if (tape_port_in(port, &tape)) return tape;
+
+    if (settings.joystick == JOY_KEMPSTON &&
+        (port & 0xFF) == (settings.kempston_port ? 0xDF : 0x1F))
+        return kempston_byte();
+
+    if (settings.joystick == JOY_FULLER && (port & 0xFF) == 0x7F)
+        return fuller_byte();
 
     if ((port & 0x0001) == 0) {                 // the ULA: keyboard
         uint8_t result = 0x1F;                  // five keys, all up
@@ -300,15 +473,27 @@ static uint8_t spec_io_in(const uint16_t port) {
         // how the ROM scans the whole keyboard with a single IN from
         // 0x00FE. So this ANDs every selected row rather than picking one.
         for (unsigned row = 0; row < 8; row++)
-            if (!(port & (0x0100u << row))) result &= kbd[row];
+            if (!(port & (0x0100u << row))) result &= (uint8_t)(kbd[row] & ~joy_row_mask(row));
 
-        // Bit 6 is the tape input. Nothing is connected, and a real
-        // machine with nothing connected reads it high.
-        return result | 0xA0;
+        /*
+         * Bit 6 is the EAR input, and what it reads with no tape
+         * attached is the difference between an issue 2 board and an
+         * issue 3 one.
+         *
+         * Both feed the last value written to port 0xFE back into it. An
+         * issue 3 looks at bit 4 alone -- the speaker; an issue 2 looks
+         * at bits 3 and 4 together, so setting the MIC bit also lifts
+         * EAR. A handful of 48K games test this to tell the two boards
+         * apart, and one written for an issue 2 reads the key rows as
+         * permanently pressed on an issue 3.
+         */
+        const uint8_t ear = settings.issue2 ? ((last_fe & 0x18) ? 0x40 : 0)
+                                            : ((last_fe & 0x10) ? 0x40 : 0);
+        return (uint8_t)(result | 0xA0 | ear);
     }
 
     // The AY's read-back port is the select port, not the data one.
-    if (spec_machine != MACHINE_48K && (port & 0xC002) == 0xC000)
+    if (have_ay() && (port & 0xC002) == 0xC000)
         return ay_read(&ay[ay_sel]);
 
     /*
@@ -330,16 +515,6 @@ void spec_key_set(const uint8_t row, const uint8_t bit, const bool pressed) {
     if (pressed) kbd[row] &= ~(1u << bit);
     else         kbd[row] |=  (1u << bit);
 }
-
-/*
- * The matrix, as the ULA sees it.
- *
- * Row order is address-line order — row 0 is A8 — and within a row bit 0
- * is the key nearest the outside of the keyboard. Both halves run inward
- * from the edges, which is why 1-5 and 0-6 look reversed with respect to
- * each other and are not a typo.
- */
-enum { R_CSZXCV = 0, R_ASDFG, R_QWERT, R_12345, R_09876, R_POIUY, R_ENTER, R_SPACE };
 
 typedef struct { uint8_t row, bit; } key_t;
 
@@ -371,6 +546,10 @@ static struct { uint8_t row, bit; } held[4];
 static unsigned held_count;
 static unsigned held_frames;
 
+// Joystick directions held by a console keystroke, released on the same
+// timer as the matrix keys above.
+static uint8_t held_joy;
+
 #define SYM() hold(R_SPACE, 1)      // SYMBOL SHIFT, which most symbols need
 
 static void hold(const uint8_t row, const uint8_t bit) {
@@ -396,7 +575,27 @@ void spec_key_ascii(char c) {
     if (esc_state == 1) { esc_state = (c == '[') ? 2 : 0; return; }
     if (esc_state == 2) {
         esc_state = 0;
-        if (held_count) return;
+        if (held_count || held_joy) return;
+
+        /*
+         * An arrow is the joystick when there is one to be.
+         *
+         * Otherwise it is CAPS SHIFT plus a digit, which is what the
+         * Spectrum's own cursor keys are and what the 128K menu reads.
+         */
+        if (settings.joystick != JOY_NONE && settings.cursor_as_joy) {
+            held_frames = KEY_HOLD_FRAMES;
+            switch (c) {
+                case 'A': held_joy = 1u << JOY_BIT_UP;    break;
+                case 'B': held_joy = 1u << JOY_BIT_DOWN;  break;
+                case 'C': held_joy = 1u << JOY_BIT_RIGHT; break;
+                case 'D': held_joy = 1u << JOY_BIT_LEFT;  break;
+                default:  held_frames = 0; return;
+            }
+            joy_state |= held_joy;
+            return;
+        }
+
         held_frames = KEY_HOLD_FRAMES;
         hold(R_CSZXCV, 0);                      // CAPS SHIFT
         switch (c) {
@@ -410,7 +609,7 @@ void spec_key_ascii(char c) {
     }
     if (c == 0x1B) { esc_state = 1; return; }
 
-    if (held_count) return;                     // one keystroke at a time
+    if (held_count || held_joy) return;         // one keystroke at a time
 
     held_frames = KEY_HOLD_FRAMES;
 
@@ -497,7 +696,7 @@ void spec_type_cancel(void) { type_str = NULL; }
 static void type_tick(void) {
     if (!type_str) return;
     if (type_wait) { type_wait--; return; }
-    if (held_count) return;             // still finishing the last one
+    if (held_count || held_joy) return; // still finishing the last one
 
     if (!*type_str) { type_str = NULL; return; }
     spec_key_ascii(*type_str++);
@@ -505,12 +704,15 @@ static void type_tick(void) {
 }
 
 void spec_key_tick(void) {
-    if (!held_count) { type_tick(); return; }
+    if (!held_count && !held_joy) { type_tick(); return; }
     if (held_frames) { held_frames--; return; }
 
     for (unsigned i = 0; i < held_count; i++)
         spec_key_set(held[i].row, held[i].bit, false);
     held_count = 0;
+
+    joy_state &= (uint8_t)~held_joy;
+    held_joy = 0;
 }
 
 // ============================================================================
@@ -526,9 +728,14 @@ void spec_init(void) {
     ay_reset(&ay[1]);
     ay_sel         = 0;
     spec_beeper    = false;
+    last_fe        = 0;
+    covox_level    = 0x80;
+    memset((void *)sd_level, 0x80, sizeof sd_level);
+    joy_state      = 0;
     spec_ay_writes = 0;
 
     esc_state      = 0;
+    held_joy       = 0;
     type_str       = NULL;
     paging_locked  = false;
     spec_port_7ffd = 0;
@@ -550,17 +757,9 @@ void spec_init(void) {
  * fractional accumulator rather than being rounded, because rounding
  * 0.394 away 882 times a frame is 347 T-states of drift every 20 ms.
  */
-#define SPEC_TSTATES_PER_SAMPLE (SPEC_TSTATES_PER_FRAME / AUDIO_SAMPLES_PER_FRAME)
-#define SPEC_TSTATE_REMAINDER   (SPEC_TSTATES_PER_FRAME % AUDIO_SAMPLES_PER_FRAME)
-
-// AY clocks per T-state, x256: the chip runs at half the CPU clock, so
-// this is 128/256. Kept as a shift rather than a divide because it is on
-// the per-sample path.
-#define AY_TICKS(tstates) ((tstates) >> 1)
-
 static uint32_t slice_acc;
 
-__force_inline static void run_slice(const uint32_t tstates) {
+__force_inline static void run_slice(const uint32_t tstates, const uint32_t num) {
     z80_run(tstates);
 
     /*
@@ -571,8 +770,16 @@ __force_inline static void run_slice(const uint32_t tstates) {
      * the sample it belongs in. The AYs are advanced by exactly the
      * cycles this slice covered, so nothing drifts against anything.
      */
-    int32_t s = ay_render(&ay[0], AY_TICKS(tstates));
-    if (spec_turbosound) s += ay_render(&ay[1], AY_TICKS(tstates));
+    int32_t s = 0;
+
+    if (likely(have_ay())) {
+        // T-states to AY clocks: half at 3.5 MHz, and a smaller share as
+        // the CPU is pushed past it, so the chip's own rate never moves.
+        const uint32_t ticks = tstates / num;
+        int32_t a = ay_render(&ay[0], ticks);
+        if (settings.turbosound) a += ay_render(&ay[1], ticks);
+        s += a * settings.ay_vol / 10;
+    }
 
     /*
      * The beeper at about a quarter of full scale.
@@ -582,10 +789,16 @@ __force_inline static void run_slice(const uint32_t tstates) {
      * under its own sound effects. This is the compromise every emulator
      * makes; it is a mix decision, not a measurement.
      */
-    if (spec_beeper) s += 6000;
-    else             s -= 6000;
+    s += (spec_beeper ? 6000 : -6000) * settings.beeper_vol / 10;
 
-    audio_push(s);
+    // The extra DACs, if the machine has been told it has them. Each is a
+    // byte centred on 0x80, at a quarter scale so four of them together
+    // still leave room for everything else.
+    if (unlikely(settings.covox)) s += ((int32_t)covox_level - 128) * 64;
+    if (unlikely(settings.soundrive))
+        for (unsigned i = 0; i < 4; i++) s += ((int32_t)sd_level[i] - 128) * 32;
+
+    audio_push(s * settings.volume / 10);
 }
 
 uint32_t spec_tune_clock(void) {
@@ -696,11 +909,21 @@ void spec_run_frame(void) {
      * every 70908 T-states, and the only thing that has to be right is
      * the count.
      */
-    uint32_t budget = spec_frame_tstates() - SPEC_INT_TSTATES;
+    const uint32_t num   = turbo_num();
+    const uint32_t total = spec_frame_tstates();
+    const uint32_t per   = total / AUDIO_SAMPLES_PER_FRAME;
+    const uint32_t rem   = total % AUDIO_SAMPLES_PER_FRAME;
+
+    // The ULA holds ~INT low for about ten microseconds, which is 36
+    // T-states at 3.5 MHz and proportionally more at any other speed --
+    // it is a length of time, not a number of instructions.
+    const uint32_t held = SPEC_INT_TSTATES * num / 2;
+
+    uint32_t budget = total - held;
 
     for (uint32_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; i++) {
-        uint32_t slice = SPEC_TSTATES_PER_SAMPLE;
-        slice_acc += SPEC_TSTATE_REMAINDER;
+        uint32_t slice = per;
+        slice_acc += rem;
         if (slice_acc >= AUDIO_SAMPLES_PER_FRAME) {
             slice_acc -= AUDIO_SAMPLES_PER_FRAME;
             slice++;
@@ -708,14 +931,14 @@ void spec_run_frame(void) {
 
         if (slice > budget) slice = budget;
         budget -= slice;
-        run_slice(slice);
+        run_slice(slice, num);
         if (!budget) break;
     }
 
-    if (budget) run_slice(budget);
+    if (budget) run_slice(budget, num);
 
     z80_set_int(true);
-    run_slice(SPEC_INT_TSTATES);
+    run_slice(held, num);
     z80_set_int(false);
 
     const uint32_t f = spec_frames + 1;

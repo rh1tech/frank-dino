@@ -15,6 +15,8 @@
 
 #include "audio.h"
 #include "loader.h"
+#include "options.h"
+#include "settings.h"
 #include "screen.h"
 #include "spectrum.h"
 #include "storage.h"
@@ -110,7 +112,7 @@ static void draw(void) {
 
     scr_printf(2, VGA_ROWS - 4, ATTR(C_LGREEN, C_BLACK), "%s", status);
     scr_put(2, VGA_ROWS - 2,
-            "Up/Down move   Enter open   Backspace up   M machine   R rescan   Tab resume",
+            "Up/Down move  Enter open  Backspace up  O settings  M machine  R rescan  Tab resume",
             ATTR(C_DGREY, C_BLACK));
 }
 
@@ -177,7 +179,7 @@ static void activate(void) {
 // The modal loop
 // ---------------------------------------------------------------------------
 
-static int wait_key(void) {
+int menu_wait_key(void) {
     // Keep the DMA fed while waiting. The machine is paused so nothing is
     // producing samples, but the blocks still drain and still have to be
     // written, or the carrier is left playing whatever was in them.
@@ -208,14 +210,14 @@ bool menu_run(void) {
     draw();
 
     for (;;) {
-        const int k = wait_key();
+        const int k = menu_wait_key();
 
         // Cursor keys arrive as three bytes; the same shape the Spectrum
         // key path reassembles, handled here because the menu owns the
         // console while it is open.
         if (k == 0x1B) {
-            if (wait_key() != '[') continue;
-            switch (wait_key()) {
+            if (menu_wait_key() != '[') continue;
+            switch (menu_wait_key()) {
                 case 'A': move(-1); break;
                 case 'B': move(+1); break;
                 case 'C': move(+ROWS_SHOWN); break;
@@ -231,7 +233,21 @@ bool menu_run(void) {
             case 0x7F: case '\b': leave_dir(); draw(); break;
             case 'r': case 'R':   if (!storage_mounted()) storage_mount();
                                   rescan(); draw(); break;
-            case 'm': case 'M':   spec_next_machine(); rescan(); draw(); break;
+            case 'o': case 'O':
+                options_run();
+                // The settings page may have started a different machine,
+                // and it draws over this one either way.
+                draw();
+                break;
+
+            case 'm': case 'M':
+                // Still here because it is one keystroke, but it now goes
+                // through the setting rather than around it -- otherwise
+                // the machine and what the settings page says disagree.
+                settings.machine = (uint8_t)((settings.machine + 1) % MACHINE_COUNT);
+                spec_set_machine((machine_t)settings.machine);
+                draw();
+                break;
             case '\t': case 'q': case 'Q':
                 vga_set_mode(saved);
                 spec_resume();

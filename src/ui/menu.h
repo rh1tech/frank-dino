@@ -35,3 +35,14 @@ void menu_key(char c);
 
 /* Whether the menu currently has the screen and the keyboard. */
 bool menu_is_open(void);
+
+/*
+ * Block until a key arrives, from the console or the mailbox.
+ *
+ * Shared with the settings page, which is modal in the same way and for
+ * the same reason -- and which must keep the audio DMA fed while it
+ * waits, or the last block in the ring plays on a loop. See the
+ * definition for why this reads stdin rather than waiting on the
+ * mailbox alone.
+ */
+int menu_wait_key(void);

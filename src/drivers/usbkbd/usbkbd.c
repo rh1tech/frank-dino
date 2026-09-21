@@ -18,6 +18,7 @@
 #include <bsp/board_api.h>
 #include <tusb.h>
 
+#include "settings.h"
 #include "spectrum.h"
 
 static bool    mounted;
@@ -126,10 +127,35 @@ static const uint16_t hid_to_spec[0x68] = {
  * subsequent keystroke into a different one, which reads as the keyboard
  * being broken rather than as one lost packet.
  */
+/*
+ * Which joystick direction a HID usage stands for, or -1.
+ *
+ * The four arrows and the two obvious fire keys. Held apart from the
+ * matrix table because a direction is not a key: with a Kempston
+ * selected it reaches the guest through a port that has nothing to do
+ * with the keyboard, and with a Sinclair selected it reaches the same
+ * rows the arrows already use -- which would be the arrows pressing
+ * themselves twice if this were merged into that table.
+ */
+static int joy_dir(const uint8_t usage) {
+    switch (usage) {
+        case 0x4F: return JOY_BIT_RIGHT;
+        case 0x50: return JOY_BIT_LEFT;
+        case 0x51: return JOY_BIT_DOWN;
+        case 0x52: return JOY_BIT_UP;
+        case 0x2C: return JOY_BIT_FIRE;     // Space
+        case 0x2B: return JOY_BIT_FIRE;     // Tab
+        default:   return -1;
+    }
+}
+
 static void apply_report(const uint8_t *r) {
     for (uint8_t row = 0; row < 8; row++)
         for (uint8_t bit = 0; bit < 5; bit++)
             spec_key_set(row, bit, false);
+
+    const bool arrows_are_joy = settings.joystick != JOY_NONE && settings.cursor_as_joy;
+    for (uint8_t b = 0; b <= JOY_BIT_FIRE; b++) spec_joy_set(b, false);
 
     const uint8_t mods = r[0];
     bool caps = (mods & 0x22) != 0;         // either Shift
@@ -139,6 +165,16 @@ static void apply_report(const uint8_t *r) {
     for (int i = 2; i < 8; i++) {
         const uint8_t usage = r[i];
         if (!usage || usage >= 0x68) continue;
+
+        if (arrows_are_joy) {
+            const int d = joy_dir(usage);
+            if (d >= 0) {
+                spec_joy_set((uint8_t)d, true);
+                // Space and Tab are still their own keys; only the four
+                // arrows are taken over by the joystick.
+                if (usage == 0x4F || usage == 0x50 || usage == 0x51 || usage == 0x52) continue;
+            }
+        }
 
         const uint16_t m = hid_to_spec[usage];
         if (!m) continue;

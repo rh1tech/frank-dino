@@ -16,6 +16,7 @@
 
 #include "dino.h"       // likely()/unlikely(), and VGA_BASE_PIN
 #include "font8x16.h"
+#include "settings.h"
 #include "spectrum.h"
 
 #ifndef VGA_BASE_PIN
@@ -129,6 +130,18 @@ void vga_set_mode(const vga_mode_t mode) { vga_mode = mode; }
  */
 static uint8_t spec_palette[16];
 
+/*
+ * The same fifteen colours, one step darker.
+ *
+ * Scanlines on a doubled picture cost nothing if the darker version is
+ * precomputed: each Spectrum pixel row already occupies two output
+ * lines, so the effect is a choice of palette on the second of them
+ * rather than any per-pixel work. With two bits per channel there is
+ * exactly one step to give, which is what makes it a toggle and not a
+ * strength.
+ */
+static uint8_t spec_palette_dim[16];
+
 static void build_spec_palette(void) {
     for (int i = 0; i < 16; i++) {
         const int lvl = (i & 8) ? 3 : 2;
@@ -136,6 +149,11 @@ static void build_spec_palette(void) {
         spec_palette[i] = PX((c & 2) ? lvl : 0,      // red
                              (c & 4) ? lvl : 0,      // green
                              (c & 1) ? lvl : 0);     // blue
+
+        const int dim = lvl - 1;
+        spec_palette_dim[i] = PX((c & 2) ? dim : 0,
+                                 (c & 4) ? dim : 0,
+                                 (c & 1) ? dim : 0);
     }
 }
 
@@ -170,7 +188,17 @@ static void build_dmask2(void) {
  * character cell, and bits 5-3 pick the row of cells.
  */
 __force_inline static void render_spectrum_line(uint32_t *__restrict out, const uint32_t line) {
-    const uint8_t  border_px = spec_palette[spec_border & 7];
+    /*
+     * Which of the two palettes this output line uses.
+     *
+     * The picture is doubled, so every odd line of a pair is the one to
+     * darken -- including in the border, or the effect stops at the edge
+     * of the paper and looks like a fault rather than a filter.
+     */
+    const uint8_t *__restrict pal =
+        (settings.scanlines && (line & 1)) ? spec_palette_dim : spec_palette;
+
+    const uint8_t  border_px = pal[spec_border & 7];
     const uint32_t border32  = (uint32_t)border_px * 0x01010101u;
 
     if (line < SPEC_Y0 || line >= SPEC_Y0 + SPEC_H) {
@@ -193,8 +221,8 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
         const uint8_t a    = att[col];
 
         const uint8_t bright = (a & 0x40) >> 3;         // -> palette bit 3
-        uint32_t ink   = (uint32_t)spec_palette[(a & 0x07) | bright] * 0x01010101u;
-        uint32_t paper = (uint32_t)spec_palette[((a >> 3) & 0x07) | bright] * 0x01010101u;
+        uint32_t ink   = (uint32_t)pal[(a & 0x07) | bright] * 0x01010101u;
+        uint32_t paper = (uint32_t)pal[((a >> 3) & 0x07) | bright] * 0x01010101u;
 
         // FLASH swaps the pair, every sixteen frames, for this cell only.
         if (unlikely(flash && (a & 0x80))) { const uint32_t t = ink; ink = paper; paper = t; }

@@ -119,8 +119,8 @@ extern volatile uint8_t  spec_port_7ffd;
 // Whether the second chip exists is a runtime thing rather than a build
 // one, because a program that does not know about TurboSound writes 0xFF
 // to the select port as a register number now and then, and on a machine
-// with only one chip that must stay harmless.
-extern volatile bool     spec_turbosound;
+// with only one chip that must stay harmless. It lives in settings.h
+// with everything else that is a preference.
 extern volatile uint32_t spec_ay_writes;
 
 /* True while the beeper bit is set. The mixer samples it; nothing drives
@@ -231,6 +231,15 @@ void spec_key_ascii(char c);
 
 /* Press or release a matrix position directly. row 0-7, bit 0-4. */
 void spec_key_set(uint8_t row, uint8_t bit, bool pressed);
+
+/*
+ * The joystick, whichever one the settings say it is.
+ *
+ * One set of five bits; how they reach the guest is the interface's
+ * business. `bit` is a JOY_BIT_* from settings.h.
+ */
+void    spec_joy_set(uint8_t bit, bool pressed);
+uint8_t spec_joy_state(void);
 
 /*
  * Type a string, one character every few frames.

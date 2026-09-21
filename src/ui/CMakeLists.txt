@@ -11,7 +11,8 @@ add_library(dino_ui INTERFACE)
 
 target_sources(dino_ui INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/screen.c
-        ${CMAKE_CURRENT_LIST_DIR}/menu.c)
+        ${CMAKE_CURRENT_LIST_DIR}/menu.c
+        ${CMAKE_CURRENT_LIST_DIR}/options.c)
 
 target_include_directories(dino_ui INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
