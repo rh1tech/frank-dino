@@ -25,15 +25,17 @@ being everything else the CPU can see.
 | Machines | 48K, 128K, +2, Pentagon 128 — chosen at runtime, saved to the card |
 | CPU | A real Z84C00 at **3.5469 MHz**, tuned against the wall clock; 5.3 and 7 MHz on request |
 | RAM | 128 KB, eight banks, port 0x7FFD |
-| ROM | The stock Sinclair pair, Amstrad's +2 ROM 0, the Pentagon's, and TR-DOS 5.04T |
-| Video | The ULA's 256x192 and border, doubled into 640x480 over HDMI; optional scanlines |
+| Machines | 48K, 128K, +2, +3, Pentagon 128, Scorpion ZS-256, Profi 1024 and Timex TC2068 |
+| ROM | The stock Sinclair pair, Amstrad's +2 ROM 0 and the +3's four, the Pentagon's, and TR-DOS 5.04T |
+| Video | The ULA's 256x192 and border, doubled into 640x480 over HDMI; ULA+, Gigascreen, the Timex SCLD modes, optional scanlines |
 | Sound | Beeper, AY-3-8912, TurboSound (two of them), Covox and SounDrive, mixed to a 44.1 kHz PWM DAC on GP46 |
-| Input | The full matrix over USB or the console; Kempston, Sinclair 1 and 2, Cursor and Fuller joysticks |
-| Storage | microSD: a file browser, `.tap`, `.tzx`, `.sna`, `.z80`, `.trd`, `.scl` and `.scr` |
-| Disks | A Beta Disk interface and a WD1793, with TR-DOS in ROM |
-| Memory | 8 MB of PSRAM on XIP CS1, holding the disk and tape images |
+| Input | The full matrix over USB or the console; USB gamepads; Kempston, Sinclair 1 and 2, Cursor and Fuller joysticks |
+| Storage | microSD and a USB stick: a file browser, `.tap`, `.tzx`, `.pzx`, `.sna`, `.z80`, `.trd`, `.scl`, `.dsk`, `.dck`, `.mmc`, `.hdf`, `.scr` and `.zip` |
+| Disks | A Beta Disk and a WD1793 with TR-DOS in ROM; the +3's uPD765 and +3DOS; DivMMC with esxDOS in its EEPROM. What the guest writes goes back to the card when you ask it to |
+| Menus | pico-speccy's, ported: browser, settings tree, dialogs and info pages on their own 320x240 surface |
+| Memory | 128 KB of guest RAM in SRAM; the Scorpion's 256 KB and the Profi's 1 MB staged out of the 8 MB PSRAM, which the board does not run without |
 
-Three of those are worth a sentence each, because they are not what an
+Five of those are worth a sentence each, because they are not what an
 emulator does.
 
 **Snapshots.** You cannot write a Z84C00's registers from outside it, so
@@ -41,6 +43,32 @@ a `.sna` or a `.z80` is restored by *generating a program that loads
 them* and mapping it over the ROM window: the CPU loads itself and jumps
 into the snapshot, and the real ROM comes back on the first fetch after
 the jump. See `src/spectrum/launch.c`.
+
+**The PSRAM is not optional.** U7 is soldered down and the firmware
+treats it that way: the disk and tape images, the menus' framebuffer,
+the machines above 128 KB and the inflate window all live there, and
+`main()` stops with a message on the console rather than coming up in
+some reduced form. There is no useful subset to fall back to, and
+pretending there is only hides a board fault.
+
+**A megabyte of guest RAM on a part with half of one.** The bus engine
+reads guest memory on every cycle, so what is *mapped* has to be in
+SRAM — a PSRAM miss there stretches a clock phase. But a Profi's 1 MB is
+mostly not mapped: the first eight banks are the 128K machine it also
+is, and the rest only ever appear in the window at #C000, one at a time.
+So banks 0-7 live in SRAM and the rest in PSRAM, with one 16 KB staging
+page holding whichever high bank is current. A switch costs two 16 KB
+transfers, on a path that happens hundreds of times a second and not
+hundreds of thousands. See `spec_bank_ptr()`.
+
+**Sixty-four colours out of four levels.** The video is a two-resistor
+ladder: two bits a channel, sixty-four colours, and that is the ceiling.
+ULA+ asks for sixty-four *arbitrary* ones. It works because every
+Spectrum pixel is already doubled into a 2x2 block of output pixels,
+which is exactly one Bayer cell -- so each colour is dithered inside its
+own pixel and the averaging is the eye's. Gigascreen uses the same block
+to show banks 5 and 7 at once, blended in space instead of flickering in
+time. See `src/drivers/vga/vga.c`.
 
 **Tape.** The same problem, once more: a `.tap` is served by trapping the
 ROM's `LD-BYTES`, and the trap needs IX, DE and A — which it gets by
