@@ -359,8 +359,6 @@ int main(void) {
      */
     if (settings_load()) printf("[cfg] settings loaded\n");
 
-    /* Takes GP45 off the console; see tapein.h. */
-    if (settings.real_player) tapein_start();
     else                 printf("[cfg] defaults\n");
 
     /*
@@ -399,6 +397,15 @@ int main(void) {
          * so mounting from inside tuh_task() would wait for itself.
          */
         usbdisk_task();
+
+        /*
+         * The tape input follows its setting, wherever the setting was
+         * changed -- the menu, the card at start-up, or a debugger.
+         * One place that acts on it, so it cannot be set and not
+         * applied. It takes GP45 off the console; see tapein.h.
+         */
+        if (settings.real_player != tapein_running())
+            settings.real_player ? tapein_start() : tapein_stop();
 
         /*
          * F1, asked for from inside a TinyUSB callback and acted on here.

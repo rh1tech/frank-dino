@@ -68,3 +68,16 @@ void tapein_frame_started(uint32_t frame_tstates);
  * tape head a frame further along.
  */
 bool tapein_level(uint32_t tstates);
+
+/*
+ * Whether anything is driving the input pin.
+ *
+ * Bit 0 is the level read with an internal pull-down, bit 1 with a
+ * pull-up. 0b10 means the pin followed both -- it is floating, and
+ * nothing outside the chip is connected to it. Anything else means
+ * something is holding it. Restores the sampler if it was running.
+ */
+uint8_t tapein_probe(void);
+
+/* What the probe said last, including the one tapein_start() runs. */
+extern uint8_t tapein_last_probe;

@@ -13,6 +13,8 @@
 #include <string.h>
 
 #include <hardware/gpio.h>
+#include <hardware/uart.h>
+#include <pico/stdlib.h>
 #include <pico/time.h>
 
 #include "dino.h"
@@ -36,6 +38,8 @@ static uint32_t frame_tstates;          /* how long this frame is */
 
 static repeating_timer_t timer;
 static bool running;
+
+uint8_t tapein_probe(void);
 
 /*
  * One sample, from the timer.
@@ -79,13 +83,26 @@ void tapein_start(void) {
     frame_bits = 0;
 
     /*
-     * The pin comes off the UART and becomes a plain input. It is the
-     * console's RX; see the note in tapein.h. No pull, because the
-     * comparator on J9 drives it both ways.
+     * Take the pin off the UART properly.
+     *
+     * gpio_init() alone points the mux at SIO, which is enough to READ
+     * the pin -- but the UART is still enabled behind it with this as
+     * its RX, and anything that re-runs stdio setup takes it back. So
+     * the receive side is shut down first and the pin claimed second.
+     * The console can still print: that is GP44, which is untouched.
+     *
+     * No pull, because the comparator on J9 drives the line both ways.
+     * A pull would also hide the one fault worth seeing -- a pin that
+     * nothing is driving at all, which tapein_probe() tests for.
      */
+    uart_set_fifo_enabled(uart0, false);
+    gpio_set_function(TAPEIN_PIN, GPIO_FUNC_SIO);
     gpio_init(TAPEIN_PIN);
     gpio_set_dir(TAPEIN_PIN, GPIO_IN);
-    gpio_disable_pulls(TAPEIN_PIN);
+
+    /* Ask once, on the way in, whether anything is out there. A silent
+     * input and an unconnected one look identical afterwards. */
+    (void)tapein_probe();
 
     /* Negative period: fixed rate between starts, not between end and
      * start, so a late callback does not push the whole train along. */
@@ -97,8 +114,47 @@ void tapein_stop(void) {
     if (!running) return;
     cancel_repeating_timer(&timer);
     running = false;
-    /* The pin goes back to the UART, which re-initialises it. */
+    /* The pin goes back to the UART, and the receive side with it. */
     gpio_set_function(TAPEIN_PIN, GPIO_FUNC_UART);
+    uart_set_fifo_enabled(uart0, true);
+}
+
+/*
+ * Is anything actually driving the pin?
+ *
+ * The fault this exists for is silence: a sampler that runs perfectly
+ * and reads the same level for ever tells you nothing about whether it
+ * is looking at the right pin. A line a comparator is driving holds its
+ * level against an internal pull; a line nothing is connected to
+ * follows the pull wherever it is put. That distinction is the whole
+ * test, and it is the one pico-speccy's own pin-connection probes make.
+ *
+ * Bit 0: the level with a pull-DOWN. Bit 1: with a pull-UP.
+ *   0b10  follows the pulls   -- floating, nothing is driving it
+ *   0b11  stays high          -- something is holding it high
+ *   0b00  stays low           -- something is holding it low
+ * Then the pin is left as it was.
+ */
+uint8_t tapein_last_probe;
+
+uint8_t tapein_probe(void) {
+    gpio_set_function(TAPEIN_PIN, GPIO_FUNC_SIO);
+    gpio_init(TAPEIN_PIN);
+    gpio_set_dir(TAPEIN_PIN, GPIO_IN);
+
+    gpio_pull_down(TAPEIN_PIN);
+    sleep_ms(2);
+    const uint8_t low = gpio_get(TAPEIN_PIN) ? 1u : 0u;
+
+    gpio_pull_up(TAPEIN_PIN);
+    sleep_ms(2);
+    const uint8_t high = gpio_get(TAPEIN_PIN) ? 1u : 0u;
+
+    gpio_disable_pulls(TAPEIN_PIN);
+    /* Four milliseconds of disturbance. The sampler, if it is running,
+     * loses half a pulse of a header tone and nothing notices. */
+    tapein_last_probe = (uint8_t)(low | (high << 1));
+    return tapein_last_probe;
 }
 
 bool tapein_running(void) { return running; }

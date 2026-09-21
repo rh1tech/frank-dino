@@ -12,4 +12,5 @@ target_link_libraries(tapein INTERFACE
         dino_core
         pico_stdlib
         hardware_gpio
+        hardware_uart
 )
