@@ -168,6 +168,262 @@ static bool load_scr(FIL *f, char *detail, const unsigned detail_len) {
 }
 
 // ---------------------------------------------------------------------------
+// .Z80
+// ---------------------------------------------------------------------------
+/*
+ * The format everything is archived in, and the most negotiated one.
+ *
+ * Three versions, distinguished by a value rather than a version field: a
+ * program counter of zero in the v1 header means "this is not a v1, the
+ * real PC is in the extension block". The extension block's own length
+ * then says v2 (23) or v3 (54 or 55).
+ *
+ * Memory is run-length compressed with ED ED as the escape, except where
+ * a block declares itself 0xFFFF long, which means sixteen uncompressed
+ * kilobytes. A v1 file is one stream covering 0x4000-0xFFFF; a v2 or v3
+ * is a series of blocks, each naming the page it belongs to.
+ *
+ * The rules are pico-speccy's FileZ80::load(), which is where the page
+ * numbering and the machine-byte table below come from.
+ */
+
+/*
+ * A buffered reader, because this decompresses a byte at a time.
+ *
+ * f_read() per byte through FatFs and an SPI card is about as slow as
+ * this machine gets; 512 bytes at a time is one sector and makes a 48 KB
+ * snapshot a hundred reads rather than fifty thousand.
+ */
+typedef struct {
+    FIL     *f;
+    uint8_t  buf[512];
+    unsigned have, at;
+    bool     eof;
+} reader_t;
+
+static int rd(reader_t *r) {
+    if (r->at >= r->have) {
+        UINT got = 0;
+        if (f_read(r->f, r->buf, sizeof r->buf, &got) != FR_OK || got == 0) {
+            r->eof = true;
+            return -1;
+        }
+        r->have = got;
+        r->at   = 0;
+    }
+    return r->buf[r->at++];
+}
+
+/* Where a guest address lives right now. ROM writes fall in the bucket. */
+static void poke(const uint16_t addr, const uint8_t v) {
+    z80_wpage[addr >> 14][addr & 0x3FFF] = v;
+}
+
+/*
+ * Expand one compressed run into a page, or into the address space.
+ *
+ * Two destinations rather than one because a v1 stream is addressed and a
+ * v2/v3 block is a bank that may not be mapped anywhere at the time. A
+ * NULL `page` means "use `base` as a guest address".
+ */
+static void unpack(reader_t *r, uint32_t in_len, uint8_t *page, uint16_t base, uint16_t out_len) {
+    uint32_t in = 0;
+    uint16_t out = 0;
+
+    while (in < in_len && out < out_len) {
+        const int b = rd(r);
+        if (b < 0) return;
+        in++;
+
+        if (b != 0xED) {
+            if (page) page[out++] = (uint8_t)b; else poke((uint16_t)(base + out++), (uint8_t)b);
+            continue;
+        }
+
+        const int b2 = rd(r);
+        if (b2 < 0) return;
+        in++;
+
+        if (b2 != 0xED) {
+            if (page) page[out++] = 0xED; else poke((uint16_t)(base + out++), 0xED);
+            if (out < out_len) {
+                if (page) page[out++] = (uint8_t)b2; else poke((uint16_t)(base + out++), (uint8_t)b2);
+            }
+            continue;
+        }
+
+        const int cnt = rd(r), val = rd(r);
+        if (cnt < 0 || val < 0) return;
+        in += 2;
+        for (int i = 0; i < cnt && out < out_len; i++) {
+            if (page) page[out++] = (uint8_t)val; else poke((uint16_t)(base + out++), (uint8_t)val);
+        }
+    }
+}
+
+static void raw(reader_t *r, uint8_t *page, uint16_t base, uint16_t len) {
+    for (uint16_t i = 0; i < len; i++) {
+        const int b = rd(r);
+        if (b < 0) return;
+        if (page) page[i] = (uint8_t)b; else poke((uint16_t)(base + i), (uint8_t)b);
+    }
+}
+
+static void z80_header(const uint8_t *h, z80_state_t *st) {
+    st->af  = (uint16_t)((h[0] << 8) | h[1]);       // A then F
+    st->bc  = rd16(h + 2);
+    st->hl  = rd16(h + 4);
+    st->pc  = rd16(h + 6);
+    st->sp  = rd16(h + 8);
+    st->i   = h[10];
+
+    /*
+     * R is seven bits in the header and its eighth is somewhere else.
+     * Byte 12's bit 0 carries it, which is the sort of thing that only
+     * matters until a program uses R as a random number source.
+     */
+    st->r   = (uint8_t)((h[11] & 0x7F) | ((h[12] & 0x01) << 7));
+
+    st->de  = rd16(h + 13);
+    st->bc_ = rd16(h + 15);
+    st->de_ = rd16(h + 17);
+    st->hl_ = rd16(h + 19);
+    st->af_ = (uint16_t)((h[21] << 8) | h[22]);     // A' then F'
+    st->iy  = rd16(h + 23);
+    st->ix  = rd16(h + 25);
+    st->iff = h[27] != 0;
+    st->im  = h[29] & 3;
+    st->border = (uint8_t)((h[12] >> 1) & 7);
+}
+
+/*
+ * Which machine a .z80 was taken on.
+ *
+ * Byte 34 of the extension block, and it means different things in v2 and
+ * v3 -- 4 is "128K + Interface 1" in one and "128K" in the other, which
+ * is the kind of difference that silently loads a snapshot into the wrong
+ * machine. Anything this firmware does not have is mapped to the nearest
+ * machine it does, because a snapshot is RAM and registers: a Pentagon
+ * dump runs on a 128K, slightly wrongly, which is a great deal better
+ * than refusing it.
+ */
+static machine_t z80_machine(const uint8_t ver, const uint8_t mch, bool *exact) {
+    *exact = true;
+    if (ver == 2) {
+        switch (mch) {
+            case 0: case 1:  return MACHINE_48K;
+            case 3: case 4:  return MACHINE_128K;
+            default: *exact = false; return MACHINE_128K;
+        }
+    }
+    switch (mch) {
+        case 0: case 1: case 3: return MACHINE_48K;     // 48K, +IF1, +MGT
+        case 4: case 5: case 6: return MACHINE_128K;    // 128K, +IF1, +MGT
+        case 12:                return MACHINE_PLUS2;
+        default: *exact = false; return MACHINE_128K;   // +3, Pentagon, Scorpion...
+    }
+}
+
+static bool load_z80(FIL *f, const uint32_t size, char *detail, const unsigned detail_len) {
+    uint8_t h[87];
+    UINT got = 0;
+    if (f_read(f, h, 30, &got) != FR_OK || got != 30)
+        FAIL("could not read the .z80 header");
+
+    z80_state_t st = {0};
+    z80_header(h, &st);
+
+    uint8_t  ver = 1;
+    uint8_t  mch = 0;
+    unsigned ext = 0;
+    bool     exact = true;
+
+    if (st.pc == 0) {
+        if (f_read(f, h + 30, 2, &got) != FR_OK || got != 2) FAIL(".z80 ends at the version word");
+        ext = rd16(h + 30);
+        if      (ext == 23)             ver = 2;
+        else if (ext == 54 || ext == 55) ver = 3;
+        else FAIL(".z80 extension block is %u bytes; expected 23, 54 or 55", (unsigned)ext);
+
+        if (ext > sizeof h - 32) FAIL(".z80 extension block will not fit");
+        if (f_read(f, h + 32, ext, &got) != FR_OK || got != ext)
+            FAIL(".z80 extension block is short");
+
+        st.pc = rd16(h + 32);
+        mch   = h[34];
+    }
+
+    const machine_t m = ver == 1 ? MACHINE_48K : z80_machine(ver, mch, &exact);
+    spec_set_machine(m);
+
+    static reader_t r;      // 512 bytes; core 0's stack is not that big
+    r = (reader_t){ .f = f };
+
+    if (ver == 1) {
+        /*
+         * One stream, 48 KB, starting at 0x4000. Byte 12 bit 5 says
+         * whether it is compressed -- and that byte is 255 in files
+         * written by a handful of old tools, which by convention means
+         * 1 and therefore "compressed".
+         */
+        const uint8_t b12 = h[12] == 255 ? 1 : h[12];
+        st.port7ffd = 0x30;                     // meaningless on a 48K
+        spec_set_paging(st.port7ffd);
+
+        if (b12 & 0x20) unpack(&r, size - 30, NULL, 0x4000, 0xC000);
+        else            raw(&r, NULL, 0x4000, 0xC000);
+    } else if (m == MACHINE_48K) {
+        st.port7ffd = 0x30;
+        spec_set_paging(st.port7ffd);
+
+        // Page ids on a 48K name addresses, not banks, and only three of
+        // the eleven exist.
+        for (;;) {
+            const int l0 = rd(&r), l1 = rd(&r), id = rd(&r);
+            if (l0 < 0 || l1 < 0 || id < 0) break;
+            const uint16_t len = (uint16_t)(l0 | (l1 << 8));
+
+            const uint16_t base = id == 4 ? 0x8000 : id == 5 ? 0xC000 : id == 8 ? 0x4000 : 0;
+            if (!base) break;                   // ROM or something unknown; stop
+
+            if (len == 0xFFFF) raw(&r, NULL, base, SPEC_BANK_SIZE);
+            else               unpack(&r, len, NULL, base, SPEC_BANK_SIZE);
+        }
+    } else {
+        // Byte 35 is the paging latch itself, which is the whole of a
+        // 128K's memory state.
+        st.port7ffd = h[35];
+        spec_set_paging(st.port7ffd);
+
+        for (;;) {
+            const int l0 = rd(&r), l1 = rd(&r), id = rd(&r);
+            if (l0 < 0 || l1 < 0 || id < 0) break;
+            const uint16_t len = (uint16_t)(l0 | (l1 << 8));
+
+            // 3..10 are RAM banks 0..7. Anything else is a ROM block,
+            // which is ours rather than the snapshot's -- so it is read
+            // past rather than stored, to keep the stream in step.
+            uint8_t *page = (id >= 3 && id <= 10) ? spec_ram[id - 3] : NULL;
+
+            if (len == 0xFFFF) {
+                if (page) raw(&r, page, 0, SPEC_BANK_SIZE);
+                else for (uint16_t i = 0; i < SPEC_BANK_SIZE; i++) if (rd(&r) < 0) break;
+            } else {
+                if (page) unpack(&r, len, page, 0, SPEC_BANK_SIZE);
+                else for (uint16_t i = 0; i < len; i++) if (rd(&r) < 0) break;
+            }
+        }
+    }
+
+    if (!spec_launch(&st))
+        FAIL("the CPU would not leave the restore code");
+
+    snprintf(detail, detail_len, "%s .z80 v%u running from %04X%s",
+             spec_machine_name(), ver, st.pc, exact ? "" : " (machine approximated)");
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 // .TAP
 // ---------------------------------------------------------------------------
 /*
@@ -230,7 +486,7 @@ bool loader_load(const char *path, const file_kind_t kind,
 
         // Not yet, and saying which is better than a generic refusal.
         case FILE_TZX: snprintf(detail, detail_len, ".tzx is not implemented yet; .tap is"); ok = false; break;
-        case FILE_Z80: snprintf(detail, detail_len, ".z80 snapshots are not implemented yet"); ok = false; break;
+        case FILE_Z80: ok = load_z80(&f, (uint32_t)fi.fsize, detail, detail_len); break;
         case FILE_TRD: snprintf(detail, detail_len, "TR-DOS needs a Beta Disk interface"); ok = false; break;
         default:       snprintf(detail, detail_len, "nothing here knows what that file is"); ok = false; break;
     }
