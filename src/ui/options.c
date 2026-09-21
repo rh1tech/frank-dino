@@ -111,7 +111,19 @@ static void betadisk_changed(void) {
     // The ROM it brings in replaces the BASIC ROM, so the machine has to
     // be restarted around it either way.
     spec_set_machine((machine_t)settings.machine);
-    snprintf(status, sizeof status, "Beta Disk %s", settings.betadisk ? "on" : "off");
+
+    /*
+     * And re-tuned, which is the part that is easy to miss.
+     *
+     * The interface costs an inspection of every opcode fetch -- see
+     * spec_opfetch() -- so turning it on makes the frame loop heavier
+     * and the machine slower. The clock tuner is the only thing that
+     * knows how to pay for that, and it only runs when asked.
+     */
+    const uint32_t fps = spec_tune_clock();
+    snprintf(status, sizeof status, "Beta Disk %s - %lu.%02lu frames a second",
+             settings.betadisk ? "on" : "off",
+             (unsigned long)(fps / 1000), (unsigned long)((fps % 1000) / 10));
 }
 
 static const char *disk_info(void) {
@@ -156,8 +168,9 @@ static void trace_changed(void) {
 
 static const char *z80_info(void) {
     static char buf[40];
-    snprintf(buf, sizeof buf, "PC~%04X  %lu fetches",
-             z80_stats.last_opfetch_addr, (unsigned long)z80_stats.opfetch);
+    snprintf(buf, sizeof buf, "PC~%04X  pace %lu  %lu fetches",
+             z80_stats.last_opfetch_addr, (unsigned long)z80_get_pace(),
+             (unsigned long)z80_stats.opfetch);
     return buf;
 }
 

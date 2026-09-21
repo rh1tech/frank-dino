@@ -46,7 +46,17 @@ typedef struct {
 // from where I think?" are different questions, and a CPU that has lost
 // its mind usually still fetches.
 typedef struct {
-    uint64_t t_states;
+    /*
+     * Thirty-two bits, not sixty-four.
+     *
+     * This is incremented once per T-state on the loop that generates
+     * the clock, and a 64-bit increment there is two loads, two adds and
+     * two stores where a 32-bit one is one of each. It wraps after about
+     * twenty minutes of running, which costs nothing: every use is a
+     * difference between two readings, and unsigned subtraction gives
+     * the right answer across a wrap.
+     */
+    uint32_t t_states;
     uint32_t opfetch;
     uint32_t mem_read;
     uint32_t mem_write;
@@ -262,7 +272,15 @@ uint32_t z80_wiring_undriveable(void);
 /* Level each line sits at with no pull and nothing driving it. */
 uint32_t z80_wiring_levels(void);
 
+/*
+ * Start and stop the stuck-line watch.
+ *
+ * Recording is not free -- it is a read of GPIO_IN and two globals
+ * updated twice per T-state, on the loop that generates the clock -- so
+ * it is off until a test asks for it, and has to be turned off again.
+ */
 void     z80_edge_watch_reset(void);
+void     z80_edge_watch_stop(void);
 uint32_t z80_edge_watch_stuck_high(void);
 uint32_t z80_edge_watch_stuck_low(void);
 
@@ -345,6 +363,17 @@ extern uint8_t z80_int_vector;
  */
 void     z80_set_pace(uint32_t settle_iterations);
 void     z80_set_pace_raw(uint32_t settle_iterations);
+
+/*
+ * Replace the floor with one that has been measured on this board.
+ *
+ * Z80_PACE_MIN is a guess made once; the real boundary moves with the
+ * system clock, with the size of the service routine and with how warm
+ * the board is. selftest_probe_pace_floor() finds it at boot and hands
+ * it to this.
+ */
+void     z80_set_pace_floor(uint32_t floor);
+uint32_t z80_get_pace_floor(void);
 uint32_t z80_get_pace(void);
 
 /* Achieved Z80 clock in Hz, measured over a real run rather than derived. */

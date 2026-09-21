@@ -24,6 +24,7 @@ static void record(const bool ok) {
     res.run++;
     if (ok) res.passed++; else res.failed++;
 }
+#endif
 
 // ============================================================================
 // Loading a program
@@ -36,11 +37,73 @@ static void record(const bool ok) {
 static void load(const uint16_t at, const uint8_t *code, const size_t len) {
     memcpy(&z80_mem[at], code, len);
 }
-#endif
 
 static void wipe(void) {
     memset(z80_mem, 0xFF, GUEST_MEM_SIZE);
     z80_map_flat();    // the tests want the plain 64 KB, not a machine
+}
+
+// ============================================================================
+// How fast the engine may be driven and still be right
+// ============================================================================
+//
+// Where the probe starts. Forty is far slower than anything the machine
+// runs at, so the first answer is always right and the walk down is the
+// measurement.
+#define PACE_PROBE_TOP 40
+
+/*
+ * Measured on this board, at this temperature, with this build.
+ *
+ * Pace is how long the engine waits after a clock edge before it samples
+ * the Z80's pins, and below some value it samples them too early and
+ * reads the previous cycle's address. Where that happens is not a
+ * constant: it moves with the system clock, with how many instructions
+ * the service routine has grown, with what the frame loop does around it
+ * and with how warm the board is. It has been at 4, at 6, at 8 and at 10
+ * in one evening of this firmware changing around it.
+ *
+ * Guessing a floor and hoping is how the clock tuner ended up driving
+ * the machine into the region where it keeps perfect time and computes
+ * nonsense. So the floor is found instead: run a program whose answer is
+ * known, at falling paces, until the answer stops being right.
+ *
+ * Runs once at boot, before the machine starts, and costs about a tenth
+ * of a second.
+ */
+uint32_t selftest_probe_pace_floor(void) {
+    const uint32_t saved = z80_get_pace();
+    uint32_t last_good = PACE_PROBE_TOP;
+
+    for (uint32_t p = PACE_PROBE_TOP; p >= 2; p--) {
+        z80_set_pace_raw(p);
+
+        wipe();
+        load(0x0000, prog_checksum, sizeof prog_checksum);
+        z80_reset();
+        z80_run(PROG_CHECKSUM_TSTATES);
+
+        /*
+         * Through the window table, not through z80_mem directly.
+         *
+         * The result lands at 0x4000, and outside a SELFTEST build the
+         * flat array is only 16 KB -- z80_map_flat() wraps it, so the
+         * byte is really at the bottom of the array and indexing
+         * z80_mem[0x4000] would be reading off the end of it.
+         */
+        const uint16_t got = (uint16_t)z80_rpage[PROG_CHECKSUM_RESULT >> 14][PROG_CHECKSUM_RESULT & 0x3FFF] |
+                             ((uint16_t)z80_rpage[(PROG_CHECKSUM_RESULT + 1) >> 14][(PROG_CHECKSUM_RESULT + 1) & 0x3FFF] << 8);
+        if (got != PROG_CHECKSUM_EXPECTED) break;
+        last_good = p;
+    }
+
+    z80_set_pace(saved);
+
+    // Four steps of margin. One step is about five per cent of a
+    // half-cycle and the boundary has been seen to move by two between
+    // one build and the next.
+    const uint32_t floor = last_good + 4;
+    return floor > 64 ? 64 : floor;
 }
 
 // ============================================================================
@@ -647,7 +710,8 @@ static bool test_int(void) {
 // silicon one — which is why the report gives the pace as well as the
 // megahertz.
 static void test_speed(void) {
-    static const uint32_t paces[] = { 40, 32, 24, 18, 14, 10, 8, 6, 4, 3, 2, 1, 0 };
+    // Two is as low as the engine goes; see z80_set_pace_raw().
+    static const uint32_t paces[] = { PACE_PROBE_TOP, 32, 24, 18, 14, 10, 8, 6, 4, 3, 2 };
     const uint32_t saved = z80_get_pace();
 
     uint32_t best_hz = 0, best_pace = saved;

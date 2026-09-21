@@ -152,6 +152,19 @@ static void core1_main(void) {
     scr_log(ATTR(C_GREY, C_BLACK), "Z80 clock: %lu.%03lu MHz (asked for %u.%03u)",
             (unsigned long)(hz / 1000000), (unsigned long)((hz / 1000) % 1000),
             SPEC_CPU_HZ / 1000000, (SPEC_CPU_HZ / 1000) % 1000);
+
+    /*
+     * And how hard it may be driven, measured rather than assumed.
+     *
+     * Everything that tunes for a frame rate is clamped to this. Without
+     * it the tuner will happily buy 50 Hz by sampling the CPU's pins
+     * before they are valid, and a Spectrum that keeps perfect time and
+     * computes nonsense is the most confusing failure this firmware has.
+     */
+    const uint32_t floor = selftest_probe_pace_floor();
+    z80_set_pace_floor(floor);
+    scr_log(ATTR(C_GREY, C_BLACK), "Bus engine: correct down to a pace of %lu; floor set there.",
+            (unsigned long)floor);
 #if USB_KEYBOARD
     scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, USB keyboard on the USB-A ports.");
 #else

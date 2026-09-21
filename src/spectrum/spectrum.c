@@ -862,6 +862,10 @@ void spec_init(void) {
     z80_io_out = spec_io_out;
     update_opfetch_hook();
 
+    // The stage-0 wiring watch, if a quick check left it on. A machine
+    // never wants it and it is expensive: see z80_bus.h.
+    z80_edge_watch_stop();
+
     z80_reset();
 }
 
@@ -874,6 +878,8 @@ void spec_init(void) {
  * 0.394 away 882 times a frame is 347 T-states of drift every 20 ms.
  */
 static uint32_t slice_acc;
+
+static void run_frame(void);
 
 __force_inline static void run_slice(const uint32_t tstates, const uint32_t num) {
     z80_run(tstates);
@@ -922,6 +928,22 @@ uint32_t spec_tune_clock(void) {
     // speeds and nobody needs to hear that.
     audio_set_enabled(false);
 
+    /*
+     * Let the machine get on with something typical first.
+     *
+     * How long a frame takes depends on what the CPU is doing in it: an
+     * I/O cycle costs more engine time than a memory one, and the ROM's
+     * power-on RAM test is almost nothing but memory. Tuning against
+     * that -- which is exactly what happens when this is called straight
+     * after a reset -- picks a pace that is six per cent too fast for
+     * the machine the user then sits in front of, and six per cent is a
+     * semitone on everything it plays.
+     *
+     * A second and a half is enough for a 128K to finish testing its
+     * memory and reach its menu.
+     */
+    for (int f = 0; f < 75; f++) run_frame();
+
     // What five frames should take, in microseconds.
     const int64_t want = 5ll * 1000000ll * SPEC_TSTATES_PER_FRAME / SPEC_CPU_HZ;
     const int64_t tol  = want / 400;        // a quarter of a per cent
@@ -946,7 +968,7 @@ uint32_t spec_tune_clock(void) {
      */
     for (int iter = 0; iter < 16; iter++) {
         const uint64_t t0 = time_us_64();
-        for (int f = 0; f < 5; f++) spec_run_frame();
+        for (int f = 0; f < 5; f++) run_frame();
         us = (int64_t)(time_us_64() - t0);
 
         const int64_t err = us - want;                  // >0 means too slow
@@ -982,7 +1004,7 @@ uint32_t spec_tune_clock(void) {
      * printed on the boot screen where it will be believed.
      */
     const uint64_t t0 = time_us_64();
-    for (int f = 0; f < 5; f++) spec_run_frame();
+    for (int f = 0; f < 5; f++) run_frame();
     us = (int64_t)(time_us_64() - t0);
 
     audio_set_enabled(true);
@@ -1024,9 +1046,16 @@ void spec_next_machine(void) {
     spec_set_machine((machine_t)((spec_machine + 1) % MACHINE_COUNT));
 }
 
-void spec_run_frame(void) {
-    pause_point();
-
+/*
+ * One frame, without the pause check.
+ *
+ * Split out because the clock tuner runs frames too, and it runs them
+ * from core 0 with the machine already paused -- so a pause point inside
+ * them would park the core that is holding the pause, which is a
+ * deadlock and was one: changing the Z80 speed from the settings page
+ * hung the firmware with the page still on the screen.
+ */
+static void run_frame(void) {
     /*
      * The whole main loop of the machine, sliced.
      *
@@ -1076,4 +1105,9 @@ void spec_run_frame(void) {
     spec_flash = (f & 0x10) != 0;
 
     spec_key_tick();
+}
+
+void spec_run_frame(void) {
+    pause_point();
+    run_frame();
 }

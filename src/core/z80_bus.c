@@ -124,14 +124,22 @@ __force_inline static void dbus_release(void) {
     sio_hw->gpio_oe_clr = Z80_DATA_MASK;
 }
 
-__force_inline static void settle(void) {
-    uint32_t n = pace_settle;
-    while (n--) __asm volatile("nop" ::: "memory");
-}
-
-__force_inline static void settle_b(void) {
-    uint32_t n = pace_settle_b;
-    while (n--) __asm volatile("nop" ::: "memory");
+/*
+ * The delay, with its length passed in.
+ *
+ * pace_settle is a plain uint32_t and sio_hw points at volatile
+ * uint32_t, so the compiler has to assume a store through SIO might
+ * alias it -- which meant reloading the pace from memory after every
+ * clock edge, twice per T-state, on the hottest loop there is. The same
+ * is true of prev_ctl. Both are now held in registers by the caller and
+ * written back when it is done, and that alone bought about a tenth of
+ * the machine's speed.
+ */
+__force_inline static void settle(uint32_t n) {
+    // A do-while, not a while: the zero test costs a compare and a
+    // branch on every clock phase for a case that cannot happen --
+    // z80_set_pace_raw() will not hand out a half-count below one.
+    do { __asm volatile("nop" ::: "memory"); } while (--n);
 }
 
 // ============================================================================
@@ -202,10 +210,9 @@ bus_event_t z80_trace_get(const uint32_t i) {
  */
 static uint32_t prev_ctl = 0xFFFFFFFFu;
 
-__force_inline static void bus_service(void) {
+__force_inline static uint32_t bus_service(const uint32_t prev) {
     const uint32_t g    = sio_hw->gpio_in;
-    const uint32_t fell = prev_ctl & ~g;
-    prev_ctl = g;
+    const uint32_t fell = prev & ~g;
 
     if (fell & Z80_RD) {                    // a read cycle begins
         const uint16_t a = (uint16_t)(g & Z80_ADDR_MASK);
@@ -237,10 +244,10 @@ __force_inline static void bus_service(void) {
         z80_stats.last_data = v;
         trace_put(a, v, kind);
         inta_run = 0;
-        return;
+        return g;
     }
 
-    if (!(g & Z80_RD)) return;              // still reading; the byte is up
+    if (!(g & Z80_RD)) return g;              // still reading; the byte is up
 
     if (fell & Z80_WR) {                    // a write cycle begins
         // The data lines are inputs: they were released on the sample
@@ -261,10 +268,10 @@ __force_inline static void bus_service(void) {
         z80_stats.last_addr = a;
         z80_stats.last_data = v;
         inta_run = 0;
-        return;
+        return g;
     }
 
-    if (!(g & Z80_WR)) return;              // still writing
+    if (!(g & Z80_WR)) return g;              // still writing
 
     /*
      * No strobe at all. Three things look like this and only one needs
@@ -288,7 +295,7 @@ __force_inline static void bus_service(void) {
             trace_put((uint16_t)(g & Z80_ADDR_MASK), z80_int_vector, BUS_INT_ACK);
             dbus_drive(z80_int_vector);
         }
-        return;                             // the vector stays up until ~M1 rises
+        return g;                           // the vector stays up until ~M1 rises
     }
 
     /*
@@ -303,6 +310,7 @@ __force_inline static void bus_service(void) {
      */
     inta_run = 0;
     dbus_release();
+    return g;
 }
 
 /*
@@ -326,21 +334,47 @@ __force_inline static void bus_service(void) {
  */
 static uint32_t seen_high, seen_low;
 
-__force_inline static void t_state(void) {
-    sio_hw->gpio_set = Z80_CLK;
-    settle();
-    bus_service();
-    uint32_t g = sio_hw->gpio_in;
+/*
+ * ...and it is off unless a test is watching.
+ *
+ * It cost an extra read of GPIO_IN and two read-modify-writes on globals
+ * twice per T-state, on a loop where the whole T-state is about thirty
+ * instructions. That is not a rounding error: switching it off bought
+ * back most of a 13 % shortfall against 50 Hz. Nothing but the stage-0
+ * wiring tests has ever read it.
+ */
+static bool watching;
+
+__force_inline static void edge_watch(void) {
+    if (likely(!watching)) return;
+    const uint32_t g = sio_hw->gpio_in;
     seen_high |= g;
     seen_low  |= ~g;
+}
+
+/*
+ * One T-state, with everything it reads more than once held in registers.
+ *
+ * `prev` is the previous sample, in and out; the paces come from the
+ * caller. See settle() for why none of them is read from memory here.
+ */
+__force_inline static uint32_t t_state_r(uint32_t prev, const uint32_t pa, const uint32_t pb) {
+    sio_hw->gpio_set = Z80_CLK;
+    settle(pa);
+    prev = bus_service(prev);
+    edge_watch();
 
     sio_hw->gpio_clr = Z80_CLK;
-    settle_b();
-    bus_service();
-    g = sio_hw->gpio_in;
-    seen_high |= g;
-    seen_low  |= ~g;
+    settle(pb);
+    prev = bus_service(prev);
+    edge_watch();
 
+    return prev;
+}
+
+/* The same, for the callers that run a handful of cycles and go away. */
+__force_inline static void t_state(void) {
+    prev_ctl = t_state_r(prev_ctl, pace_settle, pace_settle_b);
     z80_stats.t_states++;
 }
 
@@ -478,13 +512,34 @@ void z80_wiring_shorts(uint32_t out[BUS_LINES]) {
     busy_wait_us(PULL_SETTLE_US);
 }
 
-void z80_edge_watch_reset(void) { seen_high = 0; seen_low = 0; }
+void z80_edge_watch_reset(void) { seen_high = 0; seen_low = 0; watching = true; }
+void z80_edge_watch_stop(void)  { watching = false; }
 
 uint32_t z80_edge_watch_stuck_high(void) { return (~seen_low)  & Z80_ADDR_MASK; }
 uint32_t z80_edge_watch_stuck_low(void)  { return (~seen_high) & Z80_ADDR_MASK; }
 
-void z80_run(uint32_t t_states) {
-    while (t_states--) t_state();
+/*
+ * The loop the whole machine's speed is.
+ *
+ * Everything it touches repeatedly lives in a register for the duration
+ * and is written back at the end: the pace, the previous bus sample and
+ * the T-state count. That is not micro-optimisation for its own sake --
+ * the pace is how long the engine waits for the Z80's pins to settle,
+ * and every instruction saved here is an instruction the tuner can spend
+ * on waiting instead. Cheaper loop, longer settle, more margin.
+ */
+void z80_run(const uint32_t t_states) {
+    const uint32_t pa = pace_settle, pb = pace_settle_b;
+    uint32_t prev = prev_ctl;
+
+    for (uint32_t i = t_states; i--; ) prev = t_state_r(prev, pa, pb);
+
+    prev_ctl = prev;
+
+    // Counted once rather than once per T-state: the loop always runs
+    // the whole count, and a register held for the duration is a
+    // register the settle loop could have had.
+    z80_stats.t_states += t_states;
 }
 
 uint32_t z80_run_to_opfetch(const uint32_t max_t_states) {
@@ -527,7 +582,7 @@ void z80_reset(void) {
      * running. The caller's own clocks serve the same purpose and are
      * counted.
      */
-    const uint64_t t = z80_stats.t_states;
+    const uint32_t t = z80_stats.t_states;
     memset(&z80_stats, 0, sizeof z80_stats);
     z80_stats.t_states = t;
 }
@@ -592,12 +647,29 @@ void z80_pulse_nmi(void) {
  * the Z80 has least to say during.
  */
 void z80_set_pace_raw(const uint32_t total) {
-    pace_settle   = total / 2;
-    pace_settle_b = total - pace_settle;
+    // Two is the floor of the mechanism rather than of correctness: the
+    // settle loop runs at least once per half-cycle, so that the test
+    // for zero can come out of it. See settle().
+    const uint32_t t = total < 2 ? 2 : total;
+    pace_settle   = t / 2;
+    pace_settle_b = t - pace_settle;
 }
 
+/*
+ * The floor, which starts at a conservative guess and is replaced by a
+ * measurement at boot. See selftest_probe_pace_floor().
+ */
+static uint32_t pace_floor = Z80_PACE_MIN;
+
+void z80_set_pace_floor(const uint32_t floor) {
+    pace_floor = floor < Z80_PACE_MIN ? Z80_PACE_MIN : floor;
+    if (z80_get_pace() < pace_floor) z80_set_pace_raw(pace_floor);
+}
+
+uint32_t z80_get_pace_floor(void) { return pace_floor; }
+
 void z80_set_pace(const uint32_t total) {
-    z80_set_pace_raw(total < Z80_PACE_MIN ? Z80_PACE_MIN : total);
+    z80_set_pace_raw(total < pace_floor ? pace_floor : total);
 }
 
 uint32_t z80_get_pace(void) { return pace_settle + pace_settle_b; }

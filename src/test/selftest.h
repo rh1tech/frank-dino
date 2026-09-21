@@ -47,3 +47,14 @@ bool selftest_quick_check(void);
 
 /* Dump the bus trace ring to the console. Called after a failure. */
 void selftest_dump_trace(uint32_t max_lines);
+
+/*
+ * The lowest pace at which this board still computes the right answer,
+ * plus margin. See the definition: it is measured rather than assumed,
+ * because the boundary moves with the clock, the code and the weather.
+ *
+ * Call once at boot, before the machine starts. Destroys guest memory
+ * and resets the CPU, which is why it belongs here and not in the bus
+ * engine.
+ */
+uint32_t selftest_probe_pace_floor(void);
