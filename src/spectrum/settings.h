@@ -76,7 +76,11 @@ typedef struct {
     uint8_t kempston_port;  // 0 = #1F, 1 = #DF
     uint8_t cursor_as_joy;  // the cursor keys drive the selected joystick too
 
-    // --- tape ---
+    // --- diagnostics ---
+    uint8_t bus_trace;      // record every bus cycle into the ring
+
+    // --- storage ---
+    uint8_t betadisk;       // the Beta Disk interface and its TR-DOS ROM
     uint8_t tape_autostart; // type LOAD "" after mounting a .tap
 } settings_t;
 

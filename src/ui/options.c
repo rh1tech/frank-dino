@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "beta.h"
 #include "menu.h"
 #include "psram.h"
 #include "screen.h"
@@ -56,7 +57,8 @@ typedef struct {
 } row_t;
 
 static const char *const off_on[]   = { "Off", "On" };
-static const char *const machines[] = { "ZX Spectrum 48K", "ZX Spectrum 128K", "ZX Spectrum +2" };
+static const char *const machines[] = { "ZX Spectrum 48K", "ZX Spectrum 128K",
+                                       "ZX Spectrum +2", "Pentagon 128" };
 static const char *const turbos[]   = { "3.5 MHz (real)", "5.3 MHz", "7 MHz" };
 static const char *const joysticks[]= { "None", "Kempston", "Sinclair 1", "Sinclair 2",
                                         "Cursor", "Fuller" };
@@ -104,6 +106,121 @@ static void turbo_changed(void) {
 }
 
 static void nothing(void) { }
+
+static void betadisk_changed(void) {
+    // The ROM it brings in replaces the BASIC ROM, so the machine has to
+    // be restarted around it either way.
+    spec_set_machine((machine_t)settings.machine);
+    snprintf(status, sizeof status, "Beta Disk %s", settings.betadisk ? "on" : "off");
+}
+
+static const char *disk_info(void) {
+    static char buf[32];
+    if (!beta_mounted()) snprintf(buf, sizeof buf, "no disk");
+    else                 snprintf(buf, sizeof buf, "%u tracks", beta_tracks());
+    return buf;
+}
+
+/*
+ * Where the CPU is, and whether it is anywhere.
+ *
+ * A machine that has crashed and a machine that is running look the same
+ * from here -- both are a screen full of something. The address of the
+ * last opcode fetch says which, and usually says where: a tight loop
+ * repeats one address, a runaway walks, and a stopped CPU does not move
+ * at all between two visits to this page.
+ */
+static void psram_test_action(void) {
+    if (!psram_size()) { snprintf(status, sizeof status, "No PSRAM to test."); return; }
+
+    // The page is already on the screen; the status line is the one part
+    // of it that has to change before a test that takes a second.
+    scr_printf(2, VGA_ROWS - 4, ATTR(C_LGREEN, C_BLACK), "%-*s",
+               VGA_COLS - 4, "Testing 4 MB of PSRAM...");
+
+    // The bottom of the window holds the disk and tape images, so the
+    // test starts above them.
+    const uint32_t bad = psram_test(1u << 20, 4u << 20);
+    snprintf(status, sizeof status,
+             bad ? "PSRAM: %lu words wrong out of 1048576 -- the interface is marginal"
+                 : "PSRAM: 1048576 words, all correct",
+             (unsigned long)bad);
+}
+
+static void trace_changed(void) {
+    z80_trace_on = settings.bus_trace != 0;
+    if (z80_trace_on) z80_trace_reset();
+    snprintf(status, sizeof status, "Bus recording %s",
+             z80_trace_on ? "on -- leave the menu, then come back and look" : "off");
+}
+
+static const char *z80_info(void) {
+    static char buf[40];
+    snprintf(buf, sizeof buf, "PC~%04X  %lu fetches",
+             z80_stats.last_opfetch_addr, (unsigned long)z80_stats.opfetch);
+    return buf;
+}
+
+/*
+ * The last two hundred and fifty-six bus cycles, on the screen.
+ *
+ * There is no other window into a machine whose CPU is a physical part:
+ * a program that has gone wrong and a program that is working look
+ * identical from outside, and the debugger can read the RP2350 but not
+ * the Z80. The bus engine keeps a ring of every cycle it serviced, and
+ * this draws the end of it -- which is where a CPU that has stopped
+ * getting anywhere is going round and round.
+ *
+ * Recording is off unless asked for: it is two stores per cycle, on the
+ * path that generates the clock.
+ */
+static const char *const cycle_name[] = { "?    ", "fetch", "read ", "write",
+                                          "in   ", "out  ", "inta " };
+
+static void trace_action(void) {
+    const uint32_t n = z80_trace_count();
+    if (!n) {
+        snprintf(status, sizeof status,
+                 "Nothing recorded. Turn the trace on, leave the menu, come back.");
+        return;
+    }
+
+    scr_clear(ATTR(C_GREY, C_BLACK));
+    scr_box(0, 0, VGA_COLS, VGA_ROWS, NULL, ATTR(C_BLUE, C_BLACK));
+    scr_printf(2, 1, ATTR(C_YELLOW, C_BLACK), "BUS TRACE");
+    scr_printf(VGA_COLS - 30, 1, ATTR(C_DGREY, C_BLACK),
+               "last %lu cycles, newest last", (unsigned long)n);
+
+    // Two columns, because a 30-row screen holds fifty of them that way
+    // and the interesting part of a loop is usually longer than 25.
+    const uint32_t shown = n < 50 ? n : 50;
+    for (uint32_t i = 0; i < shown; i++) {
+        const bus_event_t e = z80_trace_get(n - shown + i);
+        const int col = (i < 25) ? 4 : (VGA_COLS / 2 + 2);
+        const int row = 4 + (int)(i % 25);
+        scr_printf(col, row, ATTR(e.kind == BUS_OPFETCH ? C_WHITE : C_GREY, C_BLACK),
+                   "%04X  %s  %02X", e.addr,
+                   e.kind < (sizeof cycle_name / sizeof cycle_name[0])
+                       ? cycle_name[e.kind] : "?    ",
+                   e.data);
+    }
+
+    scr_put(2, VGA_ROWS - 2, "Any key to go back", ATTR(C_DGREY, C_BLACK));
+    menu_wait_key();
+    status[0] = 0;
+}
+
+static const char *fdc_info(void) {
+    static char buf[40];
+    beta_stats(buf, sizeof buf);
+    return buf;
+}
+
+static void disk_action(void) {
+    if (!beta_mounted()) { snprintf(status, sizeof status, "No disk is in the drive."); return; }
+    beta_eject();
+    snprintf(status, sizeof status, "Disk ejected.");
+}
 
 static const char *tape_info(void) {
     static char buf[48];
@@ -194,12 +311,19 @@ static const row_t rows[] = {
     CHOICE("Kempston port",      &settings.kempston_port,  kports,    nothing),
     CHOICE("Cursor keys as joystick", &settings.cursor_as_joy, off_on, nothing),
 
-    HEAD("TAPE"),
-    CHOICE("Auto-start on load", &settings.tape_autostart, off_on,    nothing),
+    HEAD("STORAGE"),
+    CHOICE("Auto-start tapes",   &settings.tape_autostart, off_on,    nothing),
     INFO  ("Eject tape",         tape_info,  tape_action),
+    CHOICE("Beta Disk (TR-DOS)", &settings.betadisk,       off_on,    betadisk_changed),
+    INFO  ("Eject disk",         disk_info,  disk_action),
+    INFO  ("  last FDC command", fdc_info,   NULL),
 
     HEAD("SYSTEM"),
     INFO  ("PSRAM",                     psram_info, NULL),
+    INFO  ("Z80",                       z80_info,   NULL),
+    CHOICE("Record the bus",     &settings.bus_trace,      off_on,    trace_changed),
+    ACTION("Show the bus trace",        trace_action),
+    ACTION("Test the PSRAM",            psram_test_action),
     ACTION("Re-read the card",          rescan_action),
     ACTION("Save settings to the card", save_action),
     ACTION("Restore defaults",          defaults_action),

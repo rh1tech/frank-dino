@@ -48,6 +48,8 @@ static const field_t fields[] = {
     { "kempston_port",  &settings.kempston_port,  1  },
     { "cursor_as_joy",  &settings.cursor_as_joy,  1  },
 
+    { "bus_trace",      &settings.bus_trace,      1  },
+    { "betadisk",       &settings.betadisk,       1  },
     { "tape_autostart", &settings.tape_autostart, 1  },
 };
 
@@ -82,6 +84,16 @@ void settings_defaults(void) {
         .kempston_port  = 0,
         .cursor_as_joy  = 1,
 
+        /*
+         * The Beta Disk off by default, which a Pentagon owner would
+         * find odd.
+         *
+         * It is not free: its ROM replaces the BASIC ROM whenever the
+         * CPU fetches from 0x3Dxx, which means every opcode fetch has to
+         * be inspected for it. Mounting a .trd turns it on.
+         */
+        .bus_trace      = 0,
+        .betadisk       = 0,
         .tape_autostart = 1,
     };
 }

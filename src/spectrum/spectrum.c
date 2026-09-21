@@ -14,6 +14,7 @@
 
 #include "audio.h"
 #include "ay.h"
+#include "beta.h"
 #include "dino.h"
 #include "settings.h"
 #include "tape.h"
@@ -40,18 +41,23 @@ IMPORT_BIN("roms/128-0.rom", spec_rom0);
 IMPORT_BIN("roms/128-1.rom", spec_rom1);
 IMPORT_BIN("roms/48.rom",    spec_rom48);
 IMPORT_BIN("roms/plus2.rom", spec_romp2);
+IMPORT_BIN("roms/pentagon-0.rom", spec_rompent);
+IMPORT_BIN("roms/trdos.rom", spec_romtrd);
 extern const uint8_t spec_rom0[SPEC_BANK_SIZE];
 extern const uint8_t spec_rom1[SPEC_BANK_SIZE];
 extern const uint8_t spec_rom48[SPEC_BANK_SIZE];
 extern const uint8_t spec_romp2[SPEC_BANK_SIZE];
+extern const uint8_t spec_rompent[SPEC_BANK_SIZE];
+extern const uint8_t spec_romtrd[SPEC_BANK_SIZE];
 
 machine_t spec_machine = MACHINE_128K;
 
 const char *spec_machine_name(void) {
     switch (spec_machine) {
-        case MACHINE_48K:   return "ZX Spectrum 48K";
-        case MACHINE_PLUS2: return "ZX Spectrum +2";
-        default:            return "ZX Spectrum 128K";
+        case MACHINE_48K:      return "ZX Spectrum 48K";
+        case MACHINE_PLUS2:    return "ZX Spectrum +2";
+        case MACHINE_PENTAGON: return "Pentagon 128";
+        default:               return "ZX Spectrum 128K";
     }
 }
 
@@ -72,8 +78,12 @@ const char *spec_machine_name(void) {
 static inline uint32_t turbo_num(void) { return 2u + settings.turbo; }
 
 uint32_t spec_frame_tstates(void) {
-    const uint32_t base = spec_machine == MACHINE_48K ? SPEC_TSTATES_PER_FRAME_48
-                                                      : SPEC_TSTATES_PER_FRAME;
+    uint32_t base;
+    switch (spec_machine) {
+        case MACHINE_48K:      base = SPEC_TSTATES_PER_FRAME_48;   break;
+        case MACHINE_PENTAGON: base = SPEC_TSTATES_PER_FRAME_PENT; break;
+        default:               base = SPEC_TSTATES_PER_FRAME;      break;
+    }
     return base * turbo_num() / 2;
 }
 
@@ -179,6 +189,31 @@ static void apply_paging(void) {
     const uint8_t v = spec_port_7ffd;
 
     /*
+     * The Beta Disk's ROM sits on top of everything.
+     *
+     * When the interface has decided its ROM is in -- see spec_opfetch()
+     * for the rule, which is about where the CPU is fetching from and
+     * nothing else -- it replaces whatever the bottom window would
+     * otherwise hold, on every machine. So this runs first and the rest
+     * of the function only decides what is underneath it.
+     */
+    if (unlikely(beta_rom_paged())) {
+        z80_map_page(0, (uint8_t *)spec_romtrd, NULL);
+        if (spec_machine == MACHINE_48K) {
+            z80_map_page(1, spec_ram[5], spec_ram[5]);
+            z80_map_page(2, spec_ram[2], spec_ram[2]);
+            z80_map_page(3, spec_ram[0], spec_ram[0]);
+            spec_screen_bank = 5;
+        } else {
+            z80_map_page(1, spec_ram[5], spec_ram[5]);
+            z80_map_page(2, spec_ram[2], spec_ram[2]);
+            z80_map_page(3, spec_ram[v & 7], spec_ram[v & 7]);
+            spec_screen_bank = (v & 0x08) ? 7 : 5;
+        }
+        return;
+    }
+
+    /*
      * A 48K has one ROM and no paging at all: whatever is in the latch,
      * the map is fixed. Modelling that as "the latch exists but is
      * ignored" rather than as a separate code path keeps one function
@@ -195,7 +230,9 @@ static void apply_paging(void) {
 
     // Bottom window: ROM 1 (48K BASIC) when bit 4 is set, ROM 0 otherwise.
     // Read-only, which here means "its write pointer goes to the bucket".
-    const uint8_t *rom0 = (spec_machine == MACHINE_PLUS2) ? spec_romp2 : spec_rom0;
+    const uint8_t *rom0 = spec_machine == MACHINE_PLUS2    ? spec_romp2
+                        : spec_machine == MACHINE_PENTAGON ? spec_rompent
+                                                           : spec_rom0;
     z80_map_page(0, (uint8_t *)((v & 0x10) ? basic_rom() : rom0), NULL);
 
     // The two fixed windows never move. Mapped every time anyway, because
@@ -222,21 +259,75 @@ void spec_set_paging(const uint8_t value) {
     apply_paging();
 }
 
+static void update_opfetch_hook(void);
+
 /*
- * The first opcode fetch after the trampoline's jump is the destination,
- * and this runs before that fetch is answered — so putting the real ROM
- * back here means the destination's first byte comes from the ROM even
- * when the destination is itself inside the bottom 16K, which a few
- * snapshots' program counters are.
+ * Everything that has to watch where the CPU is fetching from.
+ *
+ * Two things do, and they are unrelated except in wanting the same
+ * event. The trampoline needs the instruction after its jump, so it can
+ * put the real ROM back at the exact moment nothing of it is needed any
+ * more. The Beta Disk needs every fetch, because its ROM appearing and
+ * disappearing is a function of the address being fetched and of nothing
+ * else.
+ *
+ * This is on the hottest path there is -- once per opcode, a few million
+ * times a second -- so it is not installed at all unless one of the two
+ * actually wants it. That is what update_opfetch_hook() is for.
  */
-static void launch_opfetch(const uint16_t addr) {
-    if (!tramp_seen_jp) {
-        if (addr == tramp_jp) tramp_seen_jp = true;
+static void spec_opfetch(const uint16_t addr) {
+    if (unlikely(tramp_active)) {
+        /*
+         * The first opcode fetch after the trampoline's jump is the
+         * destination, and this runs before that fetch is answered — so
+         * putting the real ROM back here means the destination's first
+         * byte comes from the ROM even when the destination is itself
+         * inside the bottom 16K, which a few snapshots' program counters
+         * are.
+         */
+        if (!tramp_seen_jp) {
+            if (addr == tramp_jp) tramp_seen_jp = true;
+            return;
+        }
+        apply_paging();             // the real ROM, per the latch
+        tramp_active = false;
+        update_opfetch_hook();
         return;
     }
-    apply_paging();                 // the real ROM, per the latch
-    tramp_active   = false;
-    z80_opfetch_cb = NULL;
+
+    if (!settings.betadisk) return;
+
+    /*
+     * The Beta Disk's paging rule, which is the whole of its address
+     * decoding: the TR-DOS ROM appears when an opcode is fetched from
+     * 0x3Dxx with the 48K BASIC ROM selected, and goes away on the first
+     * opcode fetch at 0x4000 or above.
+     *
+     * That is why entering TR-DOS is spelled RANDOMIZE USR 15616. 15616
+     * is 0x3D00, and calling it is the entire mechanism -- there is no
+     * port and no latch, just a comparator on the address bus.
+     */
+    if (addr >= 0x4000) {
+        if (unlikely(beta_rom_paged())) {
+            beta_set_rom_paged(false);
+            apply_paging();
+        }
+        return;
+    }
+
+    if (beta_rom_paged()) return;
+
+    // On a 128K the rule only applies while ROM 1 is selected; the
+    // editor ROM has its own use for that address.
+    const bool basic48 = spec_machine == MACHINE_48K || (spec_port_7ffd & 0x10);
+    if ((addr & 0xFF00) == 0x3D00 && basic48) {
+        beta_set_rom_paged(true);
+        apply_paging();
+    }
+}
+
+static void update_opfetch_hook(void) {
+    z80_opfetch_cb = (tramp_active || settings.betadisk) ? spec_opfetch : NULL;
 }
 
 void spec_begin_launch(uint8_t *page, const uint16_t jp_addr) {
@@ -244,7 +335,7 @@ void spec_begin_launch(uint8_t *page, const uint16_t jp_addr) {
     tramp_seen_jp  = false;
     tramp_active   = true;
     z80_map_page(0, page, NULL);    // read-only, like the ROM it replaces
-    z80_opfetch_cb = launch_opfetch;
+    update_opfetch_hook();
 }
 
 bool spec_launch_pending(void) { return tramp_active; }
@@ -274,6 +365,7 @@ static void spec_io_out(const uint16_t port, const uint8_t value) {
      * firmware wrote into the ROM window itself.
      */
     if (tape_port_out(port, value)) return;
+    if (beta_port_out(port, value)) return;
 
     if ((port & 0x0001) == 0) {                 // the ULA
         spec_border = value & 0x07;
@@ -455,8 +547,9 @@ static uint8_t fuller_byte(void) {
 // ---------------------------------------------------------------------------
 
 static uint8_t spec_io_in(const uint16_t port) {
-    uint8_t tape;
-    if (tape_port_in(port, &tape)) return tape;
+    uint8_t v;
+    if (tape_port_in(port, &v)) return v;
+    if (beta_port_in(port, &v)) return v;
 
     if (settings.joystick == JOY_KEMPSTON &&
         (port & 0xFF) == (settings.kempston_port ? 0xDF : 0x1F))
@@ -738,13 +831,36 @@ void spec_init(void) {
     held_joy       = 0;
     type_str       = NULL;
     paging_locked  = false;
+
     spec_port_7ffd = 0;
     spec_border    = 7;
     spec_frames    = 0;
+
+    /*
+     * A Beta Disk 128 comes up with its own ROM at 0x0000 and lets
+     * TR-DOS decide what happens next, which is how a disk with a `boot`
+     * file on it starts by itself. Only after a .trd has been mounted,
+     * though: on an empty drive that start-up is a wait for a disk that
+     * is not there.
+     *
+     * On a 128K, a +2 or a Pentagon there is a second thing to do.
+     * TR-DOS is a 48K program: it expects the 48 BASIC ROM underneath it
+     * and its own paging rule only fires while that ROM is selected, so
+     * a machine that comes up in the editor ROM pages TR-DOS out on its
+     * first fetch above 0x4000 and can never page it back in. Selecting
+     * ROM 1 first -- without the lock bit, so a 128K program on the disk
+     * still has its banks -- is what a Beta Disk 128 is.
+     */
+    beta_reset();
+    const bool beta_boot = settings.betadisk && beta_take_boot_request();
+    if (beta_boot && spec_machine != MACHINE_48K) spec_port_7ffd = 0x10;
+    beta_set_rom_paged(beta_boot);
+
     apply_paging();
 
     z80_io_in  = spec_io_in;
     z80_io_out = spec_io_out;
+    update_opfetch_hook();
 
     z80_reset();
 }

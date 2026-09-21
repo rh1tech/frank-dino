@@ -37,10 +37,17 @@
 // and the AY. A +2 is a 128K with Amstrad's ROM 0 — same hardware,
 // different menu, and enough software checks for it that it is worth
 // being able to select.
+//
+// A Pentagon 128 is the Russian clone, and it is not a cosmetic
+// difference: 71680 T-states to the frame, no ULA contention at all, and
+// a Beta Disk interface as standard rather than as an add-on. Half the
+// demo scene targets its timing specifically, and a good deal of what is
+// on a .trd expects to find TR-DOS on it.
 typedef enum : uint8_t {
     MACHINE_48K = 0,
     MACHINE_128K,
     MACHINE_PLUS2,
+    MACHINE_PENTAGON,
     MACHINE_COUNT,
 } machine_t;
 
@@ -65,6 +72,7 @@ uint32_t spec_frame_tstates(void);
 // the wrong speed and every piece of music play flat.
 #define SPEC_TSTATES_PER_FRAME   70908
 #define SPEC_TSTATES_PER_FRAME_48 69888
+#define SPEC_TSTATES_PER_FRAME_PENT 71680
 
 // How long the ULA holds ~INT low. 36 T-states on a 128K; 32 on a 48K.
 // Long enough that the CPU cannot miss it between two instructions.

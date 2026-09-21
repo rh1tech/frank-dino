@@ -13,6 +13,7 @@
 
 #include "ff.h"
 #include "launch.h"
+#include "beta.h"
 #include "settings.h"
 #include "spectrum.h"
 #include "tape.h"
@@ -476,6 +477,41 @@ static bool load_tap(FIL *f, const uint32_t size, const bool tzx,
 }
 
 // ---------------------------------------------------------------------------
+// .TRD
+// ---------------------------------------------------------------------------
+/*
+ * A raw disk, straight into the drive.
+ *
+ * There is no format to parse: a .trd is the sectors in order, which is
+ * why its size alone says how many tracks it has. What there is to do is
+ * turn the interface on if it is off -- a .trd is meaningless without it
+ * -- and start the machine with the TR-DOS ROM in the bottom window, the
+ * way a Beta Disk 128 comes up, so that a disk with a `boot` file on it
+ * starts by itself.
+ */
+static bool load_trd(FIL *f, const uint32_t size, char *detail, const unsigned detail_len) {
+    if (size > TRD_MAX_BYTES)
+        FAIL("that .trd is %luK; the limit is %uK",
+             (unsigned long)(size / 1024), TRD_MAX_BYTES / 1024);
+
+    UINT got = 0;
+    if (f_read(f, trd_image, size, &got) != FR_OK || got != size)
+        FAIL("could not read the whole .trd");
+
+    if (!beta_mount(size, detail, detail_len)) return false;
+
+    char mounted[80];
+    snprintf(mounted, sizeof mounted, "%s", detail);
+
+    settings.betadisk = 1;
+    beta_boot_next_reset();
+    spec_set_machine((machine_t)spec_machine);
+
+    snprintf(detail, detail_len, "%s -- booting", mounted);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 
 bool loader_load(const char *path, const file_kind_t kind,
                  char *detail, const unsigned detail_len) {
@@ -493,7 +529,7 @@ bool loader_load(const char *path, const file_kind_t kind,
         case FILE_TAP: ok = load_tap(&f, (uint32_t)fi.fsize, false, detail, detail_len); break;
         case FILE_TZX: ok = load_tap(&f, (uint32_t)fi.fsize, true,  detail, detail_len); break;
         case FILE_Z80: ok = load_z80(&f, (uint32_t)fi.fsize, detail, detail_len); break;
-        case FILE_TRD: snprintf(detail, detail_len, "TR-DOS needs a Beta Disk interface"); ok = false; break;
+        case FILE_TRD: ok = load_trd(&f, (uint32_t)fi.fsize, detail, detail_len); break;
         default:       snprintf(detail, detail_len, "nothing here knows what that file is"); ok = false; break;
     }
 

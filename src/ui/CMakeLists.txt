@@ -16,4 +16,4 @@ target_sources(dino_ui INTERFACE
 
 target_include_directories(dino_ui INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
-target_link_libraries(dino_ui INTERFACE vga spectrum psram pico_stdio)
+target_link_libraries(dino_ui INTERFACE vga spectrum psram dino_core pico_stdio)

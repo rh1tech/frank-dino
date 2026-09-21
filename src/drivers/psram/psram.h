@@ -52,3 +52,17 @@ uint32_t psram_init(void);
 
 /* The size found by psram_init(), without probing again. */
 uint32_t psram_size(void);
+
+/*
+ * Write a pattern over `bytes` of it and read it back.
+ *
+ * Returns the number of words that did not match. The interface runs at
+ * a divided system clock with a receive delay that is calculated rather
+ * than measured, and a chip that is marginal does not fail -- it returns
+ * the wrong byte now and then, which upstream looks exactly like a
+ * program that crashed by itself. This is how that is told apart.
+ *
+ * Destroys whatever was in the region tested, so it takes a length: the
+ * disk and tape images live at the bottom of the window.
+ */
+uint32_t psram_test(uint32_t from, uint32_t bytes);

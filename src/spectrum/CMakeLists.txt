@@ -16,7 +16,8 @@ target_sources(spectrum INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/storage.c
         ${CMAKE_CURRENT_LIST_DIR}/loader.c
         ${CMAKE_CURRENT_LIST_DIR}/tape.c
-        ${CMAKE_CURRENT_LIST_DIR}/settings.c)
+        ${CMAKE_CURRENT_LIST_DIR}/settings.c
+        ${CMAKE_CURRENT_LIST_DIR}/beta.c)
 
 target_include_directories(spectrum INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 

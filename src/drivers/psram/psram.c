@@ -209,3 +209,32 @@ uint32_t __no_inline_not_in_flash_func(psram_init)(void) {
     found = probe_size();
     return found;
 }
+
+// ---------------------------------------------------------------------------
+
+/*
+ * A pattern that depends on its own address.
+ *
+ * Which is the point: a stuck address line, a short between two of them
+ * or a receive delay that samples a bit early all produce the right
+ * *kind* of data at the wrong place, and a constant pattern cannot see
+ * any of it. The multiply is a cheap mixer, not a hash.
+ */
+static inline uint32_t pattern(const uint32_t addr) {
+    return (addr * 2654435761u) ^ (addr << 7) ^ 0xA5A5A5A5u;
+}
+
+uint32_t psram_test(const uint32_t from, const uint32_t bytes) {
+    if (!found || from + bytes > found) return 0xFFFFFFFFu;
+
+    volatile uint32_t *const p = (volatile uint32_t *)(PSRAM_BASE + from);
+    const uint32_t words = bytes / 4;
+
+    for (uint32_t i = 0; i < words; i++) p[i] = pattern(i);
+
+    uint32_t bad = 0;
+    for (uint32_t i = 0; i < words; i++)
+        if (p[i] != pattern(i)) bad++;
+
+    return bad;
+}
