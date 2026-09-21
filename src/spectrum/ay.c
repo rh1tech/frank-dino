@@ -4,6 +4,24 @@
  * Copyright (c) 2026 Mikhail Matveev <xtreme@rh1.tech>
  * https://github.com/rh1tech/frank-dino
  * SPDX-License-Identifier: GPL-3.0-or-later
+ *
+ * ---------------------------------------------------------------------
+ * The generator is libayemu's, by Sashnov Alexander and Roman Scherbakov,
+ * as carried by ESPectrum and pico-speccy in src/AySound.cpp. The tables,
+ * the counter semantics, the noise polynomial and the envelope model are
+ * all theirs; what is this firmware's is the shape around them -- one
+ * struct per chip so TurboSound can have two, and a render call that
+ * takes the cycles a single audio sample covers.
+ *
+ * It replaces a version written from the datasheet, which was a mistake
+ * and sounded like one. The datasheet describes a 16-step envelope and
+ * the chip as it is actually modelled has 32 amplitude levels, so
+ * envelope-driven bass -- which is most of what the AY is used for in
+ * Russian music, and most of what anyone notices -- came out as a
+ * sixteen-level staircase and a subtly wrong timbre. Copying the
+ * numbers that everyone else's output is compared against is worth more
+ * than deriving them again.
+ * ---------------------------------------------------------------------
  */
 
 #include "ay.h"
@@ -15,222 +33,268 @@
 #include "dino.h"
 
 /*
- * The amplitude table, and it is not a straight line.
+ * Thirty-two amplitude levels, 1.5 dB apart, tied to silence at zero.
  *
- * Each of the sixteen volume steps is about 1.5 dB below the one above,
- * so the bottom half of the range is nearly silent and the top two steps
- * are most of the output. A linear table sounds wrong in a specific and
- * recognisable way: quiet passages come up too loud and every envelope
- * decays like a ramp instead of a fade.
+ * libayemu generates these at start-up as max/2^((v^31)/6.36) with
+ * table[0] subtracted so level zero really is zero; they are precomputed
+ * here because this firmware has no reason to carry powf() and because a
+ * table is easier to compare against theirs than a formula is.
  *
- * These are the measured values that circulate as the V_Soft/Lion 17
- * table, which pico-speccy carries too.
+ * Normalised so the top step is 65535, which is the scale the mixer in
+ * spectrum.c was built around.
  */
-static const uint16_t ay_amp[16] = {
-        0,   513,   828,  1239,  1923,  3238,  4926,  9110,
-    10344, 17876, 24682, 30442, 38844, 47270, 56402, 65535,
+static const uint16_t ay_amp[32] = {
+        0,   266,   563,   895,  1264,  1676,  2135,  2648,
+     3219,  3856,  4566,  5359,  6242,  7227,  8326,  9551,
+    10917, 12440, 14139, 16033, 18146, 20502, 23129, 26058,
+    29325, 32968, 37031, 41561, 46613, 52247, 58529, 65535,
+};
+
+/*
+ * The volume register is four bits and the table is five.
+ *
+ * Not simply doubled: level 0 is silence and the rest sit on the odd
+ * steps, which is libayemu's Rampa_AY_table and is what makes a fixed
+ * volume of n sit exactly between envelope steps 2n and 2n+2.
+ */
+static const uint8_t vol_to_amp[16] = { 0,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31 };
+
+/*
+ * The sixteen envelope shapes, as positions rather than a state machine.
+ *
+ * Four bits of the shape register select a row; the envelope counter
+ * walks along it and wraps from 127 back to 64, which is what makes the
+ * eight repeating shapes repeat and the eight one-shot ones hold. A
+ * state machine with CONT, ATT, ALT and HOLD flags describes the same
+ * thing and is much easier to get wrong -- this is a table lookup and
+ * cannot be.
+ */
+static const uint8_t envelope[16][128] = {
+    {
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    {
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    {
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    {
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    {
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    {
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    {
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    {
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    {
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 },
+    {
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
+    {
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 },
+    {
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+      31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,
+      31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,
+      31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31 },
+    {
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31 },
+    {
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+      31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,
+      31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,
+      31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31,31 },
+    {
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0,
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+      31,30,29,28,27,26,25,24,23,22,21,20,19,18,17,16,15,14,13,12,11,10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0 },
+    {
+       0, 1, 2, 3, 4, 5, 6, 7, 8, 9,10,11,12,13,14,15,16,17,18,19,20,21,22,23,24,25,26,27,28,29,30,31,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0,
+       0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0 },
 };
 
 void ay_reset(ay_t *ay) {
     memset(ay, 0, sizeof *ay);
-    ay->noise_shift = 1;            // any non-zero seed; zero is a dead LFSR
-    ay->reg[7]      = 0x3F;         // everything disabled, as after power-on
+    ay->seed   = 0xFFFFu;           // libayemu's; any non-zero seed will do
+    ay->reg[7] = 0x3F;              // everything disabled, as after power-on
 }
 
 void ay_select(ay_t *ay, const uint8_t reg) { ay->latched = reg & 0x0F; }
 
-uint8_t ay_read(const ay_t *ay) {
-    static const uint8_t mask[16] = {
-        0xFF, 0x0F, 0xFF, 0x0F, 0xFF, 0x0F, 0x1F, 0xFF,
-        0x1F, 0x1F, 0x1F, 0xFF, 0xFF, 0x0F, 0xFF, 0xFF,
-    };
-    return ay->reg[ay->latched] & mask[ay->latched];
-}
-
 void ay_write(ay_t *ay, const uint8_t value) {
-    const uint8_t r = ay->latched;
-    ay->reg[r] = value;
+    ay->reg[ay->latched] = value;
 
-    /*
-     * Writing the shape register restarts the envelope, and writing the
-     * same value again restarts it again. That is not an implementation
-     * detail to skip: a great deal of AY music retriggers an envelope
-     * every note by rewriting R13, and a model that only acts on a
-     * *change* plays those notes as one long fade.
-     */
-    if (r == 13) {
-        ay->env_step    = 0;
-        ay->env_count   = 0;
-        ay->env_holding = false;
-        ay->env_rising  = (value & 4) != 0;      // ATT picks the first direction
-        ay->env_level   = ay->env_rising ? 0 : 15;
-    }
+    // Writing the shape register restarts the envelope, whatever it was
+    // doing. That is the whole of how a tune retriggers a note.
+    if (ay->latched == 13) { ay->env_pos = 0; ay->cnt_e = 0; }
 }
 
-// ---------------------------------------------------------------------------
-// The envelope
-// ---------------------------------------------------------------------------
-/*
- * Four bits, not sixteen shapes.
- *
- * CONT (bit 3), ATT (2), ALT (1), HOLD (0). The generator counts a
- * 32-step ramp; ATT says whether it counts up or down, and what happens
- * at the end of the ramp is decided by the other three:
- *
- *   CONT = 0   one ramp, then sit at silence for ever. (The eight shapes
- *              with CONT clear are all this, regardless of the rest.)
- *   HOLD = 1   one ramp, then hold — at the end it reached, unless ALT
- *              says to flip first.
- *   otherwise  repeat, flipping direction each time if ALT is set.
- */
-__force_inline static void env_step(ay_t *ay) {
-    if (ay->env_holding) return;
+uint8_t ay_read(const ay_t *ay) { return ay->reg[ay->latched]; }
 
-    const uint8_t shape = ay->reg[13] & 0x0F;
-    const bool cont = shape & 8, alt = shape & 2, hold = shape & 1;
-
-    if (ay->env_step < 31) {
-        ay->env_step++;
-    } else {
-        if (!cont) {
-            // CONT clear: one ramp, then silence for ever, whatever the
-            // other three bits say. That is all eight of those shapes.
-            ay->env_holding = true;
-            ay->env_level   = 0;
-            return;
-        }
-        if (alt)  ay->env_rising = !ay->env_rising;
-        if (hold) ay->env_holding = true;
-        else      ay->env_step = 0;
-    }
-
-    ay->env_level = ay->env_rising ? (uint8_t)(ay->env_step >> 1)
-                                   : (uint8_t)(15 - (ay->env_step >> 1));
-}
-
-// ---------------------------------------------------------------------------
-// Rendering
 // ---------------------------------------------------------------------------
 
 int32_t ay_render(ay_t *ay, const uint32_t ticks) {
-    // Work in counter ticks and keep the remainder in the chip, not in a
-    // static -- TurboSound has two of these.
-    const uint32_t tsum = ticks + ay->tone_rem;
-    const uint32_t tone_ticks = tsum / AY_COUNTER_DIV;
+    /*
+     * Chip clocks to counter ticks, with the remainder kept per chip.
+     *
+     * Every counter in the AY runs at the chip clock over eight -- see
+     * ay.h for why the datasheet's 16 and 256 are results and not
+     * divisors. libayemu truncates this to a constant per sample; the
+     * remainder is carried here instead, which is the one place this
+     * differs from theirs and it only makes the pitch more exact.
+     */
+    const uint32_t tsum  = ticks + ay->tone_rem;
+    const uint32_t tacts = tsum / AY_COUNTER_DIV;
     ay->tone_rem = tsum % AY_COUNTER_DIV;
 
-    // The envelope counter is the same rate; only what it counts differs.
-    uint32_t envt = tone_ticks;
+    if (!tacts) return ay->last;
 
-    while (envt--) {
-        const uint16_t period = (uint16_t)(ay->reg[11] | (ay->reg[12] << 8));
-        if (++ay->env_count >= (period ? period : 1)) {
-            ay->env_count = 0;
-            env_step(ay);
-        }
-    }
+    /*
+     * Everything the inner loop needs, decoded once.
+     *
+     * The CPU is stopped for the whole of this slice, so none of it can
+     * change while the loop runs -- and the loop runs a few times per
+     * sample, 44100 times a second, twice over for TurboSound. Unpacking
+     * twelve-bit periods out of register pairs inside it once cost about
+     * a tenth of the Z80's clock rate.
+     */
+    const uint8_t  *env_row = envelope[ay->reg[13] & 0x0F];
+    const uint16_t  tone[3] = {
+        (uint16_t)((ay->reg[0] | (ay->reg[1] << 8)) & 0x0FFF),
+        (uint16_t)((ay->reg[2] | (ay->reg[3] << 8)) & 0x0FFF),
+        (uint16_t)((ay->reg[4] | (ay->reg[5] << 8)) & 0x0FFF),
+    };
+    const uint16_t noise2   = (uint16_t)((ay->reg[6] & 0x1F) * 2u);
+    const uint16_t env_freq = (uint16_t)(ay->reg[11] | (ay->reg[12] << 8));
 
     const uint8_t mixer = ay->reg[7];
+    const bool t_on[3] = { !(mixer & 1), !(mixer & 2), !(mixer & 4) };
+    const bool n_on[3] = { !(mixer & 8), !(mixer & 16), !(mixer & 32) };
 
-    /*
-     * Average across the slice rather than sampling at the end of it.
-     *
-     * At 44.1 kHz a sample covers about two and a half tone ticks, and a
-     * channel near the top of its range flips more often than that.
-     * Taking the level at one instant turns those into an aliased tone
-     * somewhere else entirely; averaging what the channel actually did
-     * across the slice is a crude low-pass, but it is the difference
-     * between a high note and a wrong note.
-     */
-    /*
-     * Decode the registers once, not once per step.
-     *
-     * The CPU is stopped for the whole of this slice, so nothing here can
-     * change while the loop runs — and the loop runs two or three times
-     * per sample, 44100 times a second, twice over for TurboSound.
-     * Unpacking twelve-bit periods out of register pairs inside it cost
-     * about a tenth of the Z80's clock rate, which showed up as the
-     * machine running at 3.1 MHz instead of 3.5.
-     */
-    uint16_t period[3];
-    uint8_t  vol[3];
-    bool     tone_on[3], noise_on[3];
+    uint8_t vol[3], env_on[3];
     for (int c = 0; c < 3; c++) {
-        const uint16_t p = (uint16_t)((ay->reg[c * 2] | (ay->reg[c * 2 + 1] << 8)) & 0x0FFF);
-        // A period of 0 behaves as 1 on real silicon, not as a divide by
-        // zero and not as silence.
-        period[c]   = p ? p : 1;
-        tone_on[c]  = !(mixer & (1u << c));
-        noise_on[c] = !(mixer & (8u << c));
-        const uint8_t amp = ay->reg[8 + c];
-        vol[c] = (amp & 0x10) ? ay->env_level : (amp & 0x0F);
+        vol[c]    = (uint8_t)(ay->reg[8 + c] & 0x0F);
+        env_on[c] = (uint8_t)(ay->reg[8 + c] & 0x10);
     }
-    const uint8_t np = ay->reg[6] & 0x1F;
-    const uint16_t nperiod = (uint16_t)((np ? np : 1) * 2u);
+
+    uint16_t cnt[3] = { ay->cnt[0], ay->cnt[1], ay->cnt[2] };
+    uint8_t  bit[3] = { ay->bit[0], ay->bit[1], ay->bit[2] };
+    uint16_t cnt_n = ay->cnt_n, cnt_e = ay->cnt_e;
+    uint8_t  bit_n = ay->bit_n;
+    uint16_t env_pos = ay->env_pos;
+    uint32_t seed = ay->seed;
 
     int32_t acc = 0;
-    const uint32_t steps = tone_ticks ? tone_ticks : 1;
 
-    for (uint32_t t = 0; t < steps; t++) {
-        if (tone_ticks) {
-            for (int c = 0; c < 3; c++)
-                if (++ay->tone_count[c] >= period[c]) {
-                    ay->tone_count[c] = 0;
-                    ay->tone_flip[c] ^= 1;
-                }
+    for (uint32_t m = 0; m < tacts; m++) {
+        // libayemu's counters: count up, and on reaching the period
+        // reset and toggle. A period of zero toggles every tick, which
+        // is what the silicon does and is not a special case.
+        for (int c = 0; c < 3; c++)
+            if (++cnt[c] >= tone[c]) { cnt[c] = 0; bit[c] ^= 1; }
 
-            if (++ay->noise_count >= nperiod) {
-                ay->noise_count = 0;
-                /*
-                 * A 17-bit LFSR tapped at bits 0 and 3. Not a random
-                 * number generator standing in for one: the AY's noise
-                 * has a character that comes from this exact polynomial,
-                 * and anything else sounds like hiss rather than like an AY.
-                 */
-                const uint32_t bit = ((ay->noise_shift ^ (ay->noise_shift >> 3)) & 1u);
-                ay->noise_shift = (ay->noise_shift >> 1) | (bit << 16);
-                ay->noise_bit   = (uint8_t)(ay->noise_shift & 1u);
-            }
+        if (++cnt_n >= noise2) {
+            cnt_n = 0;
+            // A 17-bit LFSR with taps at 16 and 13. The AY's noise has a
+            // character that comes from this exact polynomial; anything
+            // else is hiss.
+            seed = (seed * 2u + 1u) ^ (((seed >> 16) ^ (seed >> 13)) & 1u);
+            bit_n = (uint8_t)((seed >> 16) & 1u);
+        }
+
+        if (++cnt_e >= env_freq) {
+            cnt_e = 0;
+            if (++env_pos > 127) env_pos = 64;
         }
 
         for (int c = 0; c < 3; c++) {
-            // Tone AND noise, with the mixer bits *disabling* rather than
-            // enabling — a set bit is off. Both disabled is a steady
-            // level, which is how envelope-only percussion works and why
-            // it must not be silenced.
-            const bool level = (tone_on[c]  ? ay->tone_flip[c] : 1) &&
-                               (noise_on[c] ? ay->noise_bit    : 1);
-            if (level) acc += ay_amp[vol[c]];
+            // The mixer bits *disable*: a set bit is off. Both disabled
+            // is a steady level, which is how envelope-only percussion
+            // works and why it must not be silenced.
+            if ((bit[c] | !t_on[c]) & (bit_n | !n_on[c]))
+                acc += ay_amp[env_on[c] ? env_row[env_pos] : vol_to_amp[vol[c]]];
         }
     }
 
+    for (int c = 0; c < 3; c++) { ay->cnt[c] = cnt[c]; ay->bit[c] = bit[c]; }
+    ay->cnt_n = cnt_n; ay->cnt_e = cnt_e; ay->bit_n = bit_n;
+    ay->env_pos = env_pos; ay->seed = seed;
+
     /*
-     * Headroom, worked out rather than guessed.
+     * Averaged across the sample, then given an eighth of the range.
+     *
+     * At 44.1 kHz a sample covers about five counter ticks and a channel
+     * near the top of its range flips more often than that, so taking
+     * the level at one instant aliases a high note into a wrong one.
+     * Averaging is a crude low-pass and is the difference between the
+     * two.
      *
      * Three channels at full scale is 3 x 65535. Two chips of that plus
      * the beeper has to stay inside a signed 16-bit sample, so each chip
-     * gets an eighth of the range: 196605/16 is 12287, twice that is
-     * 24574, and the beeper's +/-6000 on top reaches 30574 -- just under
-     * 32767 with nothing to spare but nothing lost either.
-     *
-     * The first version divided by 8 and reached 57150. That clipped on
-     * every loud passage, which a spectrum analyser showed as a peak
-     * pinned at full scale and a thousand clipped samples in six seconds.
+     * gets an eighth: 196605/16 is 12287, twice that is 24574, and the
+     * beeper's +/-6000 on top reaches 30574 -- just under 32767.
      */
-    return (int32_t)(acc / (int32_t)steps / 16);
+    ay->last = acc / (int32_t)tacts / 16;
+    return ay->last;
 }
 
 // ---------------------------------------------------------------------------
 // Proving it
 // ---------------------------------------------------------------------------
-
+/*
+ * Check the model against arithmetic, with no audio hardware involved.
+ *
+ * It caught a real fault once -- the counters were being run at the
+ * datasheet's quoted divisors instead of at the chip clock over eight,
+ * which put everything an octave low -- and it is the thing that says
+ * whether a change to the generator has moved the pitch. Listening to
+ * the board cannot: a third of a semitone is inaudible on its own and
+ * obvious across a whole tune.
+ */
 bool ay_selftest(char *detail, const unsigned detail_len) {
     // 426 puts the tone at 1773400/(16*426) = 260.2 Hz, near middle C and
     // comfortably inside the range 44100 Hz can resolve without the
     // averaging in ay_render() smearing it.
     const uint16_t period = 426;
-    // fclock/(16*TP), which is the datasheet's formula and what a tuner
-    // would read if this chip were on a bench.
     const uint32_t expect_mhz = AY_CLOCK_HZ * 1000u / (16u * period);   // milli-Hz
 
     ay_t chip;
@@ -240,28 +304,47 @@ bool ay_selftest(char *detail, const unsigned detail_len) {
     ay_select(&chip, 7);  ay_write(&chip, 0x3E);   // tone A only; every bit is a disable
     ay_select(&chip, 8);  ay_write(&chip, 0x0F);   // channel A at full volume
 
-    // A tenth of a second at the audio rate, advanced by exactly the chip
-    // cycles each sample covers -- the same call the frame loop makes.
-    const uint32_t samples = AUDIO_RATE_HZ / 10u;
-    const uint32_t ticks   = AY_CLOCK_HZ / AUDIO_RATE_HZ;
-    (void)AY_COUNTER_DIV;
+    /*
+     * Half a second, and the same fractional cycle count per sample that
+     * the frame loop uses.
+     *
+     * Half rather than a tenth because the answer is counted in zero
+     * crossings: at 260 Hz a tenth of a second is 52 of them, so one
+     * miscounted crossing is two per cent and the test cannot tell a
+     * tuning error from its own resolution. It reported 255 Hz against
+     * an expected 260.18 for exactly that reason, and the tuning was
+     * fine.
+     */
+    const uint32_t samples = AUDIO_RATE_HZ / 2u;
+    const uint32_t step_q16 = (uint32_t)(((uint64_t)AY_CLOCK_HZ << 16) / AUDIO_RATE_HZ);
+    uint32_t frac = 0;
 
-    int32_t prev = ay_render(&chip, ticks);
-    int32_t mid  = prev / 2;
+    int32_t  prev = 0;
     uint32_t crossings = 0;
-    bool high = prev > mid;
+    bool     high = false;
+    int32_t  peak = 0;
 
-    for (uint32_t i = 1; i < samples; i++) {
+    for (uint32_t i = 0; i < samples; i++) {
+        frac += step_q16;
+        const uint32_t ticks = frac >> 16;
+        frac &= 0xFFFFu;
+
         const int32_t v = ay_render(&chip, ticks);
-        if (v > 0 && (uint32_t)v > (uint32_t)mid * 3u / 2u) mid = v / 2;   // track the level
+        if (v > peak) peak = v;
+
+        // Threshold at half the peak seen so far, which a square wave
+        // crosses exactly twice a cycle and noise would not.
+        const int32_t mid = peak / 2;
         const bool now = v > mid;
-        if (now != high) { crossings++; high = now; }
+        if (i && now != high) crossings++;
+        high = now;
+        prev = v;
     }
+    (void)prev;
 
-    // Two crossings per cycle, over a tenth of a second.
-    const uint32_t got_mhz = crossings * 1000u * 10u / 2u;
+    const uint32_t got_mhz = crossings * 1000u / 2u * 2u;   // /2 cycles, x2 for half a second
 
-    const uint32_t lo = expect_mhz - expect_mhz / 20u, hi = expect_mhz + expect_mhz / 20u;
+    const uint32_t lo = expect_mhz - expect_mhz / 100u, hi = expect_mhz + expect_mhz / 100u;
     if (got_mhz < lo || got_mhz > hi) {
         snprintf(detail, detail_len, "period %u gave %lu.%02lu Hz, wanted %lu.%02lu",
                  period, (unsigned long)(got_mhz / 1000), (unsigned long)((got_mhz % 1000) / 10),

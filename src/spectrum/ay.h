@@ -10,14 +10,17 @@
  * The AY-3-8912, twice.
  *
  * Three square-wave channels, one noise source, one envelope generator
- * and sixteen registers. It is a small chip and this is a small model of
- * it — the parts that are easy to get subtly wrong are the amplitude
- * table, which is not linear, and the envelope shapes, which are four
- * bits describing a state machine rather than sixteen separate ramps.
+ * and sixteen registers. The generator in ay.c is libayemu's, by way of
+ * ESPectrum and pico-speccy -- its tables, its counter semantics, its
+ * noise polynomial and its envelope rows. What is here is the shape
+ * around it: a struct per chip, because TurboSound is two of these
+ * sharing a pair of ports with writes of 0xFF and 0xFE to the select
+ * port choosing which one is listening.
  *
- * Two instances because TurboSound is two of these chips sharing a pair
- * of ports, with writes of 0xFF and 0xFE to the select port choosing
- * which one is listening.
+ * The two things easiest to get subtly wrong, and the reason for using
+ * somebody else's numbers: the amplitude table is not linear, and the
+ * envelope is thirty-two levels rather than the sixteen the datasheet's
+ * description suggests.
  */
 #pragma once
 
@@ -52,23 +55,22 @@ typedef struct {
     uint8_t  reg[16];
     uint8_t  latched;              // which register the select port named
 
-    uint16_t tone_count[3];
-    uint8_t  tone_flip[3];         // the square wave's current half
+    // libayemu's state, one set per chip: three tone counters and their
+    // output bits, the noise counter and its LFSR, and where the
+    // envelope has got to along its 128-position row.
+    uint16_t cnt[3];
+    uint8_t  bit[3];
+    uint16_t cnt_n;
+    uint8_t  bit_n;
+    uint32_t seed;
+    uint16_t cnt_e;
+    uint16_t env_pos;
 
-    uint16_t noise_count;
-    uint32_t noise_shift;          // 17-bit LFSR
-    uint8_t  noise_bit;
-
-    uint16_t env_count;
-    uint8_t  env_step;             // 0-31 within the current ramp
-    bool     env_rising;           // which way this ramp runs; ALT flips it
-    bool     env_holding;
-    uint8_t  env_level;            // 0-15, what the channels actually use
-
-    // Chip-clock remainders carried between calls. Per chip, not static:
-    // TurboSound has two of these and sharing the remainder would make
-    // each one's pitch depend on how busy the other was.
-    uint32_t tone_rem, env_rem;
+    // The chip-clock remainder carried between calls, and the last value
+    // returned. Per chip, not static: TurboSound has two of these, and
+    // sharing either would make one chip's output depend on the other.
+    uint32_t tone_rem;
+    int32_t  last;
 } ay_t;
 
 void ay_reset(ay_t *ay);

@@ -11,6 +11,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "audio.h"
 #include "beta.h"
 #include "menu.h"
 #include "psram.h"
@@ -232,6 +233,22 @@ static const char *kbd_info(void) {
 }
 #endif
 
+/*
+ * Whether the DAC is being kept fed.
+ *
+ * An underrun is not silence -- audio_task() holds the last sample --
+ * so it is inaudible as a gap and very audible as a tone a per cent or
+ * two flat with a roughness on it. The count is the only way to tell
+ * that from a tune that is simply written that way.
+ */
+static const char *audio_info(void) {
+    static char buf[40];
+    snprintf(buf, sizeof buf, "%lu/frame  %lu under  %lu over",
+             (unsigned long)spec_samples_per_frame(),
+             (unsigned long)audio_underruns, (unsigned long)audio_overruns);
+    return buf;
+}
+
 static const char *fdc_info(void) {
     static char buf[40];
     beta_stats(buf, sizeof buf);
@@ -343,6 +360,7 @@ static const row_t rows[] = {
     HEAD("SYSTEM"),
     INFO  ("PSRAM",                     psram_info, NULL),
     INFO  ("Z80",                       z80_info,   NULL),
+    INFO  ("Audio",                     audio_info, NULL),
 #if USB_KEYBOARD
     INFO  ("USB keyboard",              kbd_info,   NULL),
 #endif

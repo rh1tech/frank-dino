@@ -169,6 +169,16 @@ void spec_run_frame(void);
  */
 uint32_t spec_tune_clock(void);
 
+/*
+ * How many samples a frame is currently cut into.
+ *
+ * Not the constant 882: that is only right on a machine running at
+ * exactly 3.5469 MHz, and this one runs at whatever the tuner could
+ * reach. The count follows the measured frame rate so the DAC is always
+ * handed a full frame's worth. See the definition.
+ */
+uint32_t spec_samples_per_frame(void);
+
 // ============================================================================
 // Stopping it
 // ============================================================================

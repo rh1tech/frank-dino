@@ -881,7 +881,57 @@ static uint32_t slice_acc;
 
 static void run_frame(void);
 
+/*
+ * How many samples a frame is cut into.
+ *
+ * It was 882, on the reasoning that a 70908-T-state frame and 882
+ * samples at 44100 Hz are both exactly 20 ms. They are -- on a machine
+ * that runs at exactly 3.5469 MHz. This one runs at whatever the clock
+ * tuner could reach, which is about one and a half per cent short, so a
+ * frame really takes 20.3 ms and 882 samples is not enough to fill it.
+ *
+ * What that sounds like: the DAC drains the ring 635 times a second
+ * faster than the machine fills it, and audio_task() holds the last
+ * sample each time rather than going silent. So one sample in seventy is
+ * a repeat -- which stretches the waveform, drops the pitch by the same
+ * one and a half per cent, and adds a roughness that is hard to name and
+ * easy to hear.
+ *
+ * So the count follows the measured frame rate instead: enough samples
+ * to fill however long a frame actually takes. See spec_tune_clock().
+ */
+static uint32_t samples_per_frame = AUDIO_SAMPLES_PER_FRAME;
+
+uint32_t spec_samples_per_frame(void) { return samples_per_frame; }
+
+/*
+ * AY cycles per sample, in 16.16 fixed point.
+ *
+ * 1773400 / 44100 is 40.213, and the fraction is the point. The first
+ * version took the slice's T-states and halved them -- which truncates,
+ * because a slice is 80 or 81 T-states and 81/2 is 40 -- so the chip lost
+ * half a cycle on two slices in five and played half a per cent flat,
+ * for ever, in a way no amount of listening would explain.
+ *
+ * It is also deliberately not derived from T-states at all any more. A
+ * sample is a fixed slice of *time*, and what the chip does in that time
+ * does not depend on how fast the CPU beside it is being clocked -- so
+ * this survives the turbo settings, and a machine running slightly slow
+ * still plays in tune.
+ */
+#define AY_TICKS_Q16 ((uint32_t)(((uint64_t)AY_CLOCK_HZ << 16) / AUDIO_RATE_HZ))
+
+static uint32_t ay_tick_frac;
+
+__force_inline static uint32_t ay_ticks_for_one_sample(void) {
+    ay_tick_frac += AY_TICKS_Q16;
+    const uint32_t t = ay_tick_frac >> 16;
+    ay_tick_frac &= 0xFFFFu;
+    return t;
+}
+
 __force_inline static void run_slice(const uint32_t tstates, const uint32_t num) {
+    (void)num;
     z80_run(tstates);
 
     /*
@@ -895,9 +945,7 @@ __force_inline static void run_slice(const uint32_t tstates, const uint32_t num)
     int32_t s = 0;
 
     if (likely(have_ay())) {
-        // T-states to AY clocks: half at 3.5 MHz, and a smaller share as
-        // the CPU is pushed past it, so the chip's own rate never moves.
-        const uint32_t ticks = tstates / num;
+        const uint32_t ticks = ay_ticks_for_one_sample();
         int32_t a = ay_render(&ay[0], ticks);
         if (settings.turbosound) a += ay_render(&ay[1], ticks);
         s += a * settings.ay_vol / 10;
@@ -923,7 +971,7 @@ __force_inline static void run_slice(const uint32_t tstates, const uint32_t num)
     audio_push(s * settings.volume / 10);
 }
 
-uint32_t spec_tune_clock(void) {
+static uint32_t tune_once(void) {
     // Muted, because the machine is being run at deliberately wrong
     // speeds and nobody needs to hear that.
     audio_set_enabled(false);
@@ -1007,8 +1055,40 @@ uint32_t spec_tune_clock(void) {
     for (int f = 0; f < 5; f++) run_frame();
     us = (int64_t)(time_us_64() - t0);
 
+    const uint32_t fps = (uint32_t)((5ll * 1000000000ll) / (us ? us : 1));   // x1000
+
+    /*
+     * And cut the frame into however many samples it is long.
+     *
+     * The DAC runs at 44100 Hz whatever the machine does, so a frame has
+     * to hand it 44100/fps samples or the ring runs dry and audio_task()
+     * starts repeating the last one. Getting this wrong is not silence,
+     * it is a tone a per cent or two flat with a roughness on it.
+     *
+     * Bounded because a wild measurement here would be a wild number of
+     * slices, and the loop that runs them is the machine.
+     */
+    uint32_t slices = fps ? AUDIO_RATE_HZ * 1000u / fps : AUDIO_SAMPLES_PER_FRAME;
+    if (slices < 600u)  slices = 600u;
+    if (slices > 1400u) slices = 1400u;
+    samples_per_frame = slices;
+
     audio_set_enabled(true);
-    return (uint32_t)((5ll * 1000000000ll) / (us ? us : 1));   // fps x1000
+    return fps;
+}
+
+/*
+ * Twice, because the two answers depend on each other.
+ *
+ * Cutting a frame into more slices makes the frame a little longer --
+ * each slice costs a mix and a push -- and a longer frame wants more
+ * slices again. One pass leaves the pace tuned for a frame that no
+ * longer exists; two lands inside the granularity of the pace itself,
+ * and a third would be measuring noise.
+ */
+uint32_t spec_tune_clock(void) {
+    tune_once();
+    return tune_once();
 }
 
 static volatile bool pause_req, paused;
@@ -1060,15 +1140,16 @@ static void run_frame(void) {
      * The whole main loop of the machine, sliced.
      *
      * An emulator spends a frame stepping a CPU and counting contention.
-     * This spends it letting a Z84C00 be a Z80, stopping 882 times to
-     * take a sample. The only thing the ULA owes the CPU is an interrupt
+     * This spends it letting a Z84C00 be a Z80, stopping once per sample
+     * to take one. The only thing the ULA owes the CPU is an interrupt
      * every 70908 T-states, and the only thing that has to be right is
      * the count.
      */
-    const uint32_t num   = turbo_num();
-    const uint32_t total = spec_frame_tstates();
-    const uint32_t per   = total / AUDIO_SAMPLES_PER_FRAME;
-    const uint32_t rem   = total % AUDIO_SAMPLES_PER_FRAME;
+    const uint32_t num    = turbo_num();
+    const uint32_t total  = spec_frame_tstates();
+    const uint32_t slices = samples_per_frame;
+    const uint32_t per    = total / slices;
+    const uint32_t rem    = total % slices;
 
     // The ULA holds ~INT low for about ten microseconds, which is 36
     // T-states at 3.5 MHz and proportionally more at any other speed --
@@ -1077,11 +1158,11 @@ static void run_frame(void) {
 
     uint32_t budget = total - held;
 
-    for (uint32_t i = 0; i < AUDIO_SAMPLES_PER_FRAME; i++) {
+    for (uint32_t i = 0; i < slices; i++) {
         uint32_t slice = per;
         slice_acc += rem;
-        if (slice_acc >= AUDIO_SAMPLES_PER_FRAME) {
-            slice_acc -= AUDIO_SAMPLES_PER_FRAME;
+        if (slice_acc >= slices) {
+            slice_acc -= slices;
             slice++;
         }
 
