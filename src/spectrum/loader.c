@@ -82,17 +82,14 @@ static bool load_sna(FIL *f, const uint32_t size, char *detail, const unsigned d
     sna_header(h, &st);
 
     /*
-     * The staging buffer is the tape's.
+     * One staging buffer, for the bank a 128K snapshot writes first and
+     * names last.
      *
-     * A 16 KB static here was 16 KB the chip did not have once the tape
-     * buffer arrived, and the two can never be wanted at the same time:
-     * a snapshot replaces the entire machine, so whatever tape was
-     * mounted was going to be irrelevant a moment later anyway. Ejecting
-     * it first makes that explicit rather than leaving a mounted tape
-     * pointing at a buffer this is about to overwrite.
+     * Deliberately in SRAM rather than in the PSRAM the tape uses: a
+     * snapshot is the one thing this machine must be able to load on a
+     * board with no PSRAM fitted.
      */
-    tape_eject();
-    uint8_t *const stage = tape_image;
+    static uint8_t stage[SPEC_BANK_SIZE];
 
     if (size == SNA_48_LEN) {
         spec_set_machine(MACHINE_48K);

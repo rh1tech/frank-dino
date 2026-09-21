@@ -12,10 +12,23 @@
 #include <string.h>
 
 #include "dino.h"
+#include "psram.h"
 #include "spectrum.h"
 #include "z80_bus.h"
 
-uint8_t tape_image[TAPE_MAX_BYTES];
+/*
+ * The image lives in the PSRAM, not the SRAM.
+ *
+ * Sixty-four kilobytes is an eighth of the chip's memory and the tape is
+ * read a few hundred bytes at a time, a few times a minute -- so it is
+ * exactly the kind of thing the 8 MB on CS1 is for. Nothing on the Z80's
+ * critical path may go there (see src/drivers/psram/psram.h), and this
+ * is not: the CPU is stopped inside an OUT while the block is copied.
+ *
+ * A board assembled without the chip therefore cannot mount a tape, and
+ * tape_mount() says so rather than writing into an unmapped window.
+ */
+uint8_t tape_image[TAPE_MAX_BYTES] __attribute__((section(".psram")));
 
 static uint32_t image_len;
 static uint32_t blocks;
@@ -134,6 +147,11 @@ void tape_machine_changed(void) {
 
 bool tape_mount(const uint8_t *image, const uint32_t len,
                 char *detail, const unsigned detail_len) {
+    if (!psram_size()) {
+        snprintf(detail, detail_len, "tapes need the PSRAM, and none was found");
+        return false;
+    }
+
     if (image != tape_image) {
         if (len > TAPE_MAX_BYTES) {
             snprintf(detail, detail_len, "tape is %luK; the limit is %uK",

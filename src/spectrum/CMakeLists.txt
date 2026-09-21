@@ -20,4 +20,4 @@ target_sources(spectrum INTERFACE
 
 target_include_directories(spectrum INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
-target_link_libraries(spectrum INTERFACE dino_core audio fatfs hardware_gpio)
+target_link_libraries(spectrum INTERFACE dino_core audio fatfs psram hardware_gpio)

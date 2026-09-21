@@ -12,6 +12,7 @@
 #include <string.h>
 
 #include "menu.h"
+#include "psram.h"
 #include "screen.h"
 #include "settings.h"
 #include "spectrum.h"
@@ -132,6 +133,21 @@ static void defaults_action(void) {
     snprintf(status, sizeof status, "Defaults restored.");
 }
 
+/*
+ * What the board turned out to have, rather than what it was built with.
+ *
+ * The PSRAM is a fitted-or-not part and the probe runs too early for its
+ * answer to reach a console that has not enumerated yet, so the one
+ * place it is reliably readable is here.
+ */
+static const char *psram_info(void) {
+    static char buf[32];
+    const uint32_t n = psram_size();
+    if (n) snprintf(buf, sizeof buf, "%lu MB", (unsigned long)(n >> 20));
+    else   snprintf(buf, sizeof buf, "not fitted");
+    return buf;
+}
+
 static void reset_action(void) {
     spec_set_machine((machine_t)settings.machine);
     snprintf(status, sizeof status, "%s reset.", spec_machine_name());
@@ -174,6 +190,7 @@ static const row_t rows[] = {
     INFO  ("Eject tape",         tape_info,  tape_action),
 
     HEAD("SYSTEM"),
+    INFO  ("PSRAM",                     psram_info, NULL),
     ACTION("Save settings to the card", save_action),
     ACTION("Restore defaults",          defaults_action),
     ACTION("Reset the machine",         reset_action),
@@ -316,8 +333,8 @@ bool options_run(void) {
 
         switch (k) {
             case '\r': case '\n':
-                if (rows[cursor].action) rows[cursor].action();
-                else                     change(&rows[cursor], +1);
+                if (rows[cursor].action)      rows[cursor].action();
+                else if (rows[cursor].value)  change(&rows[cursor], +1);
                 draw(cursor);
                 break;
 

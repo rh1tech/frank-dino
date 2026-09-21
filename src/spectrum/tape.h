@@ -63,10 +63,16 @@ uint32_t tape_block_count(void);
 uint32_t tape_block_index(void);
 
 /*
- * Where the image is staged.
+ * Where the image is staged, which is in the PSRAM.
  *
  * Exposed so the loader can read a file straight into it rather than
- * through a second copy: 64 KB is too much to have two of.
+ * through a second copy. Sixty-four kilobytes is an eighth of the
+ * RP2350's whole SRAM and only a hundred and twenty-eighth of the chip
+ * on CS1, and a tape is read rarely and never while the clock is
+ * running -- so this is what that chip is for.
+ *
+ * Do not touch it before psram_init() has found the chip; tape_mount()
+ * checks, and refuses on a board that has none.
  */
 extern uint8_t tape_image[TAPE_MAX_BYTES];
 

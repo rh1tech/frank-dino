@@ -40,6 +40,7 @@
 #include "selftest.h"
 #include "ay.h"
 #include "launch.h"
+#include "psram.h"
 #include "settings.h"
 #include "spectrum.h"
 #include "vga.h"
@@ -156,6 +157,12 @@ static void core1_main(void) {
 #else
     scr_log(ATTR(C_GREY, C_BLACK), "128K ROM, 8 x 16K RAM, keys over the console.");
 #endif
+    if (psram_size())
+        scr_pass("PSRAM (U7, GP47)", "%lu MB mapped at %08X",
+                 (unsigned long)(psram_size() >> 20), PSRAM_BASE);
+    else
+        scr_log(ATTR(C_YELLOW, C_BLACK), "PSRAM (U7, GP47)             none found");
+
     scr_log(ATTR(C_GREY, C_BLACK), "Sound: beeper + %s on GP46, %u Hz PWM DAC.",
             settings.turbosound ? "TurboSound (2x AY-3-8912)" : "AY-3-8912",
             (unsigned)AUDIO_RATE_HZ);
@@ -245,6 +252,17 @@ int main(void) {
     stdio_init_all();
     printf("\n[dino] %s %s  clk %u MHz\n",
            FIRMWARE_NAME, FIRMWARE_VERSION, (unsigned)(clock_get_hz(clk_sys) / MHZ));
+
+    /*
+     * The PSRAM, before anything that might live in it.
+     *
+     * Configuring it is a window in which the flash is unreachable, so
+     * it goes as early as possible and before any interrupt source is
+     * running. Nothing depends on it being present -- a board assembled
+     * without the chip reports zero and carries on -- but what is put
+     * there has to know, which is why the size is kept.
+     */
+    const uint32_t psram = psram_init();
 
     // Video before anything else that might fail, so a failure has
     // somewhere to be seen from the far end of an HDMI cable. The DMA

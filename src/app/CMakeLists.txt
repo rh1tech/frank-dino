@@ -94,6 +94,7 @@ endif()
 add_subdirectory(${SRC_ROOT}/drivers/fatfs  drivers/fatfs)
 add_subdirectory(${SRC_ROOT}/drivers/sdcard drivers/sdcard)
 add_subdirectory(${SRC_ROOT}/drivers/audio drivers/audio)
+add_subdirectory(${SRC_ROOT}/drivers/psram drivers/psram)
 add_subdirectory(${SRC_ROOT}/spectrum    spectrum)
 add_subdirectory(${SRC_ROOT}/drivers/vga drivers/vga)
 add_subdirectory(${SRC_ROOT}/ui          ui)
@@ -138,6 +139,7 @@ target_link_libraries(frank-dino PRIVATE
         dino_test
         spectrum
         audio
+        psram
         vga
         sdcard
 
