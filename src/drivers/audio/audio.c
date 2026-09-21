@@ -111,7 +111,7 @@ void audio_set_enabled(const bool on) { enabled = on; }
 // Moving them out
 // ---------------------------------------------------------------------------
 
-static void dma_isr(void) {
+static void __not_in_flash_func(dma_isr)(void) {
     if (dma_hw->ints1 & (1u << dma_a)) {
         dma_hw->ints1 = 1u << dma_a;
         dma_channel_set_read_addr(dma_a, buf[0], false);
@@ -130,7 +130,7 @@ void audio_reset_stats(void) {
     audio_underruns = audio_overruns = audio_clips = 0;
 }
 
-void audio_task(void) {
+void __not_in_flash_func(audio_task)(void) {
     const int which = refill;
     if (which < 0) return;
     refill = -1;

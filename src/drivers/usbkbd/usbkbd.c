@@ -206,6 +206,88 @@ static void apply_report(const uint8_t *r) {
 }
 
 // ---------------------------------------------------------------------------
+// The gamepad
+// ---------------------------------------------------------------------------
+/*
+ * Ported from pico-speccy src/hid_app.cpp, process_hid_gamepad().
+ *
+ * Their comment carries the layout, and it is the one every cheap
+ * SNES-shaped USB pad and every DragonRise clone sends:
+ *
+ *   [0] X axis : 0x00 left, 0x7F centre, 0xFF right
+ *   [1] Y axis : 0x00 up,   0x7F centre, 0xFF down
+ *   [5] high nibble, the face buttons : 0x10 X, 0x20 A, 0x40 B, 0x80 Y
+ *   [6] shoulders and system : 0x01 L, 0x02 R, 0x10 Select, 0x20 Start
+ *
+ * Their thresholds come with it: a third of the way off centre counts as
+ * a direction, which is what makes an analogue stick usable on a machine
+ * whose joystick is four switches.
+ *
+ * What is not here is the rest of their file -- the DualShock 4 and 5
+ * report formats, the xinput class driver, and a table of per-vendor
+ * quirks. Those are two thousand lines for pads this has no way to test
+ * against, and this is a copy_to_ram build.
+ */
+/* Defined with the keyboard's translation, below. */
+static void menu_arrow(char last);
+
+static bool    pad_present;
+static uint8_t pad_addr, pad_inst;
+static uint8_t pad_prev;            // the last state, so only edges are sent
+
+/* B is fire: the bottom button of the diamond, which is where a thumb sits. */
+#define PAD_BIT_A      0x20
+#define PAD_BIT_B      0x40
+#define PAD_BIT_START  0x20
+#define PAD_BIT_SELECT 0x10
+
+bool usbkbd_pad_present(void) { return pad_present; }
+
+static void pad_decode(const uint8_t *report, const uint16_t len) {
+    if (len < 7) return;
+
+    const bool left  = report[0] < 0x40;
+    const bool right = report[0] > 0xC0;
+    const bool up    = report[1] < 0x40;
+    const bool down  = report[1] > 0xC0;
+    const uint8_t b5 = report[5], b6 = report[6];
+    const bool fire  = (b5 & (PAD_BIT_A | PAD_BIT_B)) != 0;   // either, for one-button games
+    const bool start = (b6 & PAD_BIT_START)  != 0;
+    const bool sel   = (b6 & PAD_BIT_SELECT) != 0;
+
+    const uint8_t now = (uint8_t)((up    ? 1u << JOY_BIT_UP    : 0)
+                                | (down  ? 1u << JOY_BIT_DOWN  : 0)
+                                | (left  ? 1u << JOY_BIT_LEFT  : 0)
+                                | (right ? 1u << JOY_BIT_RIGHT : 0)
+                                | (fire  ? 1u << JOY_BIT_FIRE  : 0));
+
+    if (menu_is_open()) {
+        /*
+         * In the UI the pad drives the cursor, which is the difference
+         * between a pad you can pick a game with and one you have to put
+         * down to do it. Edges only: the report repeats while a
+         * direction is held.
+         */
+        const uint8_t went_down = (uint8_t)(now & ~pad_prev);
+        if (went_down & (1u << JOY_BIT_UP))    menu_arrow('A');
+        if (went_down & (1u << JOY_BIT_DOWN))  menu_arrow('B');
+        if (went_down & (1u << JOY_BIT_RIGHT)) menu_arrow('C');
+        if (went_down & (1u << JOY_BIT_LEFT))  menu_arrow('D');
+        if (went_down & (1u << JOY_BIT_FIRE))  menu_key('\r');
+        if (start && !(pad_prev & 0x80)) menu_key('\t');     // Start closes
+        if (sel)   menu_key(0x7F);                           // Select goes up
+    } else {
+        for (uint8_t b = 0; b < 5; b++)
+            if (((now ^ pad_prev) >> b) & 1)
+                spec_joy_set(b, (now >> b) & 1);
+        /* Start is the way into the browser without reaching for F11. */
+        if (start && !(pad_prev & 0x80)) { menu_wanted_settings = false; menu_wanted = true; }
+    }
+
+    pad_prev = (uint8_t)(now | (start ? 0x80 : 0));
+}
+
+// ---------------------------------------------------------------------------
 // TinyUSB host callbacks
 // ---------------------------------------------------------------------------
 
@@ -213,11 +295,28 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
                       uint8_t const *desc_report, uint16_t desc_len) {
     (void)desc_report; (void)desc_len;
 
-    if (tuh_hid_interface_protocol(dev_addr, instance) != HID_ITF_PROTOCOL_KEYBOARD) {
-        // A mouse or a gamepad. Nothing here wants one yet, and asking
-        // for its reports would only cost time in the host stack.
+    const uint8_t proto = tuh_hid_interface_protocol(dev_addr, instance);
+
+    if (proto == HID_ITF_PROTOCOL_NONE) {
+        /*
+         * Neither a boot keyboard nor a boot mouse, which in practice on
+         * this port means a gamepad: the cheap SNES-shaped ones and the
+         * DragonRise clones all announce protocol NONE and then send the
+         * fixed eight-byte report pad_decode() reads.
+         *
+         * Taken without parsing the report descriptor, exactly as theirs
+         * does for this family -- the descriptor would have to be walked
+         * to learn a layout that is the same on every one of them.
+         */
+        tuh_hid_receive_report(dev_addr, instance);
+        pad_addr = dev_addr;
+        pad_inst = instance;
+        pad_present = true;
+        printf("[usbkbd] gamepad on address %u instance %u\n", dev_addr, instance);
         return;
     }
+
+    if (proto != HID_ITF_PROTOCOL_KEYBOARD) return;    // a mouse; nothing wants one
 
     // Boot protocol, so the report is the fixed eight bytes above rather
     // than something that has to be parsed out of a report descriptor.
@@ -229,7 +328,15 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
 }
 
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
-    (void)dev_addr; (void)instance;
+    if (pad_present && dev_addr == pad_addr && instance == pad_inst) {
+        pad_present = false;
+        pad_prev = 0;
+        /* A pad unplugged with a direction held otherwise leaves the
+         * machine walking into a wall for ever. */
+        for (uint8_t b = 0; b < 5; b++) spec_joy_set(b, false);
+        printf("[usbkbd] gamepad gone\n");
+        return;
+    }
     mounted = false;
     memset(last_report, 0, sizeof last_report);
 
@@ -267,11 +374,19 @@ static bool is_new(const uint8_t *now, const uint8_t *before, const uint8_t usag
     return false;
 }
 
-/* Send a cursor key as the three bytes the browser reassembles. */
+/* Send a cursor or paging key as the three bytes the menus reassemble. */
 static void menu_arrow(const char last) {
     menu_key(0x1B);
     menu_key('[');
     menu_key(last);
+}
+
+/* Page Up / Page Down are four: the digit carries a '~' after it. */
+static void menu_tilde(const char digit) {
+    menu_key(0x1B);
+    menu_key('[');
+    menu_key(digit);
+    menu_key('~');
 }
 
 /*
@@ -291,10 +406,32 @@ static void feed_menu(const uint8_t *now, const uint8_t *before) {
             case 0x51: menu_arrow('B'); break;      // down
             case 0x4F: menu_arrow('C'); break;      // right
             case 0x50: menu_arrow('D'); break;      // left
+            case 0x4B: menu_tilde('5'); break;      // page up
+            case 0x4E: menu_tilde('6'); break;      // page down
+            case 0x4A: menu_arrow('H'); break;      // home
+            case 0x4D: menu_arrow('F'); break;      // end
             case 0x28: menu_key('\r'); break;       // enter
             case 0x2A: menu_key(0x7F); break;       // backspace
+            /*
+             * Escape is its own byte, not a synonym for Tab.
+             *
+             * It used to be one, because the browser is a flat list with
+             * nothing to back out of and leaving was the only thing Esc
+             * could mean. The settings menu has levels, and its footer
+             * offers Esc as the way up one -- so the two have to arrive
+             * here as different keys. Both menus read the continuation of
+             * an escape sequence with a timeout, so a bare 0x1B is safe.
+             */
+            case 0x29: menu_key(0x1B); break;       // escape
+            /*
+             * F3 opens the browser's incremental search.
+             *
+             * 0x06 rather than a letter because every letter is a jump:
+             * the browser's list answers to its initial, so a verb key
+             * has to be something the list can never mean.
+             */
+            case 0x3C: menu_key(0x06); break;       // F3: find
             case HID_F11:
-            case 0x29:                              // escape
             case 0x2B: menu_key('\t'); break;       // tab: leave
             case HID_F12:
             case 0x31: menu_key('\\'); break;       // backslash: settings
@@ -357,6 +494,12 @@ static void repeat_task(void) {
 
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
                                 uint8_t const *report, uint16_t len) {
+    if (pad_present && dev_addr == pad_addr && instance == pad_inst) {
+        pad_decode(report, len);
+        tuh_hid_receive_report(dev_addr, instance);
+        return;
+    }
+
     if (tuh_hid_interface_protocol(dev_addr, instance) == HID_ITF_PROTOCOL_KEYBOARD &&
         len >= 8) {
         uint8_t before[8];

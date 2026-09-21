@@ -50,6 +50,15 @@ bool usbkbd_present(void);
  * be started from inside a TinyUSB callback. The callback raises this
  * and the main loop acts on it once tuh_task() has returned.
  */
+/*
+ * Whether a gamepad is attached.
+ *
+ * Its own flag rather than usbkbd_present(): a board with a pad and no
+ * keyboard is a perfectly ordinary way to play a game, and the boot
+ * report should say which of the two turned up.
+ */
+bool usbkbd_pad_present(void);
+
 bool usbkbd_take_menu_request(void);
 
 /* True when the request came from F12 (settings) rather than F11 (files). */

@@ -351,7 +351,7 @@ BYTE send_cmd (		/* Return value: R1 resp (bit7==1:Failed to send) */
 /* Initialize disk drive                                                 */
 /*-----------------------------------------------------------------------*/
 
-DSTATUS disk_initialize (
+DSTATUS sd_disk_initialize (
 	BYTE drv		/* Physical drive number (0) */
 )
 {
@@ -360,7 +360,7 @@ DSTATUS disk_initialize (
 	uint32_t t;
 
 
-	if (drv) return STA_NOINIT;			/* Supports only drive 0 */
+	(void)drv;			/* the router in diskio.c owns drive numbers */
 	init_spi();							/* Initialize SPI */
     sleep_ms(10);
 
@@ -412,11 +412,11 @@ DSTATUS disk_initialize (
 /* Get disk status                                                       */
 /*-----------------------------------------------------------------------*/
 
-DSTATUS disk_status (
+DSTATUS sd_disk_status (
 	BYTE drv		/* Physical drive number (0) */
 )
 {
-	if (drv) return STA_NOINIT;		/* Supports only drive 0 */
+	(void)drv;		/* the router in usbdisk.c owns drive numbers */
 
 	return Stat;	/* Return disk status */
 }
@@ -427,14 +427,15 @@ DSTATUS disk_status (
 /* Read sector(s)                                                        */
 /*-----------------------------------------------------------------------*/
 
-DRESULT disk_read (
+DRESULT sd_disk_read (
 	BYTE drv,		/* Physical drive number (0) */
 	BYTE *buff,		/* Pointer to the data buffer to store read data */
 	LBA_t sector,	/* Start sector number (LBA) */
 	UINT count		/* Number of sectors to read (1..128) */
 )
 {
-	if (drv || !count) return RES_PARERR;		/* Check parameter */
+	(void)drv;
+	if (!count) return RES_PARERR;		/* Check parameter */
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check if drive is ready */
 
 	if (!(CardType & CT_BLOCK)) sector *= 512;	/* LBA ot BA conversion (byte addressing cards) */
@@ -513,14 +514,15 @@ int xmit_datablock (	/* 1:OK, 0:Error */
 /* Write sector(s)                                                       */
 /*-----------------------------------------------------------------------*/
 
-DRESULT disk_write (
+DRESULT sd_disk_write (
 	BYTE drv,			/* Physical drive number (0) */
 	const BYTE *buff,	/* Ponter to the data to write */
 	LBA_t sector,		/* Start sector number (LBA) */
 	UINT count			/* Number of sectors to write (1..128) */
 )
 {
-	if (drv || !count) return RES_PARERR;		/* Check parameter */
+	(void)drv;
+	if (!count) return RES_PARERR;		/* Check parameter */
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check drive status */
 	if (Stat & STA_PROTECT) return RES_WRPRT;	/* Check write protect */
 
@@ -555,7 +557,7 @@ DRESULT disk_write (
 /* Miscellaneous drive controls other than data read/write               */
 /*-----------------------------------------------------------------------*/
 
-DRESULT disk_ioctl (
+DRESULT sd_disk_ioctl (
 	BYTE drv,		/* Physical drive number (0) */
 	BYTE cmd,		/* Control command code */
 	void *buff		/* Pointer to the conrtol data */
@@ -566,7 +568,7 @@ DRESULT disk_ioctl (
 	DWORD *dp, st, ed, csize;
 
 
-	if (drv) return RES_PARERR;					/* Check parameter */
+	(void)drv;
 	if (Stat & STA_NOINIT) return RES_NOTRDY;	/* Check if drive is ready */
 
 	res = RES_ERROR;
