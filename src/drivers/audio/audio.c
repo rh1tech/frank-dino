@@ -82,7 +82,7 @@ static int32_t shape_err;
 // masked. 4096 samples is 93 ms, which is far more slack than either side
 // needs — the point of the depth is not latency, it is that core 1 makes
 // samples in 20 ms bursts and core 0 takes them in 5.8 ms ones.
-#define RING_SIZE 4096u
+#define RING_SIZE AUDIO_RING_SIZE
 #define RING_MASK (RING_SIZE - 1u)
 
 static int16_t           ring[RING_SIZE];
@@ -123,6 +123,8 @@ static void dma_isr(void) {
         refill = 1;
     }
 }
+
+uint32_t audio_ring_level(void) { return ring_head - ring_tail; }
 
 void audio_reset_stats(void) {
     audio_underruns = audio_overruns = audio_clips = 0;

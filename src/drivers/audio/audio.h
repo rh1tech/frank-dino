@@ -109,3 +109,14 @@ extern volatile uint32_t audio_clips;
  * exists for.
  */
 void audio_reset_stats(void);
+
+/*
+ * How many finished samples are waiting to be played.
+ *
+ * The machine uses this to decide how many samples to cut the next frame
+ * into. Nothing else should: it is a queue depth, and it moves.
+ */
+uint32_t audio_ring_level(void);
+
+// Samples the ring can hold. The producer aims for half of it.
+#define AUDIO_RING_SIZE 4096u

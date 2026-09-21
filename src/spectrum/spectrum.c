@@ -1206,7 +1206,39 @@ void spec_next_machine(void) {
  * deadlock and was one: changing the Z80 speed from the settings page
  * hung the firmware with the page still on the screen.
  */
+/*
+ * Keep the ring half full, one sample per frame at a time.
+ *
+ * How many samples a frame is worth depends on how long the frame takes,
+ * and that depends on what the CPU is doing in it: an I/O cycle costs
+ * the bus engine more than a memory cycle, so a program hammering the AY
+ * runs slower than the ROM sitting at its menu. spec_tune_clock()
+ * measures one workload once, and a fixed count from it was out by three
+ * per cent on a music player -- twelve hundred samples a second that the
+ * DAC asked for and the machine did not have, each one a repeat of the
+ * last. That is not a gap; it is a waveform stretched in little steps,
+ * and it smears the pitch and sounds like distortion.
+ *
+ * So it is a feedback loop instead. The ring is the error signal: if it
+ * is draining the frame gets cut finer, if it is filling the frame gets
+ * cut coarser. One sample of correction per frame is fifty a second,
+ * which catches any drift a workload change can produce and is far too
+ * slow to hear.
+ */
+static void track_ring(void) {
+    const uint32_t level  = audio_ring_level();
+    const uint32_t target = AUDIO_RING_SIZE / 2u;
+
+    if (level < target - target / 4u) {
+        if (samples_per_frame < 1400u) samples_per_frame++;
+    } else if (level > target + target / 4u) {
+        if (samples_per_frame > 600u) samples_per_frame--;
+    }
+}
+
 static void run_frame(void) {
+    track_ring();
+
     /*
      * The whole main loop of the machine, sliced.
      *
