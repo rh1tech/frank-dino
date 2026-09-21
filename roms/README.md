@@ -16,19 +16,16 @@ canonical ones every emulator checks against. Every machine here except
 the 48K uses `128-1.rom` as its ROM 1: the 48K BASIC half is shared, and
 it is the half `LD-BYTES` lives in, which is what the tape trap patches.
 
-The Pentagon and TR-DOS images were extracted from pico-speccy's packed
-form (`src/roms/pentagon/pentagon_base.c` and
-`src/roms/trdos/trdos_base.c`), which stores each family as one flat base
-array plus run-list overlays for the variants. Only the bases are taken,
-so only one revision of each is here.
-
-Taken from [pico-speccy](https://github.com/rh1tech/pico-speccy), which
-carries them as `roms/pentagon/src/sinclair_128k_0.bin` and
-`roms/128k/src/sinclair_128k_1.bin`. Note where the first one lives:
-pico-speccy stores ROM 0 of this family as a 101-byte overlay over the
-Pentagon base ROM to save flash, and only the *source* tree keeps the
-flattened binary. Copying the overlay would have meant reimplementing
-`RomOverlay.h` here to read it.
+All of them come from [pico-speccy](https://github.com/rh1tech/pico-speccy),
+which is worth a note on how it stores them: each family is one flat base
+array plus run-list overlays for the variants, to save flash. The Sinclair
+128K pair is in its source tree as `roms/pentagon/src/sinclair_128k_0.bin`
+and `roms/128k/src/sinclair_128k_1.bin` — note where the first one lives,
+because ROM 0 of that family is itself a 101-byte overlay over the
+Pentagon base and only the source tree keeps it flattened. The Pentagon
+and TR-DOS images are the bases themselves, unpacked from
+`src/roms/pentagon/pentagon_base.c` and `src/roms/trdos/trdos_base.c`, so
+only one revision of each is here.
 
 **Copyright.** The ZX Spectrum ROMs are copyright Amstrad plc, who have
 given permission for them to be redistributed with emulators. TR-DOS is
