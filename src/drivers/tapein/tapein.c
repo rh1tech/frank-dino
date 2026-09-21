@@ -49,6 +49,8 @@ static bool running;
  * spare. Counting a transition as it is sampled is two compares.
  */
 static volatile uint32_t tr_count;      /* transitions since last read */
+static volatile uint32_t low_count;     /* samples that were low */
+static volatile uint32_t all_count;     /* samples taken */
 static volatile uint32_t run_sum;       /* total length of closed runs */
 static volatile uint32_t run_n;         /* how many closed runs */
 static uint32_t cur_run;
@@ -76,6 +78,9 @@ static bool __not_in_flash_func(tapein_tick)(repeating_timer_t *rt) {
 
     unsigned wait = 20;
     while (lock_in && wait) --wait;
+
+    all_count++;
+    if (!v) low_count++;
 
     if (v != last_level) {
         tr_count++;
@@ -189,10 +194,25 @@ void tapein_stats(char *out, const unsigned len) {
     if (!running) { snprintf(out, len, "off"); return; }
 
     const uint32_t tr = tr_count, sum = run_sum, n = run_n;
-    tr_count = 0; run_sum = 0; run_n = 0;
+    const uint32_t lo = low_count, all = all_count;
+    tr_count = 0; run_sum = 0; run_n = 0; low_count = 0; all_count = 0;
 
     if (tapein_last_probe == 2u) { snprintf(out, len, "nothing connected"); return; }
-    if (!n || tr < 8u)           { snprintf(out, len, "idle"); return; }
+
+    /*
+     * How much of the time the line is being pulled down.
+     *
+     * This is the number to turn the volume by. The comparator idles
+     * high, so silence is 0% and a signal big enough to swing it fully
+     * is near 50%. Anything in between is a level too low to load with,
+     * and -- unlike a frequency, which needs a signal before it means
+     * anything -- it moves as soon as the peaks start crossing. Which
+     * makes it the one reading that is useful while there is nothing
+     * to read.
+     */
+    const unsigned pct = all ? (unsigned)((lo * 100u) / all) : 0u;
+
+    if (!n || tr < 8u) { snprintf(out, len, "idle, %u%% low", pct); return; }
 
     /*
      * A run is half a cycle, so the frequency is half the reciprocal of
@@ -205,7 +225,7 @@ void tapein_stats(char *out, const unsigned len) {
     const char *what = (hz > 700u  && hz < 950u)  ? " header"
                      : (hz > 1700u && hz < 2600u) ? " data"
                                                   : "";
-    snprintf(out, len, "%lu Hz%s", (unsigned long)hz, what);
+    snprintf(out, len, "%lu Hz%s, %u%% low", (unsigned long)hz, what, pct);
 }
 
 void tapein_frame_started(const uint32_t tstates) {
