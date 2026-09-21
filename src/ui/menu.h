@@ -46,3 +46,11 @@ bool menu_is_open(void);
  * mailbox alone.
  */
 int menu_wait_key(void);
+
+/*
+ * Set by the settings page's "Re-read the card" action.
+ *
+ * The page knows nothing about directory listings; the browser does, and
+ * picks this up when the page closes.
+ */
+extern bool menu_rescan_wanted;

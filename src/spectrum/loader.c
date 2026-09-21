@@ -440,17 +440,22 @@ static bool load_z80(FIL *f, const uint32_t size, char *detail, const unsigned d
  * then into an editor with no keyword mode at all, where LOAD is spelled
  * out letter by letter.
  */
-static bool load_tap(FIL *f, const uint32_t size, char *detail, const unsigned detail_len) {
+static bool load_tap(FIL *f, const uint32_t size, const bool tzx,
+                     char *detail, const unsigned detail_len) {
     if (size > TAPE_MAX_BYTES)
-        FAIL("that .tap is %luK; the limit is %uK",
+        FAIL("that tape is %luK; the limit is %uK",
              (unsigned long)(size / 1024), TAPE_MAX_BYTES / 1024);
 
     // Straight into the tape's own buffer: 64 KB is too much to have two of.
     UINT got = 0;
     if (f_read(f, tape_image, size, &got) != FR_OK || got != size)
-        FAIL("could not read the whole .tap");
+        FAIL("could not read the whole tape");
 
-    if (!tape_mount(tape_image, size, detail, detail_len)) return false;
+    // A .TZX is converted to a .TAP in place before it is mounted; see
+    // src/spectrum/tape.c for what survives that and what does not.
+    const bool ok = tzx ? tape_mount_tzx(size, detail, detail_len)
+                        : tape_mount(tape_image, size, detail, detail_len);
+    if (!ok) return false;
 
     // Keep the message tape_mount() wrote, and add to it below.
     char mounted[64];
@@ -485,10 +490,8 @@ bool loader_load(const char *path, const file_kind_t kind,
         case FILE_SNA: ok = load_sna(&f, (uint32_t)fi.fsize, detail, detail_len); break;
         case FILE_SCR: ok = load_scr(&f, detail, detail_len); break;
 
-        case FILE_TAP: ok = load_tap(&f, (uint32_t)fi.fsize, detail, detail_len); break;
-
-        // Not yet, and saying which is better than a generic refusal.
-        case FILE_TZX: snprintf(detail, detail_len, ".tzx is not implemented yet; .tap is"); ok = false; break;
+        case FILE_TAP: ok = load_tap(&f, (uint32_t)fi.fsize, false, detail, detail_len); break;
+        case FILE_TZX: ok = load_tap(&f, (uint32_t)fi.fsize, true,  detail, detail_len); break;
         case FILE_Z80: ok = load_z80(&f, (uint32_t)fi.fsize, detail, detail_len); break;
         case FILE_TRD: snprintf(detail, detail_len, "TR-DOS needs a Beta Disk interface"); ok = false; break;
         default:       snprintf(detail, detail_len, "nothing here knows what that file is"); ok = false; break;

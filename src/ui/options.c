@@ -148,6 +148,15 @@ static const char *psram_info(void) {
     return buf;
 }
 
+static void rescan_action(void) {
+    if (!storage_mounted() && !storage_mount()) {
+        snprintf(status, sizeof status, "Still no card.");
+        return;
+    }
+    menu_rescan_wanted = true;
+    snprintf(status, sizeof status, "The card will be read again.");
+}
+
 static void reset_action(void) {
     spec_set_machine((machine_t)settings.machine);
     snprintf(status, sizeof status, "%s reset.", spec_machine_name());
@@ -191,6 +200,7 @@ static const row_t rows[] = {
 
     HEAD("SYSTEM"),
     INFO  ("PSRAM",                     psram_info, NULL),
+    ACTION("Re-read the card",          rescan_action),
     ACTION("Save settings to the card", save_action),
     ACTION("Restore defaults",          defaults_action),
     ACTION("Reset the machine",         reset_action),
@@ -309,9 +319,12 @@ bool options_run(void) {
     dirty = false;
     status[0] = 0;
 
-    int cursor = 0;
-    top = 0;
-    if (!selectable(0)) cursor = step_cursor(0, +1);
+    // Where the cursor was last time. Changing two settings in a row is
+    // the normal case, and starting at the top every time makes the
+    // second one a page of arrow keys away.
+    static int cursor = -1;
+    if (cursor < 0 || cursor >= (int)ROW_COUNT || !selectable((unsigned)cursor))
+        cursor = selectable(0) ? 0 : step_cursor(0, +1);
     scroll_to(cursor);
     draw(cursor);
 

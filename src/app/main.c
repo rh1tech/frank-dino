@@ -262,7 +262,7 @@ int main(void) {
      * without the chip reports zero and carries on -- but what is put
      * there has to know, which is why the size is kept.
      */
-    const uint32_t psram = psram_init();
+    psram_init();       // reported on the boot screen and the settings page
 
     // Video before anything else that might fail, so a failure has
     // somewhere to be seen from the far end of an HDMI cable. The DMA
@@ -329,10 +329,22 @@ int main(void) {
             console_chars++;
             console_last = (uint8_t)c;
 
-            if (menu_is_open())          menu_key((char)c);
-            else if (c == '\t')          menu_run();     // modal; returns when closed
-            else if (spectrum_running)   spec_key_ascii((char)c);
-            else                         scr_replay();
+            /*
+             * The menu only exists once the machine does.
+             *
+             * Before that, core 1 is calibrating and self-testing: it is
+             * driving the Z80 but it is not in the frame loop, so it
+             * never reaches a pause point and spec_pause() times out
+             * after 200 ms and returns anyway. Both cores then clock the
+             * same CPU, which leaves the machine in a state nothing
+             * resets it out of -- a Tab pressed a second after flashing
+             * was enough, and the wreckage survived every reset the menu
+             * could ask for afterwards.
+             */
+            if (menu_is_open())                          menu_key((char)c);
+            else if (c == '\t' && spectrum_running)      menu_run();
+            else if (spectrum_running)                   spec_key_ascii((char)c);
+            else                                         scr_replay();
         }
 
         sleep_ms(2);

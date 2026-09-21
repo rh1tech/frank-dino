@@ -189,6 +189,146 @@ bool tape_mount(const uint8_t *image, const uint32_t len,
     return true;
 }
 
+// ---------------------------------------------------------------------------
+// .TZX
+// ---------------------------------------------------------------------------
+/*
+ * A .TZX is a .TAP with the timing put back, and then some.
+ *
+ * Where a .TAP is a bare list of blocks, a .TZX is a list of *records*:
+ * data blocks that carry their own pilot and bit timings, but also pure
+ * tones, raw pulse trains, pauses, loops, jumps, selection menus and
+ * several kinds of text. It exists because a .TAP cannot represent a
+ * loader that does not use the ROM's timings, which most commercial
+ * tapes did not.
+ *
+ * None of which this firmware can replay -- a ROM trap answers a call to
+ * LD-BYTES and has nowhere to put a pulse train. What it CAN use is the
+ * two record types whose payload is exactly a .TAP block: 0x10, standard
+ * speed data, and 0x11, turbo speed data. Both are flag, data and
+ * checksum; only the timings around them differ, and the timings are the
+ * part being skipped anyway.
+ *
+ * So a .TZX is converted to a .TAP on the way in. Everything else in the
+ * file is stepped over -- which is the fiddly part, because stepping over
+ * a record means knowing the length of every record type there is,
+ * including the ones that will never be used.
+ *
+ * A file whose loader is a pulse train will come out with a header or two
+ * and nothing else, and the caller says so. That is honest: those tapes
+ * need the signal, not the bytes.
+ */
+
+/* Little-endian reads, at a bounds-checked offset. */
+static uint32_t at16(const uint32_t p) { return (uint32_t)tape_image[p] | ((uint32_t)tape_image[p + 1] << 8); }
+static uint32_t at24(const uint32_t p) { return at16(p) | ((uint32_t)tape_image[p + 2] << 16); }
+static uint32_t at32(const uint32_t p) { return at16(p) | ((uint32_t)at16(p + 2) << 16); }
+
+/*
+ * Convert in place, which is safe because the output is never longer.
+ *
+ * A 0x10 record costs five bytes of header and produces two; every other
+ * record produces nothing at all. So the write pointer can never catch
+ * the read pointer, and the conversion needs no second buffer -- which
+ * matters, since the buffer is 64 KB and there is one of it.
+ */
+static uint32_t tzx_to_tap(const uint32_t len) {
+    uint32_t in = 10;               // past "ZXTape!\x1A" and the two version bytes
+    uint32_t out = 0;
+
+    while (in < len) {
+        const uint8_t id = tape_image[in++];
+        uint32_t data = 0, dlen = 0;
+
+        switch (id) {
+            case 0x10:                                  // standard speed data
+                if (in + 4 > len) return out;
+                dlen = at16(in + 2);
+                data = in + 4;
+                in   = data + dlen;
+                break;
+
+            case 0x11:                                  // turbo speed data
+                if (in + 0x12 > len) return out;
+                dlen = at24(in + 0x0F);
+                data = in + 0x12;
+                in   = data + dlen;
+                break;
+
+            // Everything below is skipped. The lengths are the format's,
+            // and getting one wrong desynchronises the rest of the file --
+            // which is why they are all here rather than only the common ones.
+            case 0x12: in += 4; break;                              // pure tone
+            case 0x13: if (in >= len) return out;
+                       in += 1 + 2u * tape_image[in]; break;        // pulse sequence
+            case 0x14: if (in + 0x0A > len) return out;
+                       in += 0x0A + at24(in + 7); break;            // pure data
+            case 0x15: if (in + 0x08 > len) return out;
+                       in += 0x08 + at24(in + 5); break;            // direct recording
+            case 0x18: case 0x19:                                   // CSW, generalized
+                       if (in + 4 > len) return out;
+                       in += 4 + at32(in); break;
+            case 0x20: in += 2; break;                              // pause / stop
+            case 0x21: if (in >= len) return out;
+                       in += 1 + tape_image[in]; break;             // group start
+            case 0x22: break;                                       // group end
+            case 0x23: in += 2; break;                              // jump
+            case 0x24: in += 2; break;                              // loop start
+            case 0x25: break;                                       // loop end
+            case 0x26: if (in + 2 > len) return out;
+                       in += 2 + 2u * at16(in); break;              // call sequence
+            case 0x27: break;                                       // return
+            case 0x28: if (in + 2 > len) return out;
+                       in += 2 + at16(in); break;                   // select
+            case 0x2A: in += 4; break;                              // stop if 48K
+            case 0x2B: in += 5; break;                              // set signal level
+            case 0x30: if (in >= len) return out;
+                       in += 1 + tape_image[in]; break;             // text description
+            case 0x31: if (in + 2 > len) return out;
+                       in += 2 + tape_image[in + 1]; break;         // message
+            case 0x32: if (in + 2 > len) return out;
+                       in += 2 + at16(in); break;                   // archive info
+            case 0x33: if (in >= len) return out;
+                       in += 1 + 3u * tape_image[in]; break;        // hardware type
+            case 0x35: if (in + 0x14 > len) return out;
+                       in += 0x14 + at32(in + 0x10); break;         // custom info
+            case 0x5A: in += 9; break;                              // glue
+
+            default:
+                // An unknown record has no length field to trust, so the
+                // rest of the file is unreadable. Keep what was found.
+                return out;
+        }
+
+        if (!dlen) continue;
+        if (data + dlen > len) return out;
+
+        // Emit it as a .TAP block: a length word and the bytes.
+        tape_image[out++] = (uint8_t)(dlen & 0xFF);
+        tape_image[out++] = (uint8_t)(dlen >> 8);
+        memmove(&tape_image[out], &tape_image[data], dlen);
+        out += dlen;
+    }
+
+    return out;
+}
+
+bool tape_mount_tzx(const uint32_t len, char *detail, const unsigned detail_len) {
+    if (len < 10 || memcmp(tape_image, "ZXTape!\x1A", 8) != 0) {
+        snprintf(detail, detail_len, "that is not a .tzx");
+        return false;
+    }
+
+    const uint32_t converted = tzx_to_tap(len);
+    if (converted < 4) {
+        snprintf(detail, detail_len,
+                 "no ROM-loadable blocks: this .tzx is a custom loader");
+        return false;
+    }
+
+    return tape_mount(tape_image, converted, detail, detail_len);
+}
+
 void tape_eject(void) {
     mounted = false;
     spec_set_tape_rom(NULL);

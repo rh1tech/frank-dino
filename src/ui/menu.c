@@ -52,6 +52,15 @@ static char  status[VGA_COLS];
  */
 static volatile int pending_key = -1;
 
+/*
+ * The settings page asking for the listing to be read again.
+ *
+ * "Rescan" used to be a key here. It belongs with the other card-level
+ * actions, but the settings page has no idea what a listing is -- so it
+ * raises this and the browser acts on it when the page closes.
+ */
+bool menu_rescan_wanted;
+
 bool menu_is_open(void) { return open_; }
 void menu_key(const char c) { pending_key = (unsigned char)c; }
 
@@ -112,7 +121,7 @@ static void draw(void) {
 
     scr_printf(2, VGA_ROWS - 4, ATTR(C_LGREEN, C_BLACK), "%s", status);
     scr_put(2, VGA_ROWS - 2,
-            "Up/Down move  Enter open  Backspace up  O settings  M machine  R rescan  Tab resume",
+            "Up/Down move   Enter open   Backspace up   A-Z jump   \\ settings   Tab resume",
             ATTR(C_DGREY, C_BLACK));
 }
 
@@ -150,6 +159,38 @@ static void move(const int delta) {
     if (cursor >= entry_count) cursor = entry_count - 1;
     if (cursor < top) top = cursor;
     if (cursor >= top + ROWS_SHOWN) top = cursor - ROWS_SHOWN + 1;
+}
+
+/*
+ * Jump to the next entry starting with a character.
+ *
+ * A directory on this card has two hundred and fifty-six entries in it
+ * and the arrow keys move one at a time, so typing the first letter is
+ * not a convenience, it is the difference between the browser being
+ * usable and not.
+ *
+ * It starts from the entry after the cursor and wraps, so pressing the
+ * same letter again walks through everything that begins with it.
+ *
+ * This is why the browser's own commands are not letters any more: every
+ * letter and every digit belongs to the files.
+ */
+static void jump_to(const char c) {
+    if (entry_count <= 0) return;
+
+    const char want = (c >= 'a' && c <= 'z') ? (char)(c - 'a' + 'A') : c;
+
+    for (int n = 1; n <= entry_count; n++) {
+        const int i = (cursor + n) % entry_count;
+        char first = entries[i].name[0];
+        if (first >= 'a' && first <= 'z') first = (char)(first - 'a' + 'A');
+        if (first != want) continue;
+
+        cursor = i;
+        if (cursor < top) top = cursor;
+        if (cursor >= top + ROWS_SHOWN) top = cursor - ROWS_SHOWN + 1;
+        return;
+    }
 }
 
 static void activate(void) {
@@ -231,29 +272,25 @@ bool menu_run(void) {
         switch (k) {
             case '\r': case '\n': activate(); draw(); break;
             case 0x7F: case '\b': leave_dir(); draw(); break;
-            case 'r': case 'R':   if (!storage_mounted()) storage_mount();
-                                  rescan(); draw(); break;
-            case 'o': case 'O':
+
+            case '\\':
+                // The one command key that is not a letter, because every
+                // letter is a jump. The settings page carries what used to
+                // be M and R.
                 options_run();
-                // The settings page may have started a different machine,
-                // and it draws over this one either way.
+                if (menu_rescan_wanted) { menu_rescan_wanted = false; rescan(); }
                 draw();
                 break;
 
-            case 'm': case 'M':
-                // Still here because it is one keystroke, but it now goes
-                // through the setting rather than around it -- otherwise
-                // the machine and what the settings page says disagree.
-                settings.machine = (uint8_t)((settings.machine + 1) % MACHINE_COUNT);
-                spec_set_machine((machine_t)settings.machine);
-                draw();
-                break;
-            case '\t': case 'q': case 'Q':
+            case '\t':
                 vga_set_mode(saved);
                 spec_resume();
                 open_ = false;
                 return loaded_something;
-            default: break;
+
+            default:
+                if (k >= 0x20 && k < 0x7F) { jump_to((char)k); draw(); }
+                break;
         }
     }
 }

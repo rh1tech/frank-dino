@@ -55,6 +55,16 @@
 /* Take a .TAP image. Returns false if it is too big or malformed. */
 bool tape_mount(const uint8_t *image, uint32_t len, char *detail, unsigned detail_len);
 
+/*
+ * Take a .TZX that is already sitting in tape_image, and convert it.
+ *
+ * A .TZX carries its own timings, which a ROM trap has nowhere to put --
+ * so only the two record types whose payload is a .TAP block survive the
+ * conversion, and a file whose loader is a pulse train comes out empty
+ * and is refused by name.
+ */
+bool tape_mount_tzx(uint32_t len, char *detail, unsigned detail_len);
+
 /* Forget it and put the real ROM back. */
 void tape_eject(void);
 
