@@ -33,7 +33,7 @@ fail=0
 try() { [ -z "$only" ] || [ "$only" = "$1" ] || return 0; run_one "$@" || fail=1; }
 
 try paging  "-DREAL_SPECTRUM -DREAL_VGA" \
-    src/spectrum/spectrum.c src/core/z80_bus.c
+    src/spectrum/spectrum.c src/core/z80_bus.c src/spectrum/saa.c
 try fdc     "-DREAL_FDC" \
     src/spectrum/fdc.c src/spectrum/storage.c tests/stub/ff_host.c
 try beta    "-DREAL_BETA" \
@@ -45,6 +45,7 @@ try divmmc  "-DREAL_DIVMMC" \
     src/spectrum/divmmc.c src/spectrum/storage.c tests/stub/ff_host.c
 try tape    "-DREAL_TAPE" \
     src/spectrum/tape.c src/spectrum/storage.c src/core/z80_bus.c tests/stub/ff_host.c
+try saa     "" src/spectrum/saa.c
 try video   "-DREAL_VGA"
 try ui      "" src/ui/ui_gfx.c src/ui/ui_font.c
 

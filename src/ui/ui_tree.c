@@ -657,6 +657,7 @@ static const ui_node_t audio_kids[] = {
     UI_BOOL ("TurboSound",        &settings.turbosound, NULL),
     UI_BOOL ("Covox (#FB)",       &settings.covox,      NULL),
     UI_BOOL ("SounDrive",         &settings.soundrive,  NULL),
+    UI_BOOL ("SAA1099 (#FF)",     &settings.saa,        NULL),
     UI_ACTION("Test tone (441 Hz)", tone_action),
     UI_ACTIONV("Audio ring",       NULL, audio_info),
 };

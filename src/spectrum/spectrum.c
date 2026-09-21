@@ -18,6 +18,7 @@
 #include "dck.h"
 #include "divmmc.h"
 #include "fdc.h"
+#include "saa.h"
 #include "dino.h"
 #include "settings.h"
 #include "tape.h"
@@ -333,6 +334,7 @@ static inline bool have_ay(void) {
 }
 
 static ay_t    ay[2];
+static saa_t   saa;
 static uint8_t ay_sel;          // which chip the ports are talking to
 
 // The last byte written to the ULA's port, which the EAR bit reads back.
@@ -770,6 +772,27 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
      *
      * And nothing in the family answers while the TR-DOS ROM is paged.
      */
+    /*
+     * The SAA1099, on the #FF family with A8 selecting what it is:
+     * #00FF is the data port and #01FF the register select. That is the
+     * Karabas/SAM convention and the one the Profi's extended periphery
+     * uses.
+     *
+     * Ahead of the SCLD arm below, and never on a Timex. On a Timex the
+     * SCLD owns the whole family and a TC2068 has no SAA; on anything
+     * else, fitting the SAA means the Timex video CARD is not fitted --
+     * which is true of the real machines too, since both answer the
+     * same ports and only one card goes in the slot.
+     *
+     * Nothing in the family answers while the TR-DOS ROM is paged.
+     */
+    if (unlikely(settings.saa) && spec_machine != MACHINE_TIMEX
+        && (port & 0xFFu) == 0xFFu && !beta_rom_paged()) {
+        if (port & 0x0100u) saa_select(&saa, value);
+        else                saa_write(&saa, value);
+        return;
+    }
+
     if ((settings.timex || spec_machine == MACHINE_TIMEX)
         && (port & 0xFFu) == 0xFFu
         && (spec_machine == MACHINE_TIMEX || !(port & 0x0100u))
@@ -1430,6 +1453,8 @@ void spec_init(void) {
 
     ay_reset(&ay[0]);
     ay_reset(&ay[1]);
+    saa_reset(&saa);
+    saa_set_clock(&saa, SAA_CLOCK_HZ, AUDIO_RATE_HZ);
     ay_sel         = 0;
     spec_beeper    = false;
     last_fe        = 0;
@@ -1568,6 +1593,9 @@ __force_inline static void run_slice(const uint32_t tstates, const uint32_t num)
         if (settings.turbosound) a += ay_render(&ay[1], ticks);
         s += a * settings.ay_vol / 10;
     }
+
+    /* The SAA sits at the AY's scale, so it shares its volume. */
+    if (unlikely(settings.saa)) s += saa_render(&saa) * settings.ay_vol / 10;
 
     /*
      * The beeper at about a quarter of full scale.

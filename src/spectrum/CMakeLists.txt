@@ -15,12 +15,14 @@
 #
 file(GLOB DINO_ROMS ${CMAKE_CURRENT_LIST_DIR}/../../roms/*.rom)
 set_property(SOURCE ${CMAKE_CURRENT_LIST_DIR}/spectrum.c
+        ${CMAKE_CURRENT_LIST_DIR}/saa.c
              APPEND PROPERTY OBJECT_DEPENDS "${DINO_ROMS}")
 
 add_library(spectrum INTERFACE)
 
 target_sources(spectrum INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/spectrum.c
+        ${CMAKE_CURRENT_LIST_DIR}/saa.c
         ${CMAKE_CURRENT_LIST_DIR}/ay.c
         ${CMAKE_CURRENT_LIST_DIR}/launch.c
         ${CMAKE_CURRENT_LIST_DIR}/storage.c

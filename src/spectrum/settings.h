@@ -118,6 +118,7 @@ typedef struct {
     uint8_t turbosound;     // a second AY behind the same pair of ports
     uint8_t covox;          // 8-bit DAC on port #FB
     uint8_t soundrive;      // four 8-bit DACs on #0F/#1F/#4F/#5F
+    uint8_t saa;            // a SAA1099 on the #FF family, as the Profi has
 
     // --- video ---
     uint8_t scanlines;      // dim every second output line

@@ -42,6 +42,7 @@ static const field_t fields[] = {
     { "turbosound",     &settings.turbosound,     1  },
     { "covox",          &settings.covox,          1  },
     { "soundrive",      &settings.soundrive,      1  },
+    { "saa",            &settings.saa,            1  },
 
     { "scanlines",      &settings.scanlines,      1  },
     { "ulaplus",        &settings.ulaplus,        1  },
@@ -93,6 +94,7 @@ void settings_defaults(void) {
         .turbosound     = 1,
         .covox          = 0,
         .soundrive      = 0,
+        .saa            = 0,
 
         .scanlines      = 0,
         .ulaplus        = 0,
