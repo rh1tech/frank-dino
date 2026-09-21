@@ -7,6 +7,16 @@
 #
 # spectrum — the half of a ZX Spectrum 128K that is not the CPU.
 
+#
+# The ROM images are pulled into spectrum.c by .incbin from inline asm,
+# which nothing in the build system can see. Without this, replacing a
+# .rom leaves the old bytes in the binary and the next flash quietly
+# ships them -- which cost a debugging session once already.
+#
+file(GLOB DINO_ROMS ${CMAKE_CURRENT_LIST_DIR}/../../roms/*.rom)
+set_property(SOURCE ${CMAKE_CURRENT_LIST_DIR}/spectrum.c
+             APPEND PROPERTY OBJECT_DEPENDS "${DINO_ROMS}")
+
 add_library(spectrum INTERFACE)
 
 target_sources(spectrum INTERFACE

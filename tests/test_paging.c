@@ -41,11 +41,11 @@ static const struct { const char *name; const uint8_t *img; unsigned len; } MAST
     { "p3-2",     spec_romp3_2,   16384 }, { "p3-3",    spec_romp3_3, 16384 },
     { "sc-0",     spec_romsc_0,   16384 }, { "sc-1",    spec_romsc_1, 16384 },
     { "sc-2",     spec_romsc_2,   16384 }, { "sc-3",    spec_romsc_3, 16384 },
-    { "pr-0",     spec_rompr_0,   16384 }, { "pr-1",    spec_rompr_1, 16384 },
-    /* pentagon-0.rom and profi-2.rom are the same image, so the
-     * Pentagon's name has to be claimed first or its ROM reads as the
-     * Profi's service page. */
+    /* pentagon-0.rom and the Profi's BASIC-128 are the same image, so
+     * the Pentagon's name has to be claimed first or its ROM reads as
+     * the Profi's. */
     { "pentagon", spec_rompent,   16384 },
+    { "pr-0",     spec_rompr_0,   16384 }, { "pr-1",    spec_rompr_1, 16384 },
     { "pr-2",     spec_rompr_2,   16384 }, { "pr-3",    spec_rompr_3, 16384 },
     { "tx-home",  spec_romtx_home,16384 }, { "trdos",   spec_romtrd,  16384 },
     { "tx-ex",    spec_romtx_ex,   8192 },
@@ -180,9 +180,17 @@ int main(void) {
     /* ---------------------------------------------------------------- */
     GROUP("+2");
     boot(MACHINE_PLUS2);
-    STREQ(slot(0), "plus2.lo", "ROM 0 is the +2 editor");
+    /*
+     * plus2.rom is a 48 BASIC -- F5 at 0x0038, not the editor's E5
+     * four-push stub -- so it is this machine's ROM 1, and the editor
+     * underneath it is the 128K's. Loaded the other way round the +2
+     * came up in 48 BASIC with its own menu unreachable.
+     */
+    STREQ(slot(0), "128-0.lo", "ROM 0 is the 128K editor");
+    EQ(z80_rpage[0][0x38], 0xE5, "and it holds the interrupt stub");
     out(0x7FFD, 0x10);
-    STREQ(slot(0), "128-1.lo", "ROM 1 is the 48K BASIC");
+    STREQ(slot(0), "plus2.lo", "ROM 1 is the +2's own 48 BASIC");
+    EQ(z80_rpage[0][0x38], 0xF5, "and it holds the real handler");
     out(0x7FFD, 0x05);
     STREQ(slot(6), "ram5.lo", "#C000 bank 5");
 
@@ -263,7 +271,15 @@ int main(void) {
     GROUP("Profi");
     boot(MACHINE_PROFI);
     map4(m4, sizeof m4);
-    STREQ(m4, "pr-0.lo ram5.lo ram2.lo ram0.lo", "initial map");
+    /*
+     * Its BASIC-128 is byte-for-byte the Pentagon's image, so that is
+     * the name this reports. The files arrived in the order service,
+     * TR-DOS, BASIC-128, BASIC-48 and were loaded 0,1,2,3, which put
+     * the service monitor at #0000 and left the machine polling a disk
+     * interface that was not there.
+     */
+    STREQ(m4, "pentagon.lo ram5.lo ram2.lo ram0.lo", "initial map");
+    EQ(z80_rpage[0][0x38], 0xE5, "ROM 0 is an editor ROM, not the monitor");
     out(0xDFFD, 0x40);
     EQ(spec_port_dffd, 0x40, "#DFFD is the third latch");
     STREQ(slot(4), "ram6.lo", "#DFFD bit 6 puts page 6 at #8000");

@@ -165,11 +165,25 @@ static void rom_load_window(const machine_t m) {
         return;
     }
 
-    const uint8_t *r0 = (m == MACHINE_PLUS2)    ? spec_romp2
-                      : (m == MACHINE_PENTAGON) ? spec_rompent
+    /*
+     * The +2's image is a 48 BASIC, so it is that machine's ROM 1.
+     *
+     * It has F5 at 0x0038 -- the real interrupt handler -- where an
+     * editor ROM has the E5 four-push stub that jumps to the SWAP
+     * routine. Loading it as ROM 0 gave a +2 that came up in 48 BASIC
+     * with its own menu unreachable, which looks enough like a working
+     * machine to be missed.
+     *
+     * The editor underneath it is the 128K's. A real +2's differs from
+     * it in the copyright line and little else, and pico-speccy does
+     * not carry a separate one either.
+     */
+    const uint8_t *r0 = (m == MACHINE_PENTAGON) ? spec_rompent
                       : (m == MACHINE_48K)      ? spec_rom48
                                                 : spec_rom0;
-    const uint8_t *r1 = (m == MACHINE_48K) ? spec_rom48 : spec_rom1;
+    const uint8_t *r1 = (m == MACHINE_48K)   ? spec_rom48
+                      : (m == MACHINE_PLUS2) ? spec_romp2
+                                             : spec_rom1;
 
     memcpy(rom_window[ROMW_0], r0, SPEC_BANK_SIZE);
     memcpy(rom_window[ROMW_1], r1, SPEC_BANK_SIZE);
