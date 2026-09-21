@@ -133,12 +133,41 @@ exist because that was not enough.
 | Row | What it tells you |
 |---|---|
 | **PSRAM** | How much the probe found, and a read-write test over 4 MB. |
-| **Z80** | The address of the last opcode fetch and the running count. A tight loop repeats one address; a stopped CPU does not move between two visits. |
+| **Z80** | The address of the last opcode fetch, the pace, and the running fetch count. A tight loop repeats one address; a stopped CPU does not move between two visits. |
 | **last FDC command** | The command, the port it came in on, the track, sector and side, and the counts of reads, writes and not-founds. |
 | **Record the bus** | Two stores per bus cycle into a 256-entry ring. Turn it on, leave the menu, come back and **Show the bus trace**. |
 
-Between them they found the bug in this firmware that looked most like
-failing hardware — see the index pulse, below.
+Between them they found the two bugs in this firmware that looked most
+like failing hardware: the index pulse, below, and the pace.
+
+### The pace, and the floor under it
+
+Pace is how long the bus engine waits after a clock edge before it
+samples the Z80's pins. Below some value it samples them too early and
+reads the previous cycle's address — a firmware limit, not a silicon
+one, and stage 0's speed ramp has always measured it.
+
+The clock tuner adjusts that padding until a frame takes 20 ms, and it
+had no floor. Every time the frame loop got heavier — two AY chips, then
+per-source volumes, then an opcode-fetch hook — it paid for the extra
+work by taking padding away from the CPU's clock, and eventually it
+bought a frame rate of exactly 50 Hz with an engine that was reading the
+wrong address. The arithmetic cannot tell "the machine is slow" from
+"the machine is wrong". What you see is a Spectrum that boots, passes
+both self-tests, keeps perfect time and puts noise on the screen.
+
+There is a floor now, and it is *measured*: at boot, before the machine
+starts, the CPU runs a program whose answer is known at falling paces
+until the answer stops being right, and the floor goes four steps above
+that. It has to be measured rather than assumed because the boundary
+moves — with the system clock, with the size of the service routine,
+with what the frame loop does around it, and with how warm the board is.
+It was seen at 4, 6, 8 and 10 in a single evening.
+
+The tuner stops at the floor, so a machine that cannot hold 50 Hz
+reports a low frame rate instead of quietly corrupting itself. The Z80
+row shows the pace it settled on; on this board it is around 18, with
+the floor near 14.
 
 ## File formats
 
