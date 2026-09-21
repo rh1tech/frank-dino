@@ -170,6 +170,57 @@ void beta_eject(void) {
     beta_reset();
 }
 
+/*
+ * What to type at the TR-DOS prompt to start this disk.
+ *
+ * TR-DOS runs a file called `boot` by itself, and most disks have one --
+ * but a .scl is very often a single file with the game's own name, and
+ * a disk with no boot leaves the user at an A> prompt with no way to
+ * find out what is on it short of knowing the TR-DOS keyword for CAT.
+ *
+ * So: if there is a boot, say nothing and let TR-DOS get on with it. If
+ * there is not, take the first real file and produce `RUN "NAME"`, which
+ * is what a person would have typed. The R is a single key at the prompt
+ * -- TR-DOS's command line is the BASIC editor in keyword mode -- and
+ * the quotes are SYMBOL SHIFT and P, which src/spectrum/spectrum.c
+ * already knows how to press.
+ *
+ * Returns false when nothing should be typed.
+ */
+bool beta_autorun(char *out, const unsigned len) {
+    if (!mounted) return false;
+
+    int first = -1;
+
+    for (unsigned i = 0; i < 128; i++) {
+        const uint8_t *e = &trd_image[i * 16];
+        if (e[0] == 0x00) break;                // nothing beyond here
+        if (e[0] == 0x01) continue;             // deleted
+
+        // A boot file, whatever its extension, and the rest of the name
+        // has to be blank -- "bootleg" is not a boot.
+        if ((e[0] | 0x20) == 'b' && (e[1] | 0x20) == 'o' &&
+            (e[2] | 0x20) == 'o' && (e[3] | 0x20) == 't') {
+            bool blank = true;
+            for (unsigned k = 4; k < 8; k++) if (e[k] != ' ') blank = false;
+            if (blank) return false;
+        }
+
+        if (first < 0) first = (int)i;
+    }
+
+    if (first < 0) return false;
+
+    const uint8_t *e = &trd_image[(unsigned)first * 16];
+    char name[9] = {0};
+    memcpy(name, e, 8);
+    for (int k = 7; k >= 0 && (name[k] == ' ' || name[k] == 0); k--) name[k] = 0;
+    if (!name[0]) return false;
+
+    snprintf(out, len, "r\"%s\"\r", name);
+    return true;
+}
+
 // ---------------------------------------------------------------------------
 
 /*
@@ -222,11 +273,12 @@ static void type1_done(void) {
  * question with an answer.
  */
 static uint8_t  last_cmd, last_trk, last_sec, last_side;
+static uint16_t last_port;
 static uint32_t n_read, n_write, n_notfound;
 
 void beta_stats(char *out, const unsigned len) {
-    snprintf(out, len, "%02X t%u s%u/%u r%lu w%lu e%lu",
-             last_cmd, last_trk, last_sec, last_side,
+    snprintf(out, len, "%02X@%04X t%u s%u/%u r%lu w%lu e%lu",
+             last_cmd, last_port, last_trk, last_sec, last_side,
              (unsigned long)n_read, (unsigned long)n_write,
              (unsigned long)n_notfound);
 }
@@ -322,16 +374,21 @@ static void command(const uint8_t cmd) {
         case 0xE:                                   // Read track
         case 0xF:                                   // Write track (format)
             /*
-             * Formatting is accepted and discarded.
+             * Accepted, and finished before it began.
              *
-             * A .trd has no gaps, no address marks and no room to put
-             * them, so a format cannot be stored -- but a controller that
-             * refuses one leaves TR-DOS waiting for a DRQ that never
-             * comes. Consuming a track's worth of bytes and reporting
-             * success is the behaviour that keeps it moving.
+             * A .trd is sectors with no gaps and no address marks, so
+             * there is nothing for either of these to read or write. The
+             * first version set up a track's worth of DRQ and waited for
+             * the bytes, which is closer to what the chip does and is a
+             * trap: a caller that changes its mind leaves the controller
+             * permanently busy and the machine hangs on the next status
+             * poll. Reporting completion immediately cannot hang anyone.
              */
-            start_transfer(0, TRD_TRACK, type == 0xF);
-            wd.from_idfield = true;                 // nowhere to put it
+            wd.type1  = false;
+            wd.status = 0;
+            wd.drq    = false;
+            wd.left   = 0;
+            wd.intrq  = true;
             return;
 
         default:
@@ -364,7 +421,7 @@ bool beta_port_out(const uint16_t port, const uint8_t value) {
     if (!settings.betadisk || !rom_paged || !BETA_SELECTED(port)) return false;
 
     switch (BETA_REG(port)) {
-        case 0: command(value); break;                          // #1F
+        case 0: last_port = port; command(value); break;         // #1F
         case 1: wd.track  = value; break;                       // #3F
         case 2: wd.sector = value; break;                       // #5F
 

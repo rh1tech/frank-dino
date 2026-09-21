@@ -88,6 +88,15 @@ void beta_boot_next_reset(void);
 bool beta_take_boot_request(void);
 
 /*
+ * What to type at the TR-DOS prompt to start the mounted disk.
+ *
+ * A disk with a `boot` file starts itself and this says so by returning
+ * false. One without -- which most single-file .scl images are -- needs
+ * RUN "NAME", and this builds it out of the first catalogue entry.
+ */
+bool beta_autorun(char *out, unsigned len);
+
+/*
  * The last command and the running counts, as a short line of text.
  *
  * A load that fails produces a black screen whatever the reason, so

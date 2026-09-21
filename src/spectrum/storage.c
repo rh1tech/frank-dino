@@ -42,6 +42,7 @@ file_kind_t storage_kind(const char *name) {
     if (ext_is(name, "sna")) return FILE_SNA;
     if (ext_is(name, "z80")) return FILE_Z80;
     if (ext_is(name, "trd")) return FILE_TRD;
+    if (ext_is(name, "scl")) return FILE_SCL;
     if (ext_is(name, "scr")) return FILE_SCR;
     return FILE_OTHER;
 }

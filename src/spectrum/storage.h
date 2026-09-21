@@ -33,6 +33,7 @@ typedef enum : uint8_t {
     FILE_SNA,          // snapshot
     FILE_Z80,          // snapshot, the common one
     FILE_TRD,          // TR-DOS disk image
+    FILE_SCL,          // the same disk with the empty space left out
     FILE_SCR,          // a bare screen dump
 } file_kind_t;
 

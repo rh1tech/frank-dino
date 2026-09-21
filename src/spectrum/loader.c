@@ -479,6 +479,23 @@ static bool load_tap(FIL *f, const uint32_t size, const bool tzx,
 // ---------------------------------------------------------------------------
 // .TRD
 // ---------------------------------------------------------------------------
+
+/*
+ * Type the disk's own start-up command, if it needs one.
+ *
+ * The string has to outlive this call, because spec_type() feeds it one
+ * character every few frames and does not copy it. The delay is TR-DOS's
+ * own start-up: it prints its banner, decides there is no boot file and
+ * puts up a prompt, and typing into it before then loses the first
+ * letter.
+ */
+static char autorun[24];
+
+static void disk_autorun(void) {
+    if (settings.tape_autostart && beta_autorun(autorun, sizeof autorun))
+        spec_type(autorun, 160);
+}
+
 /*
  * A raw disk, straight into the drive.
  *
@@ -506,6 +523,109 @@ static bool load_trd(FIL *f, const uint32_t size, char *detail, const unsigned d
     settings.betadisk = 1;
     beta_boot_next_reset();
     spec_set_machine((machine_t)spec_machine);
+    disk_autorun();
+
+    snprintf(detail, detail_len, "%s -- booting", mounted);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// .SCL
+// ---------------------------------------------------------------------------
+/*
+ * The same disk with the empty space left out.
+ *
+ * A .trd is every sector of an 80-track double-sided disk whether it
+ * holds anything or not, which is 640 KB for a game that is forty. A
+ * .scl is the other way round: a signature, a count, one fourteen-byte
+ * directory entry per file and then the files' sectors end to end. It
+ * is how TR-DOS software actually travelled, and half of what is on this
+ * card is in it.
+ *
+ * Converting one into the other is a matter of putting the sectors back
+ * where TR-DOS expects them and writing the two things a .scl leaves
+ * out: the catalogue, which is the directory entries plus the place each
+ * file ended up, and the volume descriptor in sector 9 that says how
+ * many files there are and where the free space starts. Without that
+ * descriptor TR-DOS calls the disk unformatted.
+ */
+#define SCL_ENTRY   14          // 8 name, 1 extension, 2 start, 2 length, 1 sectors
+#define SCL_MAX_FILES 128
+#define TRD_SECTOR  256
+#define TRD_SPT     16
+#define TRD_LTRACKS 160         // 80 cylinders, two sides
+#define TRD_SIZE    ((uint32_t)TRD_LTRACKS * TRD_SPT * TRD_SECTOR)
+
+static bool load_scl(FIL *f, char *detail, const unsigned detail_len) {
+    uint8_t head[9];
+    UINT got = 0;
+    if (f_read(f, head, sizeof head, &got) != FR_OK || got != sizeof head)
+        FAIL("could not read the .scl header");
+    if (memcmp(head, "SINCLAIR", 8) != 0) FAIL("that is not a .scl");
+
+    const unsigned files = head[8];
+    if (files == 0 || files > SCL_MAX_FILES) FAIL(".scl says it holds %u files", files);
+
+    // 1792 bytes at most, and core 0's stack is not the place for it.
+    static uint8_t dir[SCL_MAX_FILES * SCL_ENTRY];
+    const UINT dirlen = (UINT)(files * SCL_ENTRY);
+    if (f_read(f, dir, dirlen, &got) != FR_OK || got != dirlen)
+        FAIL(".scl directory is short");
+
+    if (TRD_SIZE > TRD_MAX_BYTES) FAIL("the disk buffer is too small");
+    memset(trd_image, 0, TRD_SIZE);
+
+    /*
+     * Files go down one after another from the start of track 1, which
+     * is where TR-DOS puts them: track 0 is the catalogue and the
+     * descriptor, and nothing else ever lives there.
+     */
+    unsigned at = TRD_SPT;                      // in sectors, from the start
+    for (unsigned i = 0; i < files; i++) {
+        const uint8_t *e = &dir[i * SCL_ENTRY];
+        const unsigned len = e[13];             // the file's length in sectors
+
+        if (at + len > TRD_LTRACKS * TRD_SPT)
+            FAIL(".scl holds more than a disk does");
+
+        uint8_t *cat = &trd_image[i * 16];
+        memcpy(cat, e, SCL_ENTRY);
+        cat[14] = (uint8_t)(at % TRD_SPT);      // where it starts: sector
+        cat[15] = (uint8_t)(at / TRD_SPT);      // ...and logical track
+
+        const UINT bytes = (UINT)len * TRD_SECTOR;
+        if (bytes && (f_read(f, &trd_image[(uint32_t)at * TRD_SECTOR], bytes, &got) != FR_OK
+                      || got != bytes))
+            FAIL(".scl is short in file %u of %u", i + 1, files);
+
+        at += len;
+    }
+
+    /*
+     * Sector 9: the volume descriptor, which is the only part of a
+     * TR-DOS disk that is not either a catalogue entry or a file.
+     */
+    uint8_t *const vol = &trd_image[8 * TRD_SECTOR];
+    vol[0xE1] = (uint8_t)(at % TRD_SPT);        // first free sector
+    vol[0xE2] = (uint8_t)(at / TRD_SPT);        // first free track
+    vol[0xE3] = 0x16;                           // 80 tracks, double sided
+    vol[0xE4] = (uint8_t)files;
+    const unsigned free_sectors = TRD_LTRACKS * TRD_SPT - at;
+    vol[0xE5] = (uint8_t)(free_sectors & 0xFF);
+    vol[0xE6] = (uint8_t)(free_sectors >> 8);
+    vol[0xE7] = 0x10;                           // "this is a TR-DOS disk"
+    vol[0xF4] = 0;                              // no deleted files
+    memset(&vol[0xF5], ' ', 8);                 // the label, which a .scl has not got
+
+    if (!beta_mount(TRD_SIZE, detail, detail_len)) return false;
+
+    char mounted[80];
+    snprintf(mounted, sizeof mounted, "%s", detail);
+
+    settings.betadisk = 1;
+    beta_boot_next_reset();
+    spec_set_machine((machine_t)spec_machine);
+    disk_autorun();
 
     snprintf(detail, detail_len, "%s -- booting", mounted);
     return true;
@@ -530,6 +650,7 @@ bool loader_load(const char *path, const file_kind_t kind,
         case FILE_TZX: ok = load_tap(&f, (uint32_t)fi.fsize, true,  detail, detail_len); break;
         case FILE_Z80: ok = load_z80(&f, (uint32_t)fi.fsize, detail, detail_len); break;
         case FILE_TRD: ok = load_trd(&f, (uint32_t)fi.fsize, detail, detail_len); break;
+        case FILE_SCL: ok = load_scl(&f, detail, detail_len); break;
         default:       snprintf(detail, detail_len, "nothing here knows what that file is"); ok = false; break;
     }
 

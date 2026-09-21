@@ -76,6 +76,7 @@ static const char *kind_label(const file_kind_t k) {
         case FILE_SNA: return "SNA";
         case FILE_Z80: return "Z80";
         case FILE_TRD: return "TRD";
+        case FILE_SCL: return "SCL";
         case FILE_SCR: return "SCR";
         default:       return "";
     }
