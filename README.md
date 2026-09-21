@@ -16,33 +16,46 @@ because the two CPUs share none of the signals that matter.
 
 ## What it is now
 
-A **ZX Spectrum 128K**. The ROM boots to its menu, 128 BASIC runs, and
-`BEEP` comes out of the board's speaker — all executed by a Z84C00 in a
-socket, with the RP2350B being everything else it can see.
+A **ZX Spectrum**, in four flavours, with sound, storage and a settings
+page — all of it executed by a Z84C00 in a socket, with the RP2350B
+being everything else the CPU can see.
 
 | | |
 |---|---|
-| CPU | A real Z84C00, clocked at **3.573 MHz** (a Spectrum's 3.5469, within 0.7 %) |
-| RAM | 128 KB, eight banks, paged through port 0x7FFD |
-| ROM | The stock Sinclair 128K pair, welded into the binary |
-| Video | The ULA's 256x192 and border, doubled into 640x480 over HDMI |
-| Sound | The beeper — bit 4 of port 0xFE, straight to GP46 |
-| Keyboard | The full matrix, typed at over the console |
+| Machines | 48K, 128K, +2, Pentagon 128 — chosen at runtime, saved to the card |
+| CPU | A real Z84C00 at **3.5469 MHz**, tuned against the wall clock; 5.3 and 7 MHz on request |
+| RAM | 128 KB, eight banks, port 0x7FFD |
+| ROM | The stock Sinclair pair, Amstrad's +2 ROM 0, the Pentagon's, and TR-DOS 5.04T |
+| Video | The ULA's 256x192 and border, doubled into 640x480 over HDMI; optional scanlines |
+| Sound | Beeper, AY-3-8912, TurboSound (two of them), Covox and SounDrive, mixed to a 44.1 kHz PWM DAC on GP46 |
+| Input | The full matrix over USB or the console; Kempston, Sinclair 1 and 2, Cursor and Fuller joysticks |
+| Storage | microSD: a file browser, `.tap`, `.tzx`, `.sna`, `.z80`, `.trd`, `.scl` and `.scr` |
+| Disks | A Beta Disk interface and a WD1793, with TR-DOS in ROM |
+| Memory | 8 MB of PSRAM on XIP CS1, holding the disk and tape images |
 
-The beeper is the part worth looking at. Bit 4 of port 0xFE is the
-speaker on a real Spectrum and GP46 is the speaker here, so the whole of
-the audio path is one line in the port handler:
+Three of those are worth a sentence each, because they are not what an
+emulator does.
 
-```c
-gpio_put(SPEAKER_PIN, (value >> 4) & 1);
-```
+**Snapshots.** You cannot write a Z84C00's registers from outside it, so
+a `.sna` or a `.z80` is restored by *generating a program that loads
+them* and mapping it over the ROM window: the CPU loads itself and jumps
+into the snapshot, and the real ROM comes back on the first fetch after
+the jump. See `src/spectrum/launch.c`.
 
-No sample buffer, no DAC, no mixer, and no question about the sample
-rate, because there are no samples. The waveform is whatever the CPU
-makes it, which is what 1-bit audio *is*.
+**Tape.** The same problem, once more: a `.tap` is served by trapping the
+ROM's `LD-BYTES`, and the trap needs IX, DE and A — which it gets by
+patching a stub into the ROM that pushes each of them out through a port
+this firmware is listening on. See `src/spectrum/tape.c`.
 
-There is no AY, no tape, no microSD and no keyboard socket yet. See
-`docs/spectrum.md`.
+**Disks.** The Beta Disk's ROM paging has no port at all: TR-DOS replaces
+the BASIC ROM when the CPU fetches an opcode from 0x3Dxx and disappears
+on the first fetch at 0x4000 or above. The bus engine's opcode-fetch hook
+sees exactly what the interface's address comparator saw. See
+`src/spectrum/beta.c`.
+
+`docs/spectrum.md` has the whole of the machine: what each setting does,
+which parts of each file format are supported, and what is deliberately
+out of scope.
 
 ## Stage 0: proving the bus first
 
@@ -99,15 +112,19 @@ make hooks                      # once, per clone
 ./build.sh                      # build
 ./swd_flash.sh                  # flash through the Debug Probe on J5
 ./capture.sh shot               # photograph the screen
-./keys.sh --down --enter        # pick 128 BASIC
-./keys.sh 'beep 1,0' --enter    # and listen
+./keys.sh --tab                 # open the file browser
+./keys.sh --down --enter        # pick something and run it
+./keys.sh 'beep 1,0' --enter    # or type at the machine and listen
 ```
 
-The last two are the point of `keys.sh`: the board has no keyboard
-socket, so the console is the keyboard, and the whole machine can be
-driven from a script over the same cable that flashes it. "Does it still
-boot to the menu and run a program" is a question a test can answer with
-a screenshot.
+`keys.sh` is the point of the last three: with no keyboard plugged in the
+console *is* the keyboard, so the whole machine can be driven from a
+script over the same cable that flashes it. "Does it still boot, load a
+game and run it" is a question a test can answer with a screenshot.
+
+Inside the browser: the arrows move, Enter opens, Backspace goes up, any
+letter or digit jumps to the next entry beginning with it, backslash
+opens the settings page, and Tab goes back to the machine.
 
 ## What the board gives the Z80
 
@@ -118,6 +135,8 @@ a screenshot.
 | ROM | A window whose write pointer goes to a bit bucket |
 | I/O | Two function pointers, re-pointed by whatever machine is running |
 | Video | 640x480 at 60 Hz — 80x30 text, or the ULA's screen |
+| Sound | A PWM DAC on GP46, fed 44100 samples a second by the frame loop |
+| Storage | microSD on SPI1, and 8 MB of PSRAM for what will not fit in SRAM |
 | Console | UART0 on J1, and USB CDC, both at 115200 |
 
 ## How the bus engine works
@@ -153,14 +172,20 @@ connected and why the clock is the one signal that goes through a buffer.
 
 ```
 src/
-  core/        the pin map, the bus engine, the guest's memory
-  test/        the stage-0 suite and the Z80 programs it runs
-  drivers/vga/ 640x480 text, PIO and DMA out of the R2R ladder
-  ui/          the report, drawn to the screen and echoed to the console
-  app/         main.c, the linker script, the top-level CMakeLists
-boards/        the SDK board header
-docs/          the pin map
-tools/         the attribution checker the hooks and CI share
+  core/            the pin map, the bus engine, the guest's memory
+  test/            the stage-0 suite and the Z80 programs it runs
+  spectrum/        the machine: paging, ULA ports, AY, tape, disks, settings
+  drivers/vga/     640x480, PIO and DMA out of the R2R ladder
+  drivers/audio/   the PWM DAC and its ring buffer
+  drivers/sdcard/  SPI1 to J3, and FatFs on top of it
+  drivers/psram/   the 8 MB on XIP CS1
+  drivers/usbkbd/  TinyUSB as a HID host
+  ui/              the report, the file browser and the settings page
+  app/             main.c, the linker script, the top-level CMakeLists
+boards/            the SDK board header
+roms/              the ROM images, and where they came from
+docs/              the pin map and the machine
+tools/             the attribution checker the hooks and CI share
 ```
 
 `boards/` sits outside `src/` because it is configuration the build reads,
@@ -184,14 +209,18 @@ if you would rather drive it directly.
 
 | Variable | Default | What it does |
 |----------|---------|--------------|
-| `CPU_SPEED` | `378` | System clock, MHz |
+| `CPU_SPEED` | `504` | System clock, MHz |
+| `SELFTEST` | `OFF` | Build the destructive stage-0 suite instead of the machine |
+| `USB_KEYBOARD` | `OFF` | TinyUSB as a HID host rather than a CDC console |
 | `CLEAN` | `0` | Delete the build tree first |
 
 `CPU_SPEED` sets the ceiling on how fast the Z80 can be clocked, and
 nothing else — it cannot make this firmware *wrong*, only slow. 378 MHz
-needs only the 1.30V regulator setting. 504 MHz is proven on this board
-and wants 1.60V, which is heat there is no reason to make until stage 1
-asks for the megahertz.
+needs only the 1.30 V regulator setting and was the default through stage
+0. The Spectrum wants more: the frame loop also renders two AY chips and
+pushes 882 samples, and at 378 MHz the clock tuner ran out of headroom
+and the machine ran twelve per cent slow. 504 MHz and 1.60 V is what it
+takes, and is proven on this board.
 
 ## The bench toolset
 
@@ -271,18 +300,19 @@ This makes "did stage 0 pass" a question a script can answer.
 
 ## What comes next
 
-The machine runs. What it has not got yet, roughly in the order it will
-want them:
+The machine runs, loads and plays. What it has not got:
 
-- **A keyboard.** The matrix is complete and works; there is simply no
-  socket wired to it. The USB controller is currently a CDC device for
-  the console and picotool, and a HID host needs it back.
-- **The AY-3-8912.** 128K music is AY music, and none of it plays.
-- **Tape and microSD.** Nothing loads. The 128K menu's Tape Loader
-  reaches a screen and waits for ever.
+- **Custom tape loaders.** Speedlock, Alkatraz and every turbo loader
+  never call the ROM's `LD-BYTES`, so the trap never sees them. Reaching
+  them needs the tape replayed as a real signal on the ULA's EAR bit with
+  the original timings, which is a different feature and a larger one.
+- **Writing disks back to the card.** A `.trd` can be written to, but the
+  changes live in the PSRAM copy and go when the power does.
 - **Contention and the floating bus.** Port 0xFF returns 0xFF here.
   Reproducing the real thing needs the video and the CPU to share a
   clock, which on this board they do not.
+- **The tape input on GP45.** The hardware is there; the pin is the
+  console's RX, and they cannot both have it.
 
 ## Toolchain
 
