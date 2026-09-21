@@ -34,3 +34,5 @@ out/
 # tests/mkfixtures.py and the tests themselves.
 tests/fixtures/
 tests/out/
+out/machines/
+out/*.bin

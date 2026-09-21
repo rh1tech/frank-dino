@@ -18,9 +18,9 @@ set -- "0 48k" "1 128k" "2 plus2" "3 plus3" "4 pentagon" \
 for e in "$@"; do
     n=${e%% *}; name=${e#* }
     printf "\n=== %s (machine %s) ===\n" "$name" "$n"
-    tools/bench/boot-machine.sh "$n" "$name"
-    python3 tools/bench/render-screen.py "$OUT/$name.bank5" "$OUT/$name.png"
-    python3 tools/bench/render-screen.py "$OUT/$name.bank7" "$OUT/$name-shadow.png"
+    SETTLE=${SETTLE:-22000} tools/bench/boot-machine.sh "$n" "$name" | grep "^0x" | tr "\n" " "
+    echo
+    python3 tools/bench/find-screen.py "$OUT/$name.ram" "$name"
 done
 echo
 echo "screens in $OUT/"
