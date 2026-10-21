@@ -19,10 +19,10 @@
  * Two things are different here, and both are forced by the board.
  *
  * Theirs fills a stereo pair of byte buffers a frame at a time. This
- * machine mixes one sample at a time in run_slice() and has one PWM DAC
- * on GP46, so saa_render() returns a single mono sample and the stereo
- * halves are summed. Nothing about the generator changes; only where
- * the samples go.
+ * machine mixes one sample at a time in run_slice(), so
+ * saa_render_stereo() returns one left and one right sample per call
+ * and the mixer adds them into its own two sides. Nothing about the
+ * generator changes; only where the samples go.
  *
  * And theirs runs one tick per output sample, which is exact only when
  * the output rate is the chip's own clock over 256 -- 31250 Hz at the
@@ -116,7 +116,10 @@ void saa_select(saa_t *s, uint8_t reg);
 void    saa_write(saa_t *s, uint8_t value);
 uint8_t saa_read(const saa_t *s);
 
-/* One mono output sample, left and right summed. */
+/* One output sample a side, each at about the AY's scale. */
+void saa_render_stereo(saa_t *s, int32_t *left, int32_t *right);
+
+/* One mono output sample: the two sides averaged. */
 int32_t saa_render(saa_t *s);
 
 /* Whether anything has switched the chip on, for the boot report. */

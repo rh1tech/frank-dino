@@ -103,11 +103,11 @@
 
 // --- Video: a six-bit R2R ladder plus separate sync, GP30-GP37 ---
 //
-// The byte shifted out is VHRRGGBB — blue in the low pair, which is what
-// R48/R49 (800R/400R into the blue node) make it. Separate H and V, so
-// there is nothing to fold onto green. The ladder drives U13, an MS9288A
-// VGA-to-HDMI converter, which drives J10; there is no VGA connector on
-// this board, so HDMI is the only output and the capture stick sees it.
+// The byte shifted out is VHRRGGBB — blue in the low pair. Separate H and
+// V, so there is nothing to fold onto green. The ladder drives U16, an
+// MS9288A VGA-to-HDMI converter, which drives J9; there is no VGA
+// connector on this board, so HDMI is the only output and the capture
+// stick sees it.
 #define VGA_BASE_PIN     30
 
 // --- microSD (J3) on SPI1 — GP40-43 have no SPI0 mapping at all ---
@@ -116,27 +116,36 @@
 #define SDCARD_SCK_PIN   42
 #define SDCARD_MOSI_PIN  43
 
-// --- Console UART (J1: pin 1 TX, pin 2 GND, pin 3 RX) ---
-#define UART_TX_PIN      44
-#define UART_RX_PIN      45
+/*
+ * Audio: two PWM pins, and they are not neighbours.
+ *
+ * GP46 is the left channel and GP44 the right -- PWM_L and PWM_R on the
+ * schematic -- with the tape input between them. Each is a 1K/10 nF
+ * low-pass into half of U4, an LM358 follower, and the two outputs feed
+ * the jack (J2) directly, the MS9288A's audio inputs through S2 or
+ * JP2/JP3, and the PAM8403 (U6), which mixes them to one speaker, when
+ * S2 or JP4 enables it.
+ */
+#define AUDIO_L_PIN      46
+#define AUDIO_R_PIN      44
 
 /*
- * The tape input (J9) and the console's RX are the same net.
+ * The tape input (J8), and nothing else.
  *
- * The schematic calls it TAPE_UART_RX: the comparator on the tape
- * sheet drives the pin the UART receives on, so GP45 is one or the
- * other and never both. Loading from a real tape costs the console's
- * receive side for as long as it is switched on.
+ * JP7 picks which shaper drives the pin: Q4, a transistor with R63
+ * pulling its collector up, or U15, a CD4069 inverter biased as a
+ * linear amplifier. Either way GP45 sees a logic level. It is not
+ * shared any more -- there is no UART on this board, and the console is
+ * USB only.
  */
-#define TAPEIN_PIN       UART_RX_PIN
+#define TAPEIN_PIN       45
 
-#define SPEAKER_PIN      46     // through S2, to the jack / buzzer / HDMI audio
-#define PSRAM_CS_PIN     47     // ESP-PSRAM64H (U7) on XIP CS1, 10k pull-up
+#define PSRAM_CS_PIN     47     // ESP-PSRAM64H (U9) on XIP CS1, R39 10k pull-up
 
-// --- Debug (J5: pin 1 SWDIO, pin 2 GND, pin 3 SWCLK) ---
-// Not a GPIO; the RP2350's dedicated SWD pads. Noted here because J1 and
-// J5 are both three-pin headers a finger's width apart, and a probe on
-// the wrong one is silent in exactly the way a dead board is.
+// --- Debug (J4: pin 1 SWDIO, pin 2 GND, pin 3 SWCLK) ---
+// Not a GPIO; the RP2350's dedicated SWD pads. Noted here because it is
+// the only three-pin header left, and the only way in when USB is a
+// keyboard host rather than a console.
 
 // ============================================================================
 // Guest memory
@@ -145,7 +154,7 @@
 // The Z80 addresses 64 KB and that is the whole of it, so the guest's
 // memory is one flat array in on-chip SRAM. The RP2350B has 520 KB; this
 // takes an eighth of it and buys a read path with no cache, no bank
-// register and no PSRAM latency on the critical path. The PSRAM (U7, 8 MB)
+// register and no PSRAM latency on the critical path. The PSRAM (U9, 8 MB)
 // is untouched in stage 0 and is there for when something needs more than
 // the Z80 can address — snapshots, disk images, a second machine.
 /*

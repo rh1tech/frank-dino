@@ -6,15 +6,14 @@
 # https://github.com/rh1tech/frank-dino
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# debug.sh — OpenOCD and GDB against the Debug Probe on J5 (1 = SWDIO, 2 = GND, 3 = SWCLK).
+# debug.sh — OpenOCD and GDB against the Debug Probe on J4 (1 = SWDIO, 2 = GND, 3 = SWCLK).
 #
 #   ./debug.sh            build, flash over SWD, break at main, run
 #   ./debug.sh openocd    server only, for attaching a GDB by hand
 #   ./debug.sh gdb        attach to a server that is already up
 #
-# The probe is also the console: it enumerates a CDC port alongside
-# CMSIS-DAP, and that port is what J1's UART should be wired to. See
-# console.sh.
+# The console is not the probe's: this board has no UART, and stdio is
+# the board's own USB CDC port. See console.sh.
 #
 set -euo pipefail
 cd "$(dirname "$0")"

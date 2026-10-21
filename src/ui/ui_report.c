@@ -166,7 +166,11 @@ static void draw_footer(void) {
     ui_fill(LY.ix, y, LY.iw, LY.foot_h, C_FOOT_BG);
     ui_hline(LY.ix, y, LY.iw, C_SEP);
 
-    ui_text(LY.ix + LY.pad, y + 3, "640x480 HDMI   console 115200 on J1", C_TEXT_DIM);
+#if USB_KEYBOARD
+    ui_text(LY.ix + LY.pad, y + 3, "640x480 HDMI   keyboard on USB-A", C_TEXT_DIM);
+#else
+    ui_text(LY.ix + LY.pad, y + 3, "640x480 HDMI   console on USB-C", C_TEXT_DIM);
+#endif
 
     unsigned pass, fail;
     scr_report_tally(&pass, &fail);

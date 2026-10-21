@@ -80,6 +80,9 @@ void    ay_select(ay_t *a, uint8_t r)  { (void)a; (void)r; }
 void    ay_write(ay_t *a, uint8_t v)   { (void)a; (void)v; }
 uint8_t ay_read(const ay_t *a)         { (void)a; return 0xFF; }
 int32_t ay_render(ay_t *a, uint32_t t) { (void)a; (void)t; return 0; }
+void    ay_render_stereo(ay_t *a, uint32_t t, ay_stereo_t m, int32_t *l, int32_t *r) {
+    (void)a; (void)t; (void)m; *l = *r = 0;
+}
 
 #endif
 
@@ -89,11 +92,17 @@ void tape_repatch_rom(void)     { }
 void tape_machine_changed(void) { }
 bool tape_port_in(uint16_t p, uint8_t *v)  { (void)p; (void)v; return false; }
 bool tape_port_out(uint16_t p, uint8_t v)  { (void)p; (void)v; return false; }
+bool tape_mounted(void)         { return false; }
 
 #endif
 
+/* --- the real-tape input: never running on a host -------------------- */
+bool tapein_running(void)              { return false; }
+void tapein_frame_started(uint32_t t)  { (void)t; }
+bool tapein_level(uint32_t t)          { (void)t; return false; }
+
 /* --- audio ----------------------------------------------------------- */
-void     audio_push(int32_t s)     { (void)s; }
+void     audio_push(int32_t l, int32_t r) { (void)l; (void)r; }
 void     audio_reset_stats(void)   { }
 uint32_t audio_ring_level(void)    { return 0; }
 void     audio_set_enabled(bool o) { (void)o; }

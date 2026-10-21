@@ -35,13 +35,13 @@ clean: ## Remove the build tree
 flash: ## Flash over USB (needs BOOTSEL)
 	@./flash.sh
 
-swd: ## Flash over SWD with the Debug Probe on J5
+swd: ## Flash over SWD with the Debug Probe on J4
 	@./swd_flash.sh
 
 swd-check: ## Diagnose why the debug port is not answering
 	@./swd_check.sh
 
-console: ## Open the UART console
+console: ## Open the USB console
 	@./console.sh
 
 shot: ## Capture one frame of the board's video to out/screen.png

@@ -384,7 +384,7 @@ uint8_t *spec_basic_slot(void);
 // out inverted.
 //
 // There is no keyboard socket on this board yet, so the console is the
-// keyboard: spec_key_ascii() takes a character off the UART or USB and
+// keyboard: spec_key_ascii() takes a character off the USB console and
 // holds the matching keys down for a few frames. That is enough to reach
 // the 128K menu and type a BASIC line, and it is testable from a script,
 // which a PS/2 socket would not be.

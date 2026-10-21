@@ -172,7 +172,23 @@ uint8_t ay_read(const ay_t *ay) { return ay->reg[ay->latched]; }
 
 // ---------------------------------------------------------------------------
 
-int32_t __not_in_flash_func(ay_render)(ay_t *ay, const uint32_t ticks) {
+/*
+ * How much of each channel goes to each side.
+ *
+ * Every side's weights add up to three, so a side at full scale is
+ * always three channels' worth -- exactly what the mono mix was -- and
+ * the scaling below holds for all of them. A centred channel is one in
+ * each; a hard-panned one is two on its own side and none on the other.
+ */
+static const uint8_t pan[AY_STEREO_COUNT][2][3] = {
+    [AY_STEREO_MONO] = { { 1, 1, 1 }, { 1, 1, 1 } },
+    [AY_STEREO_ABC]  = { { 2, 1, 0 }, { 0, 1, 2 } },
+    [AY_STEREO_ACB]  = { { 2, 0, 1 }, { 0, 2, 1 } },
+};
+
+void __not_in_flash_func(ay_render_stereo)(ay_t *ay, const uint32_t ticks,
+                                           const ay_stereo_t stereo,
+                                           int32_t *const left, int32_t *const right) {
     /*
      * Chip clocks to counter ticks, with the remainder kept per chip.
      *
@@ -186,7 +202,7 @@ int32_t __not_in_flash_func(ay_render)(ay_t *ay, const uint32_t ticks) {
     const uint32_t tacts = tsum / AY_COUNTER_DIV;
     ay->tone_rem = tsum % AY_COUNTER_DIV;
 
-    if (!tacts) return ay->last;
+    if (!tacts) { *left = ay->last_l; *right = ay->last_r; return; }
 
     /*
      * Everything the inner loop needs, decoded once.
@@ -223,7 +239,7 @@ int32_t __not_in_flash_func(ay_render)(ay_t *ay, const uint32_t ticks) {
     uint16_t env_pos = ay->env_pos;
     uint32_t seed = ay->seed;
 
-    int32_t acc = 0;
+    int32_t acc[3] = { 0, 0, 0 };
 
     for (uint32_t m = 0; m < tacts; m++) {
         // libayemu's counters: count up, and on reaching the period
@@ -251,7 +267,7 @@ int32_t __not_in_flash_func(ay_render)(ay_t *ay, const uint32_t ticks) {
             // is a steady level, which is how envelope-only percussion
             // works and why it must not be silenced.
             if ((bit[c] | !t_on[c]) & (bit_n | !n_on[c]))
-                acc += ay_amp[env_on[c] ? env_row[env_pos] : vol_to_amp[vol[c]]];
+                acc[c] += ay_amp[env_on[c] ? env_row[env_pos] : vol_to_amp[vol[c]]];
         }
     }
 
@@ -272,9 +288,22 @@ int32_t __not_in_flash_func(ay_render)(ay_t *ay, const uint32_t ticks) {
      * the beeper has to stay inside a signed 16-bit sample, so each chip
      * gets an eighth: 196605/16 is 12287, twice that is 24574, and the
      * beeper's +/-6000 on top reaches 30574 -- just under 32767.
+     *
+     * Per side, now: the pan table's weights add up to three on each
+     * side, so a side reaches the same 12287 the mono mix did.
      */
-    ay->last = acc / (int32_t)tacts / 16;
-    return ay->last;
+    const uint8_t (*const p)[3] = pan[stereo < AY_STEREO_COUNT ? stereo : AY_STEREO_MONO];
+    const int32_t l = acc[0] * p[0][0] + acc[1] * p[0][1] + acc[2] * p[0][2];
+    const int32_t r = acc[0] * p[1][0] + acc[1] * p[1][1] + acc[2] * p[1][2];
+    const int32_t div = (int32_t)tacts * 16;
+    *left  = ay->last_l = l / div;
+    *right = ay->last_r = r / div;
+}
+
+int32_t ay_render(ay_t *ay, const uint32_t ticks) {
+    int32_t l, r;
+    ay_render_stereo(ay, ticks, AY_STEREO_MONO, &l, &r);
+    return l;
 }
 
 // ---------------------------------------------------------------------------

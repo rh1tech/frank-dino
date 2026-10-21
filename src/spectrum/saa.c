@@ -380,7 +380,8 @@ void saa_write(saa_t *s, const uint8_t data) {
 /* ------------------------------------------------------------------ */
 /* One sample                                                          */
 /* ------------------------------------------------------------------ */
-int32_t __not_in_flash_func(saa_render)(saa_t *s) {
+void __not_in_flash_func(saa_render_stereo)(saa_t *s, int32_t *const left,
+                                            int32_t *const right) {
     /*
      * Muted is the power-on state and the state a Profi in CP/M stays
      * in, so it is worth a fast path: the loop below would otherwise
@@ -390,7 +391,7 @@ int32_t __not_in_flash_func(saa_render)(saa_t *s) {
      * real chip keeps counting; the difference is the phase of silent
      * oscillators, which is the same trade the sync path makes.
      */
-    if (!s->output_enabled || s->sync) return 0;
+    if (!s->output_enabled || s->sync) { *left = *right = 0; return; }
 
     /* The noise generators that count for themselves. Source 3 is
      * clocked by a tone channel instead, below. */
@@ -491,13 +492,20 @@ int32_t __not_in_flash_func(saa_render)(saa_t *s) {
     }
 
     /*
-     * Mono, and scaled to sit where the AY sits.
+     * Scaled to sit where the AY sits.
      *
-     * Six channels reach about 2880 a side, so the pair reach 5760.
-     * ay_render() gives a chip at full scale about 12287, and a doubling
-     * puts this at 11520 -- near enough that the SAA and the AY do not
-     * need different volume settings to be heard together. It is a mix
+     * Six channels reach about 2880 a side. ay_render_stereo() gives a
+     * chip at full scale about 12287 a side, and four times this puts
+     * it at 11520 -- near enough that the SAA and the AY do not need
+     * different volume settings to be heard together. It is a mix
      * decision, not a measurement.
      */
-    return (out_l + out_r) * 2;
+    *left  = out_l * 4;
+    *right = out_r * 4;
+}
+
+int32_t saa_render(saa_t *s) {
+    int32_t l, r;
+    saa_render_stereo(s, &l, &r);
+    return (l + r) / 2;
 }

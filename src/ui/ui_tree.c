@@ -27,6 +27,7 @@
 #include <string.h>
 
 #include "audio.h"
+#include "ay.h"
 #include "beta.h"
 #include "tapein.h"
 #include "dck.h"
@@ -115,8 +116,14 @@ static const ui_option_t opt_turbo[] = {
 };
 
 static const ui_option_t opt_output[] = {
-    { "Jack / buzzer",     OUTPUT_JACK, "Jack" },
+    { "Jack / speaker",    OUTPUT_JACK, "Jack" },
     { "HDMI (line level)", OUTPUT_HDMI, "HDMI" },
+};
+
+static const ui_option_t opt_ay_stereo[] = {
+    { "Mono",              AY_STEREO_MONO, NULL },
+    { "ABC (A left, C right)", AY_STEREO_ABC, "ABC" },
+    { "ACB (A left, B right)", AY_STEREO_ACB, "ACB" },
 };
 
 static const ui_option_t opt_joystick[] = {
@@ -411,10 +418,12 @@ static void info_page(void) {
         UI_MK_TEXT "Menu colours   : " UI_MK_WHITE "%s\n"
         "\n"
         UI_MK_HEAD "--- Audio ---\n"
-        UI_MK_TEXT "DAC            : " UI_MK_WHITE "PWM on GP46, 8 bits at 1.97 MHz\n"
+        UI_MK_TEXT "DAC            : " UI_MK_WHITE "PWM, L on GP46, R on GP44\n"
+        UI_MK_TEXT "Carrier        : " UI_MK_WHITE "8 bits at 1.97 MHz\n"
         UI_MK_TEXT "Shaping        : " UI_MK_WHITE "8x oversampled, 1st order\n"
-        UI_MK_TEXT "Output (S2)    : " UI_MK_WHITE "%s\n"
+        UI_MK_TEXT "Output level   : " UI_MK_WHITE "%s\n"
         UI_MK_TEXT "AY-3-8912      : " UI_MK_WHITE "libayemu, 1.7734 MHz\n"
+        UI_MK_TEXT "AY stereo      : " UI_MK_WHITE "%s\n"
         UI_MK_TEXT "TurboSound     : %s\n"
         UI_MK_TEXT "Covox / SounDrive: %s / %s\n"
         UI_MK_TEXT "Ring under/over/clip: " UI_MK_WHITE "%lu / %lu / %lu\n"
@@ -450,6 +459,7 @@ static void info_page(void) {
                        : UI_MK_DIM "Off",
         opt_uitheme[settings.ui_theme < UI_THEME_COUNT ? settings.ui_theme : 0].label,
         opt_output[settings.output < OUTPUT_COUNT ? settings.output : 0].label,
+        opt_ay_stereo[settings.ay_stereo < AY_STEREO_COUNT ? settings.ay_stereo : 0].label,
         yn[settings.turbosound ? 1 : 0],
         yn[settings.covox ? 1 : 0], yn[settings.soundrive ? 1 : 0],
         (unsigned long)audio_underruns, (unsigned long)audio_overruns,
@@ -650,10 +660,11 @@ static const ui_node_t machine_kids[] = {
 };
 
 static const ui_node_t audio_kids[] = {
-    UI_RADIO("Output (S2)",       &settings.output,     opt_output, output_changed),
+    UI_RADIO("Output level",      &settings.output,     opt_output, output_changed),
     UI_INT  ("Master volume",     &settings.volume,     0, 10, 1, NULL),
     UI_INT  ("Beeper volume",     &settings.beeper_vol, 0, 10, 1, NULL),
     UI_INT  ("AY volume",         &settings.ay_vol,     0, 10, 1, NULL),
+    UI_RADIO("AY stereo",         &settings.ay_stereo,  opt_ay_stereo, NULL),
     UI_BOOL ("AY-3-8912 on a 48K", &settings.ay48,      NULL),
     UI_BOOL ("TurboSound",        &settings.turbosound, NULL),
     UI_BOOL ("Covox (#FB)",       &settings.covox,      NULL),
@@ -716,16 +727,11 @@ static const ui_node_t input_kids[] = {
     UI_BOOL ("Cursor keys as joy", &settings.cursor_as_joy, NULL),
 };
 
-/*
- * The tape input shares GP45 with the console's RX -- the schematic
- * calls the net TAPE_UART_RX -- so switching it on takes the pin and
- * nothing typed at the console arrives until it goes off again.
- */
+/* GP45 is the tape input's alone, so this only starts and stops it. */
 static void real_player_changed(void) {
     if (settings.real_player) tapein_start();
     else                      tapein_stop();
-    say(settings.real_player ? "Tape input on J9; console RX is off"
-                             : "Tape input off; console RX is back");
+    say(settings.real_player ? "Listening on J8" : "Tape input off");
 }
 
 static bool real_player_on(void) { return settings.real_player != 0; }
@@ -739,7 +745,7 @@ static const char *tapein_info(void) {
 
 static const ui_node_t storage_kids[] = {
     UI_BOOL   ("Auto-start tapes", &settings.tape_autostart, NULL),
-    UI_BOOL   ("Real tape on J9",  &settings.real_player, real_player_changed),
+    UI_BOOL   ("Real tape on J8",  &settings.real_player, real_player_changed),
     UI_ACTIONV_EN("  Tape input",  NULL, tapein_info, real_player_on),
     UI_BOOL   ("Write-protect disks", &settings.disk_wrprot, NULL),
     UI_ACTIONV("Eject tape",       tape_action, tape_info),

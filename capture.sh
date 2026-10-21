@@ -9,7 +9,7 @@
 # capture.sh — grab the board's video through the HDMI capture stick.
 #
 # This board has no VGA connector: the six-bit ladder on GP30-GP37 feeds
-# an MS9288A (U13) and the MS9288A drives J10, so HDMI is the only output
+# an MS9288A (U16) and the MS9288A drives J9, so HDMI is the only output
 # there is. A MACROSILICON MS21xx stick on the far end enumerates as
 # "USB Video" and gives 640x480 at 60 fps in UYVY — which is exactly the
 # mode the firmware emits, so a character cell survives the round trip

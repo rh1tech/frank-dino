@@ -13,7 +13,7 @@
  *
  * Everything else here loads from an image through a ROM trap, which is
  * instant and cannot fail. This is the other thing -- a cassette deck or
- * a phone on J9, and the Spectrum's own ROM doing the decoding, pulse by
+ * a phone on J8, and the Spectrum's own ROM doing the decoding, pulse by
  * pulse, exactly as it did in 1982.
  *
  * Their arrangement, kept: the input pin is sampled at a fixed high rate
@@ -25,11 +25,10 @@
  * nothing to do with when a sampler would like to run.
  *
  * ---------------------------------------------------------------------
- * This costs the console's receive side, and it is the board, not a
- * choice. J9's comparator output and J1's UART RX are the same net --
- * the schematic calls it TAPE_UART_RX -- so GP45 is either one or the
- * other. Turning this on takes the pin; the console can still print,
- * but nothing typed at it arrives.
+ * GP45 is the tape input and nothing else. JP7 chooses what drives it:
+ * Q4 with R63 pulling its collector up, or U15, a CD4069 run as a
+ * linear amplifier. With JP7 open the pin is connected to nothing, and
+ * tapein_probe() is what says so.
  * ---------------------------------------------------------------------
  */
 #pragma once
@@ -45,10 +44,10 @@
  */
 #define TAPEIN_SAMPLE_HZ 125000u
 
-/* Start sampling, taking GP45 off the console. Idempotent. */
+/* Start sampling GP45. Idempotent. */
 void tapein_start(void);
 
-/* Stop, and give the pin back. Idempotent. */
+/* Stop sampling. Idempotent. */
 void tapein_stop(void);
 
 bool tapein_running(void);
@@ -85,7 +84,7 @@ extern uint8_t tapein_last_probe;
 /*
  * What the line is doing, as a short line of text for the menu.
  *
- * "idle" when nothing is crossing the comparator, "nothing connected"
+ * "idle" when nothing is crossing the threshold, "nothing connected"
  * when the pin is not even being driven, and a frequency otherwise --
  * named when it is one the ROM is listening for. Reading it clears the
  * counters, so it shows the moment rather than the session.

@@ -153,12 +153,12 @@ static void core1_main(void) {
     scr_log(ATTR(C_TEXT_DIM, C_PANEL), "128K ROM, 8 x 16K RAM, keys over the console.");
 #endif
     if (psram_size())
-        scr_pass("PSRAM (U7, GP47)", "%lu MB mapped at %08X",
+        scr_pass("PSRAM (U9, GP47)", "%lu MB mapped at %08X",
                  (unsigned long)(psram_size() >> 20), PSRAM_BASE);
     else
-        scr_log(ATTR(C_ICON_Y, C_PANEL), "PSRAM (U7, GP47)             none found");
+        scr_log(ATTR(C_ICON_Y, C_PANEL), "PSRAM (U9, GP47)             none found");
 
-    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "Sound: beeper + %s on GP46, %u Hz PWM DAC.",
+    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "Sound: beeper + %s, stereo on GP46/GP44, %u Hz PWM DAC.",
             settings.turbosound ? "TurboSound (2x AY-3-8912)" : "AY-3-8912",
             (unsigned)AUDIO_RATE_HZ);
     scr_blank();
@@ -227,15 +227,17 @@ static void core1_main(void) {
 // ============================================================================
 int main(void) {
     /*
-     * GP46 is the input of an audio amplifier and a reset leaves it
-     * floating, which is a pin-shaped aerial in front of a speaker. This
-     * board's beeper is the Spectrum's, and until the ULA model owns it
-     * the pin is driven low — two instructions against a second of hiss
-     * at every boot.
+     * GP46 and GP44 are the inputs of an audio amplifier and a reset
+     * leaves them floating, which is a pair of pin-shaped aerials in
+     * front of a speaker. Until the DAC owns them they are driven low —
+     * a few instructions against a second of hiss at every boot.
      */
-    gpio_init(SPEAKER_PIN);
-    gpio_set_dir(SPEAKER_PIN, GPIO_OUT);
-    gpio_put(SPEAKER_PIN, 0);
+    const uint audio_pins[] = { AUDIO_L_PIN, AUDIO_R_PIN };
+    for (unsigned i = 0; i < 2; i++) {
+        gpio_init(audio_pins[i]);
+        gpio_set_dir(audio_pins[i], GPIO_OUT);
+        gpio_put(audio_pins[i], 0);
+    }
 
     vreg_disable_voltage_limit();
     vreg_set_voltage(CPU_SPEED_MHZ > 400 ? VREG_VOLTAGE_1_60 : VREG_VOLTAGE_1_30);
@@ -260,21 +262,23 @@ int main(void) {
     /*
      * The PSRAM, and the board does not run without it.
      *
-     * U7 is soldered down, not an option: the guest's disk and tape
+     * U9 is soldered down, not an option: the guest's disk and tape
      * images, the menus' framebuffer, the machines with more than
      * 128 KB and the inflate window all live over there, and a board
      * that comes up without it is a board with a fault. So this is a
      * stop, not a degradation -- there is no useful subset to fall back
      * to and pretending otherwise only hides the fault.
      *
-     * The console is the one diagnostic channel that does not itself
-     * need the PSRAM: the menus draw into it, so a board without it
-     * cannot put a message on the screen.
+     * The USB console is the one diagnostic channel that does not
+     * itself need the PSRAM: the menus draw into it, so a board without
+     * it cannot put a message on the screen. A USB_KEYBOARD build has no
+     * console at all, and there the stop shows as a board that never
+     * gets past a black screen.
      */
     if (!psram_init()) {
         for (;;) {
-            printf("[dino] FATAL: no PSRAM answered on XIP CS1 (U7, GP47).\n"
-                   "       This board cannot run without it. Check U7 and R-pullup on GP47.\n");
+            printf("[dino] FATAL: no PSRAM answered on XIP CS1 (U9, GP47).\n"
+                   "       This board cannot run without it. Check U9 and R39 on GP47.\n");
             sleep_ms(2000);
         }
     }
@@ -402,7 +406,7 @@ int main(void) {
          * The tape input follows its setting, wherever the setting was
          * changed -- the menu, the card at start-up, or a debugger.
          * One place that acts on it, so it cannot be set and not
-         * applied. It takes GP45 off the console; see tapein.h.
+         * applied.
          */
         if (settings.real_player != tapein_running())
             settings.real_player ? tapein_start() : tapein_stop();

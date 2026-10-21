@@ -28,7 +28,7 @@ being everything else the CPU can see.
 | Machines | 48K, 128K, +2, +3, Pentagon 128, Scorpion ZS-256, Profi 1024 and Timex TC2068 |
 | ROM | The stock Sinclair pair, Amstrad's +2 ROM 0 and the +3's four, the Pentagon's, and TR-DOS 5.04T |
 | Video | The ULA's 256x192 and border, doubled into 640x480 over HDMI; ULA+, Gigascreen, the Timex SCLD modes, optional scanlines |
-| Sound | Beeper, AY-3-8912, TurboSound (two of them), Covox and SounDrive, mixed to a 44.1 kHz PWM DAC on GP46 |
+| Sound | Beeper, AY-3-8912, TurboSound (two of them), SAA1099, Covox and SounDrive, mixed in stereo to two 44.1 kHz PWM DACs on GP46 and GP44; the AY in ABC, ACB or mono |
 | Input | The full matrix over USB or the console; USB gamepads; Kempston, Sinclair 1 and 2, Cursor and Fuller joysticks |
 | Storage | microSD and a USB stick: a file browser, `.tap`, `.tzx`, `.pzx`, `.sna`, `.z80`, `.trd`, `.scl`, `.dsk`, `.dck`, `.mmc`, `.hdf`, `.scr` and `.zip` |
 | Disks | A Beta Disk and a WD1793 with TR-DOS in ROM; the +3's uPD765 and +3DOS; DivMMC with esxDOS in its EEPROM. What the guest writes goes back to the card when you ask it to |
@@ -44,7 +44,7 @@ them* and mapping it over the ROM window: the CPU loads itself and jumps
 into the snapshot, and the real ROM comes back on the first fetch after
 the jump. See `src/spectrum/launch.c`.
 
-**The PSRAM is not optional.** U7 is soldered down and the firmware
+**The PSRAM is not optional.** U9 is soldered down and the firmware
 treats it that way: the disk and tape images, the menus' framebuffer,
 the machines above 128 KB and the inflate window all live there, and
 `main()` stops with a message on the console rather than coming up in
@@ -138,7 +138,7 @@ the program counter while the CPU runs.
 ```sh
 make hooks                      # once, per clone
 ./build.sh                      # build
-./swd_flash.sh                  # flash through the Debug Probe on J5
+./swd_flash.sh                  # flash through the Debug Probe on J4
 ./capture.sh shot               # photograph the screen
 ./keys.sh --tab                 # open the file browser
 ./keys.sh --down --enter        # pick something and run it
@@ -167,9 +167,9 @@ rather than Tab, because every key a Spectrum has belongs to the matrix
 | ROM | A window whose write pointer goes to a bit bucket |
 | I/O | Two function pointers, re-pointed by whatever machine is running |
 | Video | 640x480 at 60 Hz — 80x30 text, or the ULA's screen |
-| Sound | A PWM DAC on GP46, fed 44100 samples a second by the frame loop |
+| Sound | Two PWM DACs, left on GP46 and right on GP44, fed 44100 stereo samples a second by the frame loop |
 | Storage | microSD on SPI1, and 8 MB of PSRAM for what will not fit in SRAM |
-| Console | UART0 on J1, and USB CDC, both at 115200 |
+| Console | USB CDC on the USB-C socket. There is no UART; a `USB_KEYBOARD` build has no console at all |
 
 ## How the bus engine works
 
@@ -260,7 +260,7 @@ Three things plug into the board, and there is a script for each.
 
 ### SWD — flashing and debugging
 
-A Raspberry Pi Debug Probe on **J5** (pin 1 SWDIO, pin 2 GND, pin 3
+A Raspberry Pi Debug Probe on **J4** (pin 1 SWDIO, pin 2 GND, pin 3
 SWCLK).
 
 ```sh
@@ -290,33 +290,35 @@ the copy runs — `monitor reset halt; load; break main` in that order, as
 `debug.sh` does it.
 
 **If OpenOCD says `Error connecting DP: cannot read IDR`,** check the
-cable orientation before anything else. J1 and J5 are both three-pin
-JST-SH headers a few centimetres apart with GND in the middle, so a cable
-plugged in backwards keeps its ground and swaps the other two — which
-looks exactly like an unpowered board. A Debug Probe's own connectors use
-the opposite order from these (the Pico convention is SWCLK, GND, SWDIO),
-so a straight-through cable needs turning round.
+cable orientation before anything else. J4 has GND in the middle, so a
+cable plugged in backwards keeps its ground and swaps the other two —
+which looks exactly like an unpowered board. A Debug Probe's own
+connectors use the opposite order from J4's (the Pico convention is
+SWCLK, GND, SWDIO), so a straight-through cable needs turning round.
 
-### UART — the console
+### USB — the console
 
-stdio is **UART0 on J1** at 115200 8N1: pin 1 TX, pin 2 GND, pin 3 RX.
+stdio is **USB CDC** on the board's USB-C socket (J5), with S1 set to
+device mode. There is no UART on this board: GP44 is the right audio
+channel and GP45 the tape input, and nothing brings a UART out.
 
 ```sh
-./console.sh                    # picocom or screen on the probe's CDC port
+./console.sh                    # picocom or screen on the board's CDC port
 ```
 
-The Debug Probe carries a UART alongside CMSIS-DAP and enumerates it as a
-CDC port, so one cable does both jobs — probe UART TX to J1 **pin 3**,
-probe UART RX to J1 **pin 1**, grounds common. Both ends call their own
-pin 1 "TX", so this one needs crossing.
+`console.sh` and `keys.sh` find the board by its USB descriptor rather
+than taking the first `/dev/cu.usbmodem*`, because a Debug Probe
+enumerates a CDC port of its own — and on this board that port is
+connected to nothing, so picking it is silent.
 
-Note that GP45 is shared with the tape input. A tape lead and a console
-cable cannot both be attached.
+A `USB_KEYBOARD=ON` build has no console at all: S1 points the USB
+controller at the hub, the firmware is a host, and the screen is the only
+report there is. Flash it over SWD.
 
 ### HDMI capture — seeing the screen from a script
 
-This board has no VGA connector: the ladder feeds an MS9288A (U13) which
-drives J10, so HDMI is the only output. A MACROSILICON MS21xx capture
+This board has no VGA connector: the ladder feeds an MS9288A (U16) which
+drives J9, so HDMI is the only output. A MACROSILICON MS21xx capture
 stick on the far end enumerates as `USB Video` and gives **640x480 at
 60 fps** in UYVY — the same mode the firmware emits, so a character cell
 survives the round trip and an 80x30 report is legible in a still.
@@ -343,8 +345,6 @@ The machine runs, loads and plays. What it has not got:
 - **Contention and the floating bus.** Port 0xFF returns 0xFF here.
   Reproducing the real thing needs the video and the CPU to share a
   clock, which on this board they do not.
-- **The tape input on GP45.** The hardware is there; the pin is the
-  console's RX, and they cannot both have it.
 
 ## Toolchain
 

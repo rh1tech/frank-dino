@@ -7,20 +7,22 @@
  */
 
 /*
- * One speaker pin, and now more than one thing wanting it.
+ * Two PWM pins, a left and a right.
  *
- * GP46 is all the audio this board has — S2 routes it to the HDMI
- * encoder's analogue inputs, the 3.5 mm jack or the buzzer, one at a
- * time. While the beeper was the only source it could stay what a real
- * Spectrum's is: a single bit, written straight to the pin by the port
- * handler. Two AY chips cannot be a single bit, so the pin becomes a PWM
- * DAC — a carrier of a few hundred kHz whose duty is rewritten at the
- * sample rate by DMA — and the beeper joins the mix as a level rather
- * than driving the pin itself.
+ * GP46 is the left channel and GP44 the right. Each goes through a 1K
+ * and 10 nF low-pass (R17/C5, R18/C6) into one half of an LM358 wired as
+ * a follower, and the follower outputs -- AUDIO_L and AUDIO_R -- feed
+ * everything at once: the 3.5 mm jack (J2) always, the MS9288A's audio
+ * inputs when S2 connects them, and the PAM8403 and its speaker, which
+ * sum the two back to mono, when S2 enables it.
  *
- * Losing that directness is a real cost and worth naming: the beeper used
- * to reach the transducer with the exact edges the CPU produced, and now
- * it is sampled like everything else.
+ * Each pin is a PWM DAC -- a carrier of a couple of MHz whose duty is
+ * rewritten by DMA -- and the beeper joins the mix as a level rather
+ * than driving a pin itself.
+ *
+ * Losing that directness is a real cost and worth naming: the beeper
+ * would reach the transducer with the exact edges the CPU produced if it
+ * drove a pin, and here it is sampled like everything else.
  *
  * The samples are produced by core 1, in step with the Z80.
  *
@@ -53,10 +55,11 @@
 #define AUDIO_BLOCK 2048u
 
 /*
- * Take over GP46 and start the DAC.
+ * Take over GP46 and GP44 and start both DACs.
  *
- * Claims two DMA channels and one DMA pacing timer, and must run before
- * core 1 starts producing samples.
+ * Claims four DMA channels -- a chained pair per side -- and one DMA
+ * pacing timer that both pairs share, and must run before core 1 starts
+ * producing samples.
  */
 void audio_init(void);
 
@@ -70,15 +73,16 @@ void audio_init(void);
 void audio_task(void);
 
 /*
- * Push one finished sample. Core 1 only, called once per audio slice.
+ * Push one finished stereo sample. Core 1 only, called once per audio
+ * slice.
  *
- * Signed, roughly +/-15000 before clipping. Dropped silently if the ring
- * is full, which means core 0 has stopped draining and the sound is
- * already broken.
+ * Signed, roughly +/-15000 a side before clipping. Dropped silently if
+ * the ring is full, which means core 0 has stopped draining and the
+ * sound is already broken.
  */
-void audio_push(int32_t sample);
+void audio_push(int32_t left, int32_t right);
 
-/* How many samples are queued, for the underrun/overrun counters. */
+/* How many sample pairs are queued, for the underrun/overrun counters. */
 uint32_t audio_queued(void);
 
 /* Silence without stopping the carrier: no click, no half-configured state. */

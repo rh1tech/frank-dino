@@ -6,39 +6,43 @@
 # https://github.com/rh1tech/frank-dino
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# console.sh — open the firmware's UART console.
+# console.sh — open the firmware's console.
 #
-# stdio is UART0 on J1 (pin 1 = TX, pin 3 = RX, pin 2 = GND) at 115200 8N1.
-# The Debug Probe carries a UART alongside CMSIS-DAP and enumerates it as a
-# second CDC port, so one cable does both jobs: probe UART TX to J1 pin 3,
-# probe UART RX to J1 pin 1, grounds common.
+# stdio is USB CDC on the board's own USB-C socket (J5), with S1 set to
+# device mode. There is no UART on this board, so a Debug Probe's UART
+# port has nothing to talk to; the probe is for SWD on J4 only.
+#
+# A USB_KEYBOARD build has no console at all: the USB controller is a
+# host then, and the screen is the only report.
 #
 # Usage: ./console.sh [port] [baud]
 #
-# With no arguments it takes the single /dev/cu.usbmodem* it can find,
-# which is the probe when nothing else is plugged in. Two of them is
-# ambiguous rather than guessable, so it says so instead of picking.
+# With no arguments it finds the board by USB descriptor -- Raspberry Pi's
+# vendor ID, and not the Debug Probe, which enumerates a CDC port of its
+# own that is easy to pick by mistake and silent when you do.
 #
 set -euo pipefail
 
 BAUD="${2:-115200}"
-PORT="${1:-}"
+PORT="${1:-${CONSOLE_PORT:-}}"
 
 if [[ -z "${PORT}" ]]; then
-    # No mapfile: macOS still ships bash 3.2, and this script has to run
-    # on the machine the board is plugged into.
-    CANDIDATES=()
-    for p in /dev/cu.usbmodem*; do
-        [[ -e "$p" ]] && CANDIDATES+=("$p")
-    done
-    case "${#CANDIDATES[@]}" in
-        0) echo "ERROR: no /dev/cu.usbmodem* found. Is the Debug Probe attached?" >&2
-           exit 1 ;;
-        1) PORT="${CANDIDATES[0]}" ;;
-        *) echo "ERROR: more than one candidate port; name one:" >&2
-           printf '  %s\n' "${CANDIDATES[@]}" >&2
-           exit 1 ;;
-    esac
+    PORT="$(python3 - <<'PY' 2>/dev/null || true
+import sys
+from serial.tools import list_ports
+c = [p.device for p in list_ports.comports()
+     if p.vid == 0x2E8A and 'Debug Probe' not in (p.description or '')]
+print(c[0] if len(c) == 1 else '')
+sys.exit(0 if len(c) == 1 else 1)
+PY
+)"
+fi
+
+if [[ -z "${PORT}" ]]; then
+    echo "ERROR: could not pick the board's CDC port. Is USB-C (J5) plugged in and" >&2
+    echo "       S1 set to device mode? Name the port to override; candidates:" >&2
+    for p in /dev/cu.usbmodem*; do [[ -e "$p" ]] && echo "  $p" >&2; done
+    exit 1
 fi
 
 echo "Console: ${PORT} @ ${BAUD} (ctrl-a k to quit screen, ctrl-] for picocom)"

@@ -69,8 +69,8 @@ if [[ -n $best ]]; then
 That is slower than an RP2350 should need. A sound SWD pair runs at
 5 MHz; needing to back off means the connection is marginal -- a
 high-resistance joint or too much capacitance on SWDIO/SWCLK -- and it
-will get worse with temperature and handling. Worth reflowing U5 pins
-33 and 34, and J5, while it is still only inconvenient.
+will get worse with temperature and handling. Worth reflowing U7 pins
+33 and 34, and J4, while it is still only inconvenient.
 
 The scripts here default to ADAPTER_SPEED=1000 for that reason.
 TXT
@@ -95,17 +95,17 @@ reason this script sweeps.
 
 On dino_z80 each SWD net has exactly two nodes and no vias, all on F.Cu:
 
-    J5 pin 1  <--- 5 segments, top layer --->  U5 pin 34  (SWDIO)
-    J5 pin 3  <--- 3 segments, top layer --->  U5 pin 33  (SWCLK)
+    J4 pin 1  <------------------------------>  U7 pin 34  (SWDIO)
+    J4 pin 3  <------------------------------>  U7 pin 33  (SWCLK)
 
-Measure, powered, with nothing in J5 -- the RP2350 has a fixed pull-up on
+Measure, powered, with nothing in J4 -- the RP2350 has a fixed pull-up on
 SWDIO and a fixed pull-down on SWCLK:
 
-    J5 pin 1 should sit near 3.3 V
-    J5 pin 3 should sit near 0 V
+    J4 pin 1 should sit near 3.3 V
+    J4 pin 3 should sit near 0 V
 
-Both the same, or both floating, means J5 is not reaching the chip.
-Then, power off, check continuity J5.1-U5.34 and J5.3-U5.33; both ends
+Both the same, or both floating, means J4 is not reaching the chip.
+Then, power off, check continuity J4.1-U7.34 and J4.3-U7.33; both ends
 are on the top side and need no rework to probe.
 
 Until it is fixed, flashing does not need SWD:

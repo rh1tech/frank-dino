@@ -12,11 +12,12 @@
 # target is doing, so a firmware that has faulted into lockup still takes
 # a new image without anyone touching the board.
 #
-# Wiring: J5 on the board, pin 1 = SWDIO, pin 2 = GND, pin 3 = SWCLK.
+# Wiring: J4 on the board, pin 1 = SWDIO, pin 2 = GND, pin 3 = SWCLK.
 #
-# J1 next to it is the UART and has the same three-pin footprint. A probe
-# on the wrong one gives "Error connecting DP: cannot read IDR" and a
-# silent console at the same time, which looks exactly like a dead board.
+# A Debug Probe's own connector is the other way round (SWCLK, GND,
+# SWDIO), so a straight-through cable swaps the two signals and gives
+# "Error connecting DP: cannot read IDR" -- which looks exactly like a
+# dead board.
 #
 # Usage: ./swd_flash.sh [image.elf] [--reset-only]
 #

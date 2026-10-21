@@ -13,15 +13,15 @@ choice, and nothing else may use these pins.
 | GPIO  | Net      | Z80 pin | Direction | Notes |
 |-------|----------|---------|-----------|-------|
 | 0-15  | A0-A15   | 30-40, 1-5 | in     | Direct, no series resistors |
-| 16-23 | D0-D7    | 14, 15, 12, 8, 7, 9, 10, 13 | bidir | Through R10-R17, 200R each |
+| 16-23 | D0-D7    | 14, 15, 12, 8, 7, 9, 10, 13 | bidir | Through R9-R16, 200R each |
 | 24    | ~MREQ    | 19      | in        | |
 | 25    | ~RD      | 21      | in        | |
 | 26    | ~WR      | 22      | in        | |
-| 27    | ~M1      | 27      | in        | Through R9, 1K |
+| 27    | ~M1      | 27      | in        | Through R8, 1K |
 | 28    | CLK      | 6       | out       | Through U1, a 74HCT125 on 5V |
-| 29    | ~RESET   | 26      | out       | R8 10K pull-**down**, and D1 |
-| 38    | ~INT     | 16      | out       | R6 10K pull-up |
-| 39    | ~NMI     | 17      | out       | R7 10K pull-up |
+| 29    | ~RESET   | 26      | out       | R7 10K pull-**down**, and D1 through R1 |
+| 38    | ~INT     | 16      | out       | R5 10K pull-up |
+| 39    | ~NMI     | 17      | out       | R6 10K pull-up |
 
 Every one of those is inside GP0-GP31 except the two interrupt lines, and
 that is worth knowing rather than noticing: one 32-bit read of SIO's
@@ -41,12 +41,12 @@ CMOS level, near VCC, and 3.3V will not reliably reach it. U1 is a
 drives it happily, and its output swings to 5V. Only channel 1 is used;
 the other three have their inputs grounded and their outputs disabled.
 
-R5 is a 10K pull-down on the GPIO side, so the clock is defined low before
+R4 is a 10K pull-down on the GPIO side, so the clock is defined low before
 the firmware claims the pin.
 
 ### ~RESET is pulled down, not up
 
-R8 is 10K to ground, which means the Z80 is held in reset from power-on
+R7 is 10K to ground, which means the Z80 is held in reset from power-on
 until the firmware drives GP29 high. That is the right way round: a board
 that has just been flashed, or whose firmware has faulted, leaves the CPU
 stopped rather than running on a bus nobody is answering. D1 is on the
@@ -90,24 +90,24 @@ than a HALT: a spin keeps fetching from an address the trace can show.
 
 | GPIO | Function | Part |
 |------|----------|------|
-| 30 | Blue, LSB (800R) | R48 → U13 pin 39 |
-| 31 | Blue, MSB (400R) | R49 |
-| 32 | Green, LSB (800R) | R50 → U13 pin 44 |
-| 33 | Green, MSB (400R) | R51 |
-| 34 | Red, LSB (800R) | R52 → U13 pin 48 |
-| 35 | Red, MSB (400R) | R53 |
-| 36 | HSYNC | R59 → U13 pin 34, and TP7 |
-| 37 | VSYNC | R60 → U13 pin 35, and TP8 |
+| 30 | Blue, LSB (806R) | R64 → R74 75R, C69 → U16 pin 39 |
+| 31 | Blue, MSB (402R) | R65 |
+| 32 | Green, LSB (806R) | R66 → R73 75R, C70 → U16 pin 44 |
+| 33 | Green, MSB (402R) | R67 |
+| 34 | Red, LSB (806R) | R68 → R70 75R, C71 → U16 pin 48 |
+| 35 | Red, MSB (402R) | R69 |
+| 36 | HSYNC | R75 → U16 pin 34, and TP7 |
+| 37 | VSYNC | R76 → U16 pin 35, and TP8 |
 | 38 | ~INT | the Z80's, see above |
 | 39 | ~NMI | the Z80's, see above |
 | 40 | SD DAT0 / MISO | J3 microSD, SPI1 |
 | 41 | SD CD/DAT3 / ~CS | J3 |
 | 42 | SD CLK / SCK | J3 |
 | 43 | SD CMD / MOSI | J3 |
-| 44 | UART0 TX | J1 pin 1 |
-| 45 | UART0 RX | J1 pin 3, **shared with the tape input** |
-| 46 | Speaker | through S2, to the jack / buzzer / HDMI audio |
-| 47 | PSRAM ~CS | U7 ESP-PSRAM64H, XIP CS1, 10K pull-up |
+| 44 | Audio, **right** (PWM_R) | R18/C6 → U4B |
+| 45 | Tape input (TAPE_IN) | JP7: Q4/R63 or U15, from J8 |
+| 46 | Audio, **left** (PWM_L) | R17/C5 → U4A |
+| 47 | PSRAM ~CS | U9 ESP-PSRAM64H, XIP CS1, R39 10K pull-up |
 
 Note the two differences from frank-xt8086's map, both of which would be
 silent faults rather than build errors:
@@ -115,9 +115,44 @@ silent faults rather than build errors:
 - **GP38/GP39 are ~INT and ~NMI, not I2C.** On xt8086 they are the
   DS3231's bus. This board has no RTC, and a board header that declared
   I2C on them would invite an SDK helper to drive two of the CPU's inputs.
-- **GP45 is shared between the console's RX and the tape input.** Q5's
-  collector and R47's pull-up sit on the same net as J1 pin 3. A tape lead
-  and a console cable cannot both be attached.
+- **GP44/GP45 are not a UART.** On xt8086 they are the console. Here
+  GP44 is the right audio channel and GP45 the tape input, and there is
+  no UART header at all — the console is USB only. `boards/frank_dino.h`
+  declares no default UART for that reason.
+
+## Audio
+
+Stereo, from two PWM pins that are not neighbours: **GP46 is left and
+GP44 is right**, with the tape input between them. They are slices 11
+and 10 of the PWM, both on channel A, so the firmware drives them with a
+DMA pair each, paced by one shared timer so the two sides stay locked.
+
+Each pin goes through a single-pole low-pass — 1K and 10 nF, about
+16 kHz (R17/C5 left, R18/C6 right) — into half of U4, an LM358 wired as
+a follower on 5V. The follower outputs, AUDIO_L and AUDIO_R, go three
+ways:
+
+| Destination | How | Notes |
+|---|---|---|
+| J2, the 3.5 mm jack | Always: 10 µF and 402R per side (C13/R23, C14/R24) | Headphones or a line input |
+| U16, the MS9288A's audio inputs | S2 switches 1 and 2, or JP2/JP3 bridged | 1 µF and 10K per side; a line input, which wants about a third of full scale |
+| U6, a PAM8403, and LS1 | S2 switch 3, or JP4 bridged, enables it | R25/R26 sum the two sides to one mono speaker |
+
+Nothing reports which of these are switched in, which is why the menu's
+**Output level** setting exists: full scale for headphones and the
+speaker, a third of it for HDMI.
+
+## Tape input
+
+J8 is a 3.5 mm jack; its tip goes through C62/C63 to two alternative
+shapers, and **JP7** picks which one drives GP45:
+
+- **Q4** (BC850), its collector pulled up by R63 — TAPE_Q.
+- **U15**, a CD4069UB with one inverter biased as a linear amplifier —
+  TAPE_U.
+
+With JP7 open GP45 is connected to nothing, which is the case the tape
+input's pin probe exists to report.
 
 ## Colour depth
 
@@ -129,8 +164,8 @@ capture stick uniformly dim, which frank-xt8086 found the expensive way.
 
 ## Video path
 
-There is **no VGA connector on this board**. The ladder drives U13, an
-MS9288A VGA-to-HDMI converter, and the MS9288A drives J10. HDMI is the
+There is **no VGA connector on this board**. The ladder drives U16, an
+MS9288A VGA-to-HDMI converter, and the MS9288A drives J9. HDMI is the
 only output there is, which makes the capture stick the only way to see
 the screen and `capture.sh` the way to do it from a script.
 
@@ -138,7 +173,7 @@ Separate H and V sync, so there is nothing to fold onto green.
 
 ## QSPI
 
-Flash (U6, W25Q128JVPIQ, 16 MB) on CS0, PSRAM (U7, ESP-PSRAM64H, 8 MB) on
+Flash (U8, W25Q128JVPIQ, 16 MB) on CS0, PSRAM (U9, ESP-PSRAM64H, 8 MB) on
 CS1 selected by GP47. Stage 0 uses neither beyond the flash the image is
 programmed into: the guest's 64 KB lives in on-chip SRAM, because the Z80
 cannot address more and the read path is on every bus cycle.
@@ -147,27 +182,25 @@ cannot address more and the read path is on every bus cycle.
 
 | Header | Pin 1 | Pin 2 | Pin 3 |
 |--------|-------|-------|-------|
-| J5 | SWDIO | GND | SWCLK |
-| J1 | UART TX (out) | GND | UART RX (in) |
+| J4 | SWDIO | GND | SWCLK |
 
-Both are three-pin JST-SH footprints, and this is the trap on this board.
-They are the same size, they are a few centimetres apart, and **both have
-GND in the middle** — so a cable plugged in backwards still has its ground
-right and fails silently in exactly the same way an unpowered board does:
-`Error connecting DP: cannot read IDR` from OpenOCD, and a console that
-never prints.
+That is the only debug header. **There is no UART**: the console is USB
+CDC on J5, the USB-C socket, with S1 pointing U2 (a TS3USB221) at it. S1
+the other way gives the RP2350's USB to U5, the hub behind J6's two USB-A
+ports — which is what a `USB_KEYBOARD` build needs, and why that build
+has no console at all.
 
 A Raspberry Pi Debug Probe's own connectors are wired the other way round
-from these — the Pico convention is SWCLK, GND, SWDIO — so a
-straight-through cable swaps SWDIO and SWCLK here. J1 needs a crossover
-for the same reason: probe TX goes to J1 pin 3 and probe RX to J1 pin 1,
-because both ends call their own pin 1 "TX".
+from J4 — the Pico convention is SWCLK, GND, SWDIO — so a
+straight-through cable swaps SWDIO and SWCLK here, keeps its ground, and
+fails exactly the way an unpowered board does: `Error connecting DP:
+cannot read IDR` from OpenOCD.
 
 ## A note on the address bus
 
 A0-A15 run directly from the Z80's 5V outputs to RP2350B inputs with no
 series resistors and no level shifting; only D0-D7 have the 200R of
-R10-R17. A Z84C00 at 5V drives its outputs close to the rail, which is
+R9-R16. A Z84C00 at 5V drives its outputs close to the rail, which is
 above the RP2350's absolute maximum of IOVDD + 0.3V.
 
 This is the board as built and it works — it is the same arrangement much

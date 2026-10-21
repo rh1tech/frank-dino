@@ -90,16 +90,21 @@ printed.
 
 ### Audio
 
-Everything is mixed to one 44100 Hz PWM DAC on GP46, sampled 882 times
-per frame by the frame loop.
+Everything is mixed in stereo to two 44100 Hz PWM DACs — left on GP46,
+right on GP44 — sampled 882 times per frame by the frame loop. Both feed
+the 3.5 mm jack directly, the HDMI audio and the speaker through S2; the
+speaker amplifier sums them back to mono.
 
 | Setting | What it does |
 |---|---|
 | **Master / Beeper / AY volume** | 0-10 each. The beeper sits at about a quarter of full scale, which is the compromise every emulator makes: on real hardware it is much louder than the AY, and reproducing that puts every 128K tune under its own sound effects. |
+| **AY stereo** | Where the AY's three channels sit. **ABC** (the default) puts A left, B in the middle and C right, as the Pentagon and most clones with stereo did; **ACB** puts C in the middle and B right; **Mono** is all three in both, as a Sinclair 128 was. A channel panned hard to one side is twice as loud there as it is in mono, so a side's peak is the same in every mode. TurboSound's second chip is panned the same way. |
+| **Output level** | Full scale for headphones and the speaker, or a third of it for HDMI, whose line inputs distort on a full-scale signal. Nothing on the board can tell which is listening, so this has to be told. |
 | **AY-3-8912 on a 48K** | Sinclair's 48K had none; half the clones and most add-on boards put one on the same two ports, and a fair amount of 48K music expects to find it. |
 | **TurboSound** | A second AY behind the same pair of ports, selected by writing 0xFF or 0xFE to 0xFFFD. On by default: software that does not know about it never writes those values, and the 128K ROM only ever names registers 0-13. |
 | **Covox** | An 8-bit DAC on port 0xFB. |
-| **SounDrive** | Four of them, on 0x0F, 0x1F, 0x4F and 0x5F. |
+| **SounDrive** | Four of them: 0x0F and 0x1F on the left, 0x4F and 0x5F on the right. |
+| **SAA1099** | A Philips SAA1099 on the 0xFF family, as the Profi has. It is a stereo chip in its own right and pans its own six channels. |
 
 Covox and SounDrive are off by default, because a machine that never had
 one must not turn stray writes to those ports into noise.

@@ -1610,66 +1610,89 @@ __force_inline static void run_slice(const uint32_t tstates, const uint32_t num)
     frame_pos += tstates;
 
     /*
-     * The mix, once per sample.
+     * The mix, once per sample, a side at a time.
      *
      * The beeper is read here rather than pushed by the port handler, so
      * its level is whatever it was at the end of the slice — which is
      * the sample it belongs in. The AYs are advanced by exactly the
      * cycles this slice covered, so nothing drifts against anything.
      */
-    int32_t s = 0;
+    int32_t l = 0, r = 0;
 
     if (likely(have_ay())) {
         const uint32_t ticks = ay_ticks_for_one_sample();
-        int32_t a = ay_render(&ay[0], ticks);
-        if (settings.turbosound) a += ay_render(&ay[1], ticks);
-        s += a * settings.ay_vol / 10;
+        const ay_stereo_t pan = (ay_stereo_t)settings.ay_stereo;
+        int32_t al, ar;
+        ay_render_stereo(&ay[0], ticks, pan, &al, &ar);
+        if (settings.turbosound) {
+            int32_t bl, br;
+            ay_render_stereo(&ay[1], ticks, pan, &bl, &br);
+            al += bl; ar += br;
+        }
+        l += al * settings.ay_vol / 10;
+        r += ar * settings.ay_vol / 10;
     }
 
-    /* The SAA sits at the AY's scale, so it shares its volume. */
-    if (unlikely(settings.saa)) s += saa_render(&saa) * settings.ay_vol / 10;
+    /* The SAA sits at the AY's scale, so it shares its volume. It is a
+     * stereo chip in its own right and pans itself. */
+    if (unlikely(settings.saa)) {
+        int32_t sl, sr;
+        saa_render_stereo(&saa, &sl, &sr);
+        l += sl * settings.ay_vol / 10;
+        r += sr * settings.ay_vol / 10;
+    }
 
     /*
-     * The beeper at about a quarter of full scale.
+     * The beeper at about a quarter of full scale, in the middle.
      *
      * On a real Spectrum the beeper is considerably louder than the AY,
      * and reproducing that faithfully makes every 128K game's music sit
      * under its own sound effects. This is the compromise every emulator
      * makes; it is a mix decision, not a measurement.
      */
-    s += (spec_beeper ? 6000 : -6000) * settings.beeper_vol / 10;
+    const int32_t beep = (spec_beeper ? 6000 : -6000) * settings.beeper_vol / 10;
+    l += beep;
+    r += beep;
 
     // The extra DACs, if the machine has been told it has them. Each is a
-    // byte centred on 0x80, at a quarter scale so four of them together
-    // still leave room for everything else.
-    if (unlikely(settings.covox)) s += ((int32_t)covox_level - 128) * 64;
-    if (unlikely(settings.soundrive))
-        for (unsigned i = 0; i < 4; i++) s += ((int32_t)sd_level[i] - 128) * 32;
+    // byte centred on 0x80 at a quarter of full scale. Covox is one DAC
+    // and goes in the middle; SounDrive is two a side -- #0F and #1F
+    // left, #4F and #5F right, which is how the card was wired -- so a
+    // side of it peaks where all four did when this was mono.
+    if (unlikely(settings.covox)) {
+        const int32_t c = ((int32_t)covox_level - 128) * 64;
+        l += c;
+        r += c;
+    }
+    if (unlikely(settings.soundrive)) {
+        l += (((int32_t)sd_level[0] - 128) + ((int32_t)sd_level[1] - 128)) * 64;
+        r += (((int32_t)sd_level[2] - 128) + ((int32_t)sd_level[3] - 128)) * 64;
+    }
 
     /*
      * The test tone replaces the mix rather than joining it, so what is
      * measured is the path and not the path plus whatever the machine
-     * happened to be doing.
+     * happened to be doing. Both sides, in phase.
      */
     if (unlikely(test_tone_on)) {
         if (++test_tone_phase >= TEST_TONE_SAMPLES) test_tone_phase = 0;
-        s = test_tone_wave[test_tone_phase];
+        l = r = test_tone_wave[test_tone_phase];
     }
 
     /*
      * Master volume and the output's own headroom, in one step.
      *
      * The second divisor is what the board does not have: there is no
-     * attenuator between GP46 and the MS9288A, so a full-scale mix
-     * arrives at its line input about three times too big and everything
-     * sounds distorted. The jack and the buzzer want it full scale.
-     * Which of the two it is, is a switch nothing can read -- see
-     * output_t in settings.h.
+     * attenuator between the LM358 followers and the MS9288A, so a
+     * full-scale mix arrives at its line input about three times too big
+     * and everything sounds distorted. Headphones and the speaker want
+     * it full scale. Which of the two is listening is a switch nothing
+     * can read -- see output_t in settings.h.
      */
     static const uint8_t out_scale[OUTPUT_COUNT] = { 10, 3 };   // over ten
-    const uint32_t scale = settings.volume *
-                           out_scale[settings.output < OUTPUT_COUNT ? settings.output : 0];
-    audio_push(s * (int32_t)scale / 100);
+    const int32_t scale = (int32_t)(settings.volume *
+                          out_scale[settings.output < OUTPUT_COUNT ? settings.output : 0]);
+    audio_push(l * scale / 100, r * scale / 100);
 }
 
 static uint32_t tune_once(void) {

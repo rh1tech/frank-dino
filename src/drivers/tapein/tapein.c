@@ -14,7 +14,6 @@
 #include <string.h>
 
 #include <hardware/gpio.h>
-#include <hardware/uart.h>
 #include <pico/stdlib.h>
 #include <pico/time.h>
 
@@ -114,19 +113,11 @@ void tapein_start(void) {
     frame_bits = 0;
 
     /*
-     * Take the pin off the UART properly.
-     *
-     * gpio_init() alone points the mux at SIO, which is enough to READ
-     * the pin -- but the UART is still enabled behind it with this as
-     * its RX, and anything that re-runs stdio setup takes it back. So
-     * the receive side is shut down first and the pin claimed second.
-     * The console can still print: that is GP44, which is untouched.
-     *
-     * No pull, because the comparator on J9 drives the line both ways.
-     * A pull would also hide the one fault worth seeing -- a pin that
-     * nothing is driving at all, which tapein_probe() tests for.
+     * No pull, because the shaper JP7 selects drives the line itself --
+     * R63 on Q4's collector, or U15's output. A pull would also hide the
+     * one fault worth seeing -- a pin that nothing is driving at all,
+     * which tapein_probe() tests for.
      */
-    uart_set_fifo_enabled(uart0, false);
     gpio_set_function(TAPEIN_PIN, GPIO_FUNC_SIO);
     gpio_init(TAPEIN_PIN);
     gpio_set_dir(TAPEIN_PIN, GPIO_IN);
@@ -145,9 +136,6 @@ void tapein_stop(void) {
     if (!running) return;
     cancel_repeating_timer(&timer);
     running = false;
-    /* The pin goes back to the UART, and the receive side with it. */
-    gpio_set_function(TAPEIN_PIN, GPIO_FUNC_UART);
-    uart_set_fifo_enabled(uart0, true);
 }
 
 /*
@@ -155,10 +143,12 @@ void tapein_stop(void) {
  *
  * The fault this exists for is silence: a sampler that runs perfectly
  * and reads the same level for ever tells you nothing about whether it
- * is looking at the right pin. A line a comparator is driving holds its
+ * is looking at the right pin. A line something is driving holds its
  * level against an internal pull; a line nothing is connected to
  * follows the pull wherever it is put. That distinction is the whole
  * test, and it is the one pico-speccy's own pin-connection probes make.
+ * On this board it mostly answers for JP7: with neither side of it
+ * bridged, GP45 is connected to nothing.
  *
  * Bit 0: the level with a pull-DOWN. Bit 1: with a pull-UP.
  *   0b10  follows the pulls   -- floating, nothing is driving it
@@ -202,7 +192,7 @@ void tapein_stats(char *out, const unsigned len) {
     /*
      * How much of the time the line is being pulled down.
      *
-     * This is the number to turn the volume by. The comparator idles
+     * This is the number to turn the volume by. The shaper idles
      * high, so silence is 0% and a signal big enough to swing it fully
      * is near 50%. Anything in between is a level too low to load with,
      * and -- unlike a frequency, which needs a signal before it means

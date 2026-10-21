@@ -44,7 +44,7 @@ gap = float(gap)
 #
 # With a Debug Probe attached there are two /dev/cu.usbmodem* and picking
 # the wrong one is silent: keystrokes go to the probe's UART, which on
-# this board is wired for output only, so nothing happens and nothing
+# this board is connected to nothing, so nothing happens and nothing
 # complains. They are trivial to tell apart by USB descriptor -- the
 # probe says "Debug Probe (CMSIS-DAP)" and the board says "Pico".
 if not port:

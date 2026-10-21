@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "ay.h"
 #include "ff.h"
 #include "spectrum.h"
 
@@ -38,6 +39,7 @@ static const field_t fields[] = {
     { "volume",         &settings.volume,         10 },
     { "beeper_vol",     &settings.beeper_vol,     10 },
     { "ay_vol",         &settings.ay_vol,         10 },
+    { "ay_stereo",      &settings.ay_stereo,      AY_STEREO_COUNT - 1 },
     { "ay48",           &settings.ay48,           1  },
     { "turbosound",     &settings.turbosound,     1  },
     { "covox",          &settings.covox,          1  },
@@ -82,6 +84,13 @@ void settings_defaults(void) {
         .volume         = 8,
         .beeper_vol     = 8,
         .ay_vol         = 8,
+        /*
+         * ABC, because the board has two channels now and ABC is what
+         * most stereo AY music was mixed on -- the Pentagon and nearly
+         * every clone that had stereo at all. A tune written for ACB
+         * sounds lopsided in it, not wrong, and it is one setting away.
+         */
+        .ay_stereo      = AY_STEREO_ABC,
         .ay48           = 0,
         /*
          * TurboSound on, which is not the obvious default.

@@ -6,11 +6,12 @@
 // dino_z80: an RP2350B acting as the whole machine around a real Z80.
 //
 // It gets a header of its own rather than sharing frank_xt8086.h, because
-// the two boards disagree on the one thing a board header decides. On
-// xt8086 the microSD is on GP40-43 and the console on GP44/45 — the same
-// here — but GP38/GP39 are the DS3231's I2C bus there and the Z80's ~INT
-// and ~NMI here, and a header that declared I2C on them would invite an
-// SDK helper to drive two of the CPU's inputs.
+// the two boards disagree on the things a board header decides. On xt8086
+// the microSD is on GP40-43 — the same here — but GP38/GP39 are the
+// DS3231's I2C bus there and the Z80's ~INT and ~NMI here, and GP44/45
+// are its console UART and here are the right audio channel and the tape
+// input. A header that declared either would invite an SDK helper to
+// drive pins that belong to something else.
 //
 // GP0-GP29 belong to the Z80 (U3) and the pins it needs. Everything below
 // GP30 is the CPU's; see src/core/dino.h and docs/pinout.md.
@@ -37,23 +38,10 @@ pico_board_cmake_set_default(PICO_PIO_USE_GPIO_BASE, 1)
 #define PICO_PIO_USE_GPIO_BASE 1
 #endif
 
-// --- UART (J1: pin 1 = TX, pin 2 = GND, pin 3 = RX) ---
-// GP44/GP45, which is still UART0: the peripheral's pin map repeats every
-// sixteen GPIOs in blocks of four, and GP44-47 lands back on UART0 just as
-// GP0-3 does.
-//
-// GP45 is shared with the tape input (Q5's collector, R47 pull-up). A tape
-// lead and a console cable cannot both be attached; the console wins,
-// because without it there is no way to see what the firmware thinks.
-#ifndef PICO_DEFAULT_UART
-#define PICO_DEFAULT_UART 0
-#endif
-#ifndef PICO_DEFAULT_UART_TX_PIN
-#define PICO_DEFAULT_UART_TX_PIN 44
-#endif
-#ifndef PICO_DEFAULT_UART_RX_PIN
-#define PICO_DEFAULT_UART_RX_PIN 45
-#endif
+// --- UART ---
+// Deliberately not declared. This board has no UART header: the console
+// is USB CDC only. GP44 is PWM_R and GP45 the tape input, and a default
+// UART on them would have stdio set up the pin mux under both.
 
 // --- LED ---
 // There is no firmware-controlled LED on this board. D1 is driven from
@@ -83,7 +71,7 @@ pico_board_cmake_set_default(PICO_PIO_USE_GPIO_BASE, 1)
 // its own; GP38/GP39, which carried it on xt8086, are the Z80's ~INT and
 // ~NMI here.
 
-// --- FLASH (U6, W25Q128JVPIQ, 16 MB) ---
+// --- FLASH (U8, W25Q128JVPIQ, 16 MB) ---
 #define PICO_BOOT_STAGE2_CHOOSE_W25Q080 1
 
 #ifndef PICO_FLASH_SPI_CLKDIV

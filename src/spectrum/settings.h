@@ -51,14 +51,14 @@ typedef enum : uint8_t {
 } joystick_t;
 
 /*
- * Where GP46 is pointed, and how hard to drive it.
+ * How hard to drive the outputs, for whichever of them is listening.
  *
- * Full scale is about three volts peak to peak out of the PWM, which is
- * what a transistor driving a buzzer wants and roughly three times what
- * a line input wants. Feeding that to the HDMI encoder is heard as
- * distortion on everything, and it is not the DAC's fault -- the board
- * has no attenuator between GP46 and the encoder, so the level has to
- * come out of the mix.
+ * Full scale is about three volts peak to peak out of the PWM and the
+ * LM358 followers, which is what headphones and the PAM8403 want and
+ * roughly three times what a line input wants. Feeding that to the HDMI
+ * encoder is heard as distortion on everything, and it is not the DAC's
+ * fault -- the board has no attenuator between the followers and the
+ * encoder, so the level has to come out of the mix.
  */
 /*
  * Which of three palettes the menu draws itself in.
@@ -84,8 +84,8 @@ typedef enum : uint8_t {
 } ui_theme_t;
 
 typedef enum : uint8_t {
-    OUTPUT_JACK = 0,    // the 3.5 mm jack or the buzzer, through Q1
-    OUTPUT_HDMI,        // the MS9288A's line input, which wants a third of it
+    OUTPUT_JACK = 0,    // the 3.5 mm jack (J2) or the speaker, through U6
+    OUTPUT_HDMI,        // the MS9288A's line inputs, which want a third of it
     OUTPUT_COUNT,
 } output_t;
 
@@ -100,26 +100,27 @@ typedef struct {
 
     // --- audio ---
     /*
-     * Where the sound is going, which the firmware cannot see.
+     * Where the sound is being listened to, which the firmware cannot see.
      *
-     * S2 routes GP46 to the jack, the buzzer or the MS9288A's audio
-     * input, and it is a switch with no sense line -- so this is the one
-     * thing about the audio path that has to be told rather than
-     * measured. It matters because the two destinations want very
-     * different levels: the transistor and the buzzer want the duty
-     * swung as wide as it will go, and the encoder's line input wants
-     * about a volt peak to peak and was getting three.
+     * The jack is always fed; S2 adds the MS9288A's audio inputs and the
+     * speaker amplifier, and it is a switch with no sense line -- so this
+     * is the one thing about the audio path that has to be told rather
+     * than measured. It matters because the destinations want very
+     * different levels: headphones and the PAM8403 want the duty swung
+     * as wide as it will go, and the encoder's line inputs want about a
+     * volt peak to peak and were getting three.
      */
     uint8_t output;         // output_t
     uint8_t volume;         // master, 0-10
     uint8_t beeper_vol;     // 0-10
     uint8_t ay_vol;         // 0-10
+    uint8_t ay_stereo;      // ay_stereo_t: mono, ABC or ACB
     uint8_t ay48;           // an AY on a 48K, as half the clones had
     uint8_t turbosound;     // a second AY behind the same pair of ports
     uint8_t covox;          // 8-bit DAC on port #FB
     uint8_t soundrive;      // four 8-bit DACs on #0F/#1F/#4F/#5F
     uint8_t saa;            // a SAA1099 on the #FF family, as the Profi has
-    uint8_t real_player;    // load from a cassette on J9 rather than an image
+    uint8_t real_player;    // load from a cassette on J8 rather than an image
 
     // --- video ---
     uint8_t scanlines;      // dim every second output line

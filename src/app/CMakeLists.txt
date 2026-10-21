@@ -80,8 +80,8 @@ option(SELFTEST "Run the stage-0 test suite instead of booting the Spectrum" OFF
 #
 #   OFF  USB is a CDC console. keys.sh types at the machine, `picotool
 #        reboot -u -f` reaches BOOTSEL, and there is no keyboard.
-#   ON   USB is a HID host. A real keyboard works; the console is UART
-#        only, and flashing is SWD only.
+#   ON   USB is a HID host. A real keyboard works; there is no console
+#        at all -- the board has no UART -- and flashing is SWD only.
 option(USB_KEYBOARD "USB HID keyboard instead of the USB console" OFF)
 
 # ---------------------------------------------------------------------------
@@ -169,26 +169,24 @@ set_source_files_properties(${SRC_ROOT}/spectrum/spectrum.c PROPERTIES
 # Console
 # ---------------------------------------------------------------------------
 #
-# Both, and the USB half is not about the console.
+# USB CDC, and nothing else.
 #
-# UART0 on J1 is the intended console. USB is enabled for the reset
-# interface that comes with it: picotool can then put a running board into
-# BOOTSEL by itself, and flashing stops needing two buttons pressed in the
-# right order by someone standing at the bench. On a board whose SWD does
-# not answer, that is the difference between a one-command edit-flash-look
-# loop and a conversation.
+# There is no UART on this board: GP44 is the right audio channel and
+# GP45 the tape input, and no header brings a UART out. So the console is
+# USB or nothing. The USB half also brings the reset interface: picotool
+# can put a running board into BOOTSEL by itself, and flashing stops
+# needing two buttons pressed in the right order by someone standing at
+# the bench.
 #
-# It costs the USB controller, which in stage 1 a keyboard will want back
-# for HID host — the two cannot both be had. Until then there is no
-# keyboard, and there is a great deal of reflashing.
-#
-# S1 selects which way the mux (U2) points: to J6 for device mode, which
-# is what this needs, or to the hub for USB-A host. See docs/pinout.md.
-pico_enable_stdio_uart(frank-dino 1)
+# S1 selects which way the mux (U2) points: to the USB-C socket (J5) for
+# device mode, which is what this needs, or to the hub for the USB-A
+# ports. See docs/pinout.md.
+pico_enable_stdio_uart(frank-dino 0)
 
 if(USB_KEYBOARD)
     # The USB controller is a HID host now, so it cannot also enumerate as
-    # a CDC device. UART only, and SWD for flashing.
+    # a CDC device. No console, and SWD for flashing; the screen is the
+    # only report there is.
     pico_enable_stdio_usb(frank-dino 0)
     target_link_libraries(frank-dino PRIVATE usbkbd)
     set(FAMILY rp2350)

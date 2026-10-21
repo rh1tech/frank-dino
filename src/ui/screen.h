@@ -9,8 +9,8 @@
 /*
  * The report, on the screen and on the wire at the same time.
  *
- * Everything a stage-0 test says goes to both: UART for a person at a
- * terminal, and the text buffer for the capture stick, because "did the
+ * Everything a stage-0 test says goes to both: the USB console for a
+ * person at a terminal, and the text buffer for the capture stick, because "did the
  * board pass" has to be a question a script can answer without a person
  * leaning over the bench. scr_log() is the one call that does both, so
  * the two can never drift apart.
@@ -62,7 +62,7 @@ void scr_pump(void);
 void scr_replay(void);
 
 /*
- * Append a line to the scrolling report region and to the UART.
+ * Append a line to the scrolling report region and to the console.
  *
  * The region is everything below the header; it scrolls, so a test that
  * prints more than fits still ends with its verdict on screen.
