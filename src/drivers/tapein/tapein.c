@@ -19,6 +19,8 @@
 
 #include "dino.h"
 
+#include <hardware/structs/timer.h>
+
 /*
  * Their MAX_IN_SAMPLES, and their arithmetic for it: 128+128+128 bytes
  * is 3072 bits, and a frame at 125 kHz and fifty frames a second is
@@ -55,6 +57,25 @@ static volatile uint32_t run_n;         /* how many closed runs */
 static uint32_t cur_run;
 static uint8_t  last_level;
 
+/*
+ * Whether the samples arrive on time, for tools/dino.py: the longest gap
+ * between two ticks in microseconds, how many gaps were over 12 us (a
+ * sample lost), and the fewest and most samples a frame collected.
+ */
+volatile uint32_t tapein_gap_max_us, tapein_gaps_late;
+volatile uint32_t tapein_frame_min = 0xFFFFFFFFu, tapein_frame_max;
+/* Levels that lasted one or two samples (8-16 us): a chattering edge. */
+volatile uint32_t tapein_glitch1, tapein_glitch2;
+static uint32_t   last_tick_us;
+
+/* Debounce the level the machine sees (0 = the raw pin), and a capture of
+ * the raw pin into the PSRAM -- both for tools/dino.py. */
+volatile uint8_t  tapein_debounce = 3;
+#define TAPEIN_CAP_BITS (8u * 1024u * 1024u)
+uint8_t           tapein_cap[TAPEIN_CAP_BITS / 8u] __attribute__((section(".psram")));
+volatile uint8_t  tapein_cap_on;
+volatile uint32_t tapein_cap_bits;
+
 uint8_t tapein_probe(void);
 
 /*
@@ -70,10 +91,38 @@ uint8_t tapein_probe(void);
 static bool __not_in_flash_func(tapein_tick)(repeating_timer_t *rt) {
     (void)rt;
 
+    const uint32_t now = timer0_hw->timerawl;
+    const uint32_t gap = now - last_tick_us;
+    last_tick_us = now;
+    if (gap > 12u) tapein_gaps_late++;
+    if (gap > tapein_gap_max_us && gap < 100000u) tapein_gap_max_us = gap;
+
     const uint32_t at = fill_bit;
     if ((at >> 3) >= TAPEIN_BUF_BYTES) return true;     /* frame ran long */
 
-    const uint8_t v = gpio_get(TAPEIN_PIN) ? 1u : 0u;
+    /*
+     * The level, debounced: a change counts once the pin has held it for
+     * three samples. The shaper has no hysteresis, so a slow edge chatters:
+     * a capture of a real tape had 7% of its half-waves 0-3 samples long,
+     * each an extra edge to the ROM's loop and a byte lost. A Spectrum's
+     * EAR input is filtered and never sees them. Every edge moves by the
+     * same 24 us, so no pulse changes length; the shortest the ROM writes
+     * is 244 us.
+     */
+    const uint8_t raw = gpio_get(TAPEIN_PIN) ? 1u : 0u;
+    static uint8_t level, held;
+    if (!tapein_debounce) { level = raw; held = 0; }
+    else if (raw == level) held = 0;
+    else if (++held >= tapein_debounce) { level = raw; held = 0; }
+    const uint8_t v = raw;      // the statistics below are about the line itself
+
+    /* The raw line, for tools: one bit a sample while armed. */
+    if (tapein_cap_on && tapein_cap_bits < TAPEIN_CAP_BITS) {
+        const uint32_t n = tapein_cap_bits;
+        uint8_t *const c = &tapein_cap[n >> 3];
+        *c = (uint8_t)(((n & 7u) ? *c : 0u) | (raw << (n & 7u)));
+        tapein_cap_bits = n + 1;
+    }
 
     unsigned wait = 20;
     while (lock_in && wait) --wait;
@@ -83,6 +132,8 @@ static bool __not_in_flash_func(tapein_tick)(repeating_timer_t *rt) {
 
     if (v != last_level) {
         tr_count++;
+        if (cur_run == 1u) tapein_glitch1++;
+        else if (cur_run == 2u) tapein_glitch2++;
         /* Runs of one sample are noise, and very long ones are silence;
          * neither says anything about the pitch of a tone. */
         if (cur_run >= 2u && cur_run <= 600u) { run_sum += cur_run; run_n++; }
@@ -96,7 +147,7 @@ static bool __not_in_flash_func(tapein_tick)(repeating_timer_t *rt) {
     const unsigned bit = at & 7u;
     /* The first bit of a byte writes it rather than ORs into it, which
      * is what clears the previous frame's contents as it goes. */
-    *p = (uint8_t)((bit == 0 ? 0u : *p) | ((unsigned)v << bit));
+    *p = (uint8_t)((bit == 0 ? 0u : *p) | ((unsigned)level << bit));
 
     fill_bit = at + 1;
     return true;
@@ -223,6 +274,8 @@ void tapein_frame_started(const uint32_t tstates) {
 
     frame_bits    = fill_bit;
     frame_tstates = tstates ? tstates : 1u;
+    if (frame_bits < tapein_frame_min) tapein_frame_min = frame_bits;
+    if (frame_bits > tapein_frame_max) tapein_frame_max = frame_bits;
 
     lock_in  = true;
     a_in     = !a_in;

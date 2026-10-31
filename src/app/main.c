@@ -398,6 +398,14 @@ int main(void) {
         tapeplay_task();
         rtc_task();
         audio_task();
+        /*
+         * The tape input follows its setting, wherever the setting was
+         * changed -- the menu, the card at start-up, or a debugger.
+         * One place that acts on it, so it cannot be set and not
+         * applied.
+         */
+        if (settings.real_player != tapein_running())
+            settings.real_player ? tapein_start() : tapein_stop();
 #if USB_KEYBOARD
         usbkbd_task();
 
@@ -411,14 +419,6 @@ int main(void) {
          */
         usbdisk_task();
 
-        /*
-         * The tape input follows its setting, wherever the setting was
-         * changed -- the menu, the card at start-up, or a debugger.
-         * One place that acts on it, so it cannot be set and not
-         * applied.
-         */
-        if (settings.real_player != tapein_running())
-            settings.real_player ? tapein_start() : tapein_stop();
 
         /*
          * F1, asked for from inside a TinyUSB callback and acted on here.
