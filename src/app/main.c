@@ -447,6 +447,7 @@ int main(void) {
         }
 #endif
         scr_pump();
+        if (spectrum_running) harness_poll();
 
         /*
          * The console is the keyboard.

@@ -135,6 +135,34 @@ class ConMem:
         pass
 
 
+def settings_offsets():
+    """
+    Every field of settings_t, by name: compiled with the ARM compiler from
+    settings.h itself, so it cannot go stale the way a table would.
+    """
+    import re
+    import tempfile
+    hdr = open(os.path.join(ROOT, 'src', 'spectrum', 'settings.h')).read()
+    body = hdr[hdr.index('typedef struct'):]
+    body = body[:body.index('} settings_t;')]
+    names = re.findall(r'^\s*(?:uint8_t|uint16_t|uint32_t|int8_t|int16_t|int32_t|bool)\s+(\w+)\s*[;\[]',
+                       body, re.M)
+    src = '#include <stddef.h>\n#include "settings.h"\n' + ''.join(
+        f'const unsigned off_{n} = offsetof(settings_t, {n});\n' for n in names)
+    with tempfile.TemporaryDirectory() as d:
+        c = os.path.join(d, 'o.c')
+        open(c, 'w').write(src)
+        inc = [f'-I{os.path.join(ROOT, p)}' for p in ('src/spectrum', 'src/core', 'src/app', 'src')]
+        asm = subprocess.run(['arm-none-eabi-gcc', '-std=gnu2x', '-S', '-o', '-', *inc, c],
+                             capture_output=True, text=True)
+    if asm.returncode:
+        raise RuntimeError(asm.stderr[-2000:])
+    out = {}
+    for m in re.finditer(r'off_(\w+):\s*\n\s*\.(word|space)\s+(\d+)', asm.stdout):
+        out[m.group(1)] = int(m.group(3)) if m.group(2) == 'word' else 0
+    return out
+
+
 class Board:
     def __init__(self, elf=None, console=None):
         self.elf = elf or os.path.join(ROOT, 'build', 'frank-dino.elf')
@@ -223,6 +251,39 @@ class Board:
     def u8(self, sym, n=1, off=0):
         v = self.ocd.read(self.addr(sym) + off, 8, n)
         return v[0] if n == 1 else v
+
+    # -- settings, by field name ----------------------------------------------
+    def setting(self, name, value=None):
+        if not hasattr(self, '_soff'):
+            self._soff = settings_offsets()
+        a = self.addr('settings') + self._soff[name]
+        if value is None:
+            return self.ocd.read(a, 8, 1)[0]
+        self.ocd.write(a, 8, [value])
+
+    # -- loading a file, as the browser would ---------------------------------
+    def load(self, path, timeout=20):
+        """Load a file from the card (any kind the browser takes). Returns (ok, detail)."""
+        a = self.addr('harness_path')
+        data = path.encode()[:95] + b'\0'
+        self.ocd.write(a, 8, list(data))
+        self.ocd.write(self.addr('harness_req'), 8, [1])
+        if not self._wait(lambda: self.u8('harness_req') == 0, timeout):
+            raise RuntimeError(f'the load of {path} did not finish')
+        raw = bytes(self.ocd.read(self.addr('harness_detail'), 8, 64))
+        return self.u8('harness_ok') == 1, raw.split(b'\0')[0].decode(errors='replace')
+
+    # -- the Z80's memory, through the live page table (8 KB pages) --------
+    def zread(self, addr, n):
+        """n bytes of what the Z80 sees from addr (n a multiple of 4, no page crossing)."""
+        page = self.ocd.read(self.addr('z80_rpage') + 4 * (addr >> 13), 32, 1)[0]
+        words = self.ocd.read(page + (addr & 0x1FFF), 32, n // 4)
+        return b''.join(w.to_bytes(4, 'little') for w in words)
+
+    def zwrite(self, addr, data):
+        """Write bytes where the Z80 writes (no page crossing)."""
+        page = self.ocd.read(self.addr('z80_wpage') + 4 * (addr >> 13), 32, 1)[0]
+        self.ocd.write(page + (addr & 0x1FFF), 8, list(data))
 
     # -- the picture --------------------------------------------------------
     def shot(self, path=None):
@@ -395,9 +456,19 @@ if __name__ == '__main__':
 
 
 def pick_machine(b, index, boot_s=3.0):
-    """Settings > Machine > option `index`, then out and let it boot."""
+    """
+    Settings > Machine > option `index`, then out and let it boot -- from
+    cold every time: choosing the machine already chosen changes nothing,
+    so that one gets Reset the machine instead.
+    """
     b.open_settings()
     b.enter(0)
-    b.choose(0, index)
+    if b.setting('machine') == index:
+        b.select_row(5)
+        b.key('ENTER', gap=0.6)                 # "Reset the machine?" -- No is lit
+        b.key('LEFT', gap=0.3)
+        b.key('ENTER', gap=0.6)
+    else:
+        b.choose(0, index)
     b.close_menus()
     time.sleep(boot_s)

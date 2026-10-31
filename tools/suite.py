@@ -149,8 +149,158 @@ def t_steady(b, r):
     b.close_menus()
 
 
+def t_snapshot(b, r):
+    """
+    Quick save and quick load, through the menu, on a 48K: a pattern in
+    RAM and a line on the screen survive a wipe and a reset.
+    """
+    from dino import pick_machine
+    pick_machine(b, 0, 3)
+    b.type('10 PRINT 1', gap=0.15); b.key('ENTER', gap=0.8)
+    pat = bytes((i * 37 + 11) & 0xFF for i in range(256))
+    b.zwrite(0x9000, pat)
+    screen = b.zread(0x4000, 6912 // 4 * 4)
+    b.shot(os.path.join(OUT, 'snapshot-before.png'))
+
+    b.open_settings(); b.enter(1)                 # Snapshots
+    b.select_row(2); b.key('ENTER', gap=2.0)      # Quick save, slot 1
+    b.close_menus()
+
+    b.zwrite(0x9000, bytes(256))                  # wipe the pattern...
+    pick_machine(b, 0, 3)                         # ...and reset: 48K again from cold
+    r.check(b.zread(0x9000, 256) != pat, 'the reset really lost the pattern')
+
+    b.open_settings(); b.enter(1)
+    b.select_row(3); b.key('ENTER', gap=3.0)      # Quick load
+    b.close_menus(); time.sleep(1)
+    r.check(b.zread(0x9000, 256) == pat, 'RAM pattern back after quick load', b, 'snapshot-after.png')
+    got = b.zread(0x4000, 6912 // 4 * 4)
+    same = sum(1 for x, y in zip(got, screen) if x == y)
+    r.check(same > 6800, f'screen back ({same}/{len(screen)} bytes match)', b, 'snapshot-after.png')
+    f0 = b.u32('z80_fetch0'); a = b.alive(since=f0)
+    r.check(a['ok'], f'running after the load ({a["fps"]:.1f} fps, {a["pcs"]} PCs)', b, 'snapshot-after.png')
+    b.shot(os.path.join(OUT, 'snapshot-after.png'))
+
+
+def t_snapshot128(b, r):
+    """The same on a 128K: a mark in every RAM bank, and the paging latch."""
+    from dino import pick_machine
+    pick_machine(b, 1, 4)
+    base = b.addr('spec_ram')
+    marks = {k: bytes(((k * 53 + i * 7) & 0xFF) for i in range(64)) for k in range(8)}
+    for k, m in marks.items():
+        if k not in (2, 5):                      # the ROM's own system variables live in 5
+            b.ocd.write(base + k * 16384 + 0x3000, 8, list(m))
+    p7 = b.u8('spec_port_7ffd')
+
+    b.open_settings(); b.enter(1)
+    b.select_row(2); b.key('ENTER', gap=2.0)      # Quick save, slot 1
+    b.close_menus()
+    for k in marks:
+        if k not in (2, 5):
+            b.ocd.write(base + k * 16384 + 0x3000, 8, [0] * 64)
+    pick_machine(b, 1, 4)
+
+    b.open_settings(); b.enter(1)
+    b.select_row(3); b.key('ENTER', gap=3.0)      # Quick load
+    b.close_menus(); time.sleep(1)
+    ok = [k for k, m in marks.items() if k not in (2, 5) and
+          bytes(b.ocd.read(base + k * 16384 + 0x3000, 8, 64)) == m]
+    r.check(len(ok) == 6, f'every bank back after quick load ({ok})', b, 'snapshot128-after.png')
+    r.check(b.u8('spec_port_7ffd') == p7, f'#7FFD back ({b.u8("spec_port_7ffd"):02X}, was {p7:02X})')
+    f0 = b.u32('z80_fetch0'); a = b.alive(since=f0)
+    r.check(a['ok'], f'running after the load ({a["fps"]:.1f} fps, {a["pcs"]} PCs)', b, 'snapshot128-after.png')
+    b.shot(os.path.join(OUT, 'snapshot128-after.png'))
+
+
+# Each sound source: the setting that fits it, and the port writes that
+# start a tone on it -- ports and registers as spectrum.c decodes them.
+def _ay(sel=None):
+    w = [(0xFFFD, sel)] if sel is not None else []
+    return w + [(0xFFFD, 7), (0xBFFD, 62), (0xFFFD, 8), (0xBFFD, 15), (0xFFFD, 0), (0xBFFD, 200)]
+
+
+def _pairs(addr_port, data_port, regs):
+    return [x for r, v in regs for x in ((addr_port, r), (data_port, v))]
+
+
+SAA_TONE = _pairs(0x01FF, 0x00FF, [(28, 1), (20, 1), (0, 255), (8, 128), (16, 3)])
+OPL_TONE = _pairs(0xC4, 0xC5, [(0x20, 1), (0x23, 1), (0x40, 16), (0x43, 0), (0x60, 240), (0x63, 240),
+                               (0x80, 119), (0x83, 119), (0xC0, 48), (0xA0, 152), (0xB0, 49)])
+OPN_TONE = [(0xFFFD, 0xFB)] + _pairs(0xFFFD, 0xBFFD, [
+    (0xB0, 7), (0x40, 0), (0x44, 0), (0x48, 0), (0x4C, 0), (0x50, 31), (0x54, 31), (0x58, 31),
+    (0x5C, 31), (0x30, 1), (0x34, 1), (0x38, 1), (0x3C, 1), (0xA4, 34), (0xA0, 105), (0x28, 240)])
+SOURCES = [
+    ('AY',          {},                   _ay()),
+    ('TurboSound',  {'turbosound': 1},    _ay(0xFE)),
+    ('SAA1099',     {'saa': 1},           SAA_TONE),
+    ('CMS',         {'cms': 1},           SAA_TONE),
+    ('OPL3',        {'opl3': 1},          OPL_TONE),
+    ('OPLL',        {'opll': 1},          _pairs(0xC0, 0xC1, [(0x30, 16), (0x10, 172), (0x20, 24)])),
+    ('SN76489',     {'sn76489': 1},       [(0xC9, 0x8E), (0xC9, 0x0F), (0xC9, 0x90)]),
+    ('TSFM',        {'tsfm': 1},          OPN_TONE),
+    ('Covox',       {'covox': 1},         ('toggle', 0xFB, 255)),
+    ('SounDrive',   {'soundrive': 1},     ('toggle', 0x0F, 255)),
+    ('SpecDrum',    {'specdrum': 1},      ('toggle', 0xDF, 255)),
+    ('Beeper',      {},                   ('toggle', 0xFE, 0x10)),
+]
+SOUND_SETTINGS = ['turbosound', 'saa', 'cms', 'opl3', 'opll', 'sn76489', 'tsfm',
+                  'covox', 'soundrive', 'specdrum']
+
+
+def z80_toggle(port, hi, lo=0, loops=12000):
+    """OUT (port),hi / wait / OUT (port),lo / wait, `loops` times: a square wave, ~4 s."""
+    body = bytes((0x3E, hi, 0xD3, port, 0x06, 40, 0x10, 0xFE,
+                  0x3E, lo, 0xD3, port, 0x06, 40, 0x10, 0xFE,
+                  0x1B, 0x7A, 0xB3))
+    jr = -(len(body) + 2) & 0xFF
+    return bytes((0x11, loops & 0xFF, loops >> 8)) + body + bytes((0x20, jr, 0xC9))
+
+
+def z80_outs(writes):
+    """LD BC,port / LD A,value / OUT (C),A for each, then RET."""
+    code = bytearray()
+    for port, val in writes:
+        code += bytes((0x01, port & 0xFF, port >> 8, 0x3E, val, 0xED, 0x79))
+    return bytes(code + b'\xC9')
+
+
+def swing(b, seconds=1.0):
+    """How far the mix moved, left channel, over a while."""
+    b.ocd.write(b.addr('sound_min'), 32, [0x7FFFFFFF, 0x7FFFFFFF])
+    b.ocd.write(b.addr('sound_max'), 32, [0x80000000, 0x80000000])
+    time.sleep(seconds)
+    lo, hi = b.ocd.read(b.addr('sound_min'), 32, 1)[0], b.ocd.read(b.addr('sound_max'), 32, 1)[0]
+    sgn = lambda v: v - (1 << 32) if v & 0x80000000 else v
+    return sgn(hi) - sgn(lo)
+
+
+def t_sound(b, r):
+    """Every sound source, one at a time: silence first, then a tone from 128 BASIC."""
+    from dino import pick_machine
+    saved = {n: b.setting(n) for n in SOUND_SETTINGS}
+    try:
+        for name, on, basic in SOURCES:
+            for n in SOUND_SETTINGS:
+                b.setting(n, on.get(n, 0))
+            pick_machine(b, 1, 4)                        # a cold 128K: every chip reset
+            b.key('DOWN', gap=0.4); b.key('ENTER', gap=1.5)   # 128 BASIC
+            code = z80_toggle(basic[1], basic[2]) if basic[0] == 'toggle' else z80_outs(basic)
+            b.zwrite(0x8000, code)
+            b.type('RANDOMIZE USR 32768', gap=0.15)
+            time.sleep(0.8)                              # the key clicks die away
+            quiet = swing(b)
+            b.key('ENTER', gap=1.0)
+            loud = swing(b)
+            r.check(loud > 1500 and loud > 4 * max(quiet, 1),
+                    f'{name}: sounds (swing {quiet} -> {loud})', b, f'sound-{name}.png')
+    finally:
+        for n, v in saved.items():
+            b.setting(n, v)
+
+
 TESTS = {'boot': t_boot, 'steady': t_steady, 'volume': t_volume, 'pause': t_pause, 'menu': t_menu,
-         'machines': t_machines}
+         'machines': t_machines, 'snapshot': t_snapshot, 'snapshot128': t_snapshot128, 'sound': t_sound}
 
 
 def main():

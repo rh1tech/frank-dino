@@ -64,6 +64,9 @@ int menu_wait_key_timeout(unsigned ms);
  * on the way. See conmon.c. */
 int console_getchar(void);
 
+/* A file load a tool asked for over SWD or the console. See conmon.c. */
+void harness_poll(void);
+
 /*
  * Set by the settings page's "Re-read the card" action.
  *

@@ -8,6 +8,8 @@
 
 #include "sound.h"
 
+#include <limits.h>
+
 #include <string.h>
 
 #include "audio.h"
@@ -223,6 +225,12 @@ __force_inline static uint32_t sample_end(const uint32_t i) {
 }
 
 /* One sample, covering [fr.start, end). */
+/*
+ * The mix's range since a tool last reset it, before the volume: how a
+ * test hears whether a chip is making a sound. Left and right.
+ */
+volatile int32_t sound_min[2] = { INT32_MAX, INT32_MAX }, sound_max[2] = { INT32_MIN, INT32_MIN };
+
 static void __not_in_flash_func(make_sample)(const uint32_t end) {
     int32_t l = 0, r = 0;
 
@@ -342,6 +350,11 @@ static void __not_in_flash_func(make_sample)(const uint32_t end) {
      * line input, quiet on the PAM8403 and its little speaker. "Loud"
      * spends the headroom, and audio.c clips (and counts) what is left.
      */
+    if (l < sound_min[0]) sound_min[0] = l;
+    if (l > sound_max[0]) sound_max[0] = l;
+    if (r < sound_min[1]) sound_min[1] = r;
+    if (r > sound_max[1]) sound_max[1] = r;
+
     static const uint8_t out_scale[OUTPUT_COUNT] = { 10, 3, 25 };   // over ten
     const int32_t scale = (int32_t)(settings.volume *
                           out_scale[settings.output < OUTPUT_COUNT ? settings.output : 0]);

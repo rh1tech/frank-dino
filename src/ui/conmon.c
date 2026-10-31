@@ -27,8 +27,13 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include <pico/stdlib.h>
+
+#include "loader.h"
+#include "spectrum.h"
+#include "storage.h"
 
 #define DLE 0x10
 
@@ -134,4 +139,25 @@ int console_getchar(void) {
         if (c != DLE) return c;
         command();
     }
+}
+
+/*
+ * Loading a file, for the harness: what the browser does when Enter is
+ * pressed on it, without walking the browser there. A tool writes the
+ * path and sets harness_req; the main loop calls harness_poll().
+ */
+volatile char    harness_path[96];
+volatile uint8_t harness_req;
+volatile uint8_t harness_ok;
+char             harness_detail[64];
+
+void harness_poll(void) {
+    if (!harness_req) return;
+    char path[sizeof harness_path];
+    memcpy(path, (const char *)harness_path, sizeof path);
+    path[sizeof path - 1] = '\0';
+    spec_pause();
+    harness_ok = loader_load(path, storage_kind(path), harness_detail, sizeof harness_detail) ? 1u : 0u;
+    spec_resume();
+    harness_req = 0;
 }
