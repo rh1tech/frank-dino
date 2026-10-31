@@ -7,3 +7,5 @@ static inline void irq_set_enabled(uint n, bool e) { (void)n; (void)e; }
 static inline void irq_set_priority(uint n, uint8_t p) { (void)n; (void)p; }
 #define DMA_IRQ_0 0
 #define DMA_IRQ_1 1
+static inline int  user_irq_claim_unused(bool required) { (void)required; return 46; }
+static inline void irq_set_pending(uint n) { (void)n; }

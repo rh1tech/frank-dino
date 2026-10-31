@@ -34,6 +34,9 @@
 #include "ui_report.h"
 #include "usbdisk.h"
 #include "audio.h"
+#include "sound.h"
+#include "tapeplay.h"
+#include "rtc.h"
 #if USB_KEYBOARD
 #include "usbkbd.h"
 #endif
@@ -194,11 +197,12 @@ static void core1_main(void) {
     // scr_log, not printf: this is core 1, and core 1 does not talk to
     // stdio -- it queues, and core 0 prints. See src/ui/screen.h.
     const uint32_t fps = spec_tune_clock();
-    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "Frame rate %lu.%02lu Hz at pace %lu (%lu.%03lu MHz)",
+    const uint32_t cap = spec_timing.capacity_mfps;
+    scr_log(ATTR(C_TEXT_DIM, C_PANEL), "Frame rate %lu.%02lu Hz at pace %lu; could do %lu.%02lu (%lu%% spare)",
             (unsigned long)(fps / 1000), (unsigned long)((fps % 1000) / 10),
             (unsigned long)z80_get_pace(),
-            (unsigned long)((uint64_t)fps * SPEC_TSTATES_PER_FRAME / 1000000000ull),
-            (unsigned long)(((uint64_t)fps * SPEC_TSTATES_PER_FRAME / 1000000ull) % 1000));
+            (unsigned long)(cap / 1000), (unsigned long)((cap % 1000) / 10),
+            (unsigned long)(cap > fps ? (cap - fps) * 100u / cap : 0u));
 
     /*
      * Start the machine the user actually sees, after the tuning and not
@@ -303,6 +307,7 @@ int main(void) {
     // Before core 1 exists: it claims DMA channels and a pacing timer,
     // and core 1 starts pushing samples the moment the Spectrum starts.
     audio_init();
+    sound_init();
 
 #if USB_KEYBOARD
     /*
@@ -352,6 +357,7 @@ int main(void) {
      */
     if (storage_mount()) printf("[sd] card mounted\n");
     else                 printf("[sd] no card\n");
+    rtc_init();                         // its NVRAM lives on the card
 
     /*
      * Settings before core 1, because core 1 starts a machine with them.
@@ -388,6 +394,9 @@ int main(void) {
      * that is generating the Z80's clock, and can never race tud_task().
      */
     while (true) {
+        sound_task();
+        tapeplay_task();
+        rtc_task();
         audio_task();
 #if USB_KEYBOARD
         usbkbd_task();
@@ -418,6 +427,16 @@ int main(void) {
          * is the only way into the browser -- there is no console to
          * press Tab at.
          */
+        /*
+         * Pause stops the clock. The Z80 is static, so a paused machine is
+         * exactly where it was -- registers, refresh, all of it -- and
+         * Pause again carries on as if nothing happened.
+         */
+        if (usbkbd_take_pause_request() && spectrum_running) {
+            if (spec_is_paused()) spec_resume();
+            else                  spec_pause();
+        }
+
         if (usbkbd_take_menu_request() && spectrum_running) {
             // F12 goes straight to the settings; F11 opens the browser,
             // which is where the settings live anyway.
@@ -439,7 +458,7 @@ int main(void) {
          * type "1" at the 128K menu, screenshot the result, and that is
          * a regression test.
          */
-        const int c = getchar_timeout_us(0);
+        const int c = console_getchar();
         if (c != PICO_ERROR_TIMEOUT) {
             console_chars++;
             console_last = (uint8_t)c;

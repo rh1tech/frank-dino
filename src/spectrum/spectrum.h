@@ -25,6 +25,21 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+/*
+ * A binary file, as a symbol in .rodata. Overridable so the host tests can
+ * supply a Mach-O form of the same thing and link the real ROM images.
+ */
+#ifndef IMPORT_BIN
+#define IMPORT_BIN(file, sym) asm (\
+    ".section .rodata." #sym "\n" \
+    ".balign 4\n"                 \
+    ".global " #sym "\n"          \
+    #sym ":\n"                    \
+    ".incbin \"" file "\"\n"      \
+    ".balign 4\n"                 \
+    ".section \".text\"\n")
+#endif
+
 // ============================================================================
 // Which machine
 // ============================================================================
@@ -52,8 +67,74 @@ typedef enum : uint8_t {
     MACHINE_SCORPION,       /* ZS-256: 256 KB, a service ROM and TR-DOS */
     MACHINE_PROFI,          /* Profi 1024: 1 MB through #DFFD */
     MACHINE_TIMEX,          /* TC2068: the SCLD, a dock and an EX-ROM */
+    /*
+     * The rest, after the original eight so that a settings file written
+     * before they existed still names the machine it meant. Ported from
+     * pico-speccy's machine set; see roms/README.md for the images.
+     */
+    MACHINE_16K,            /* the first Spectrum: 16 KB, nothing above #8000 */
+    MACHINE_PLUS2A,         /* a +3 without the drive */
+    MACHINE_TC2048,         /* Timex's 48K: the SCLD's video, no dock */
+    MACHINE_GAMA,           /* Didaktik Gama 89, a Czechoslovak 48K */
+    MACHINE_LENINGRAD1,     /* the Leningrad clones: 48K, own ~INT, no contention */
+    MACHINE_LENINGRAD2,
+    MACHINE_BYTE,           /* Byte, from Bryansk: a 48K with a timer for sound */
+    MACHINE_PENT512,        /* Pentagon 512: #7FFD bits 6 and 7 page 512 KB */
+    MACHINE_PENT1024,       /* Pentagon 1024SL: bit 5 too, #EFF7, a cache page, 16 colours */
+    MACHINE_ZS1024,         /* Scorpion ZS-1024 with ProfROM 4.44: 1 MB, four ROM planes */
+    MACHINE_SCORPEVO,       /* the same on the Pentagon's raster, as the Evo runs it */
+    MACHINE_KAY256,         /* Nemo KAY-256: a Scorpion with its own #1FFD */
+    MACHINE_KAY1024,        /* Nemo KAY-1024 */
+    MACHINE_KAY1024B,       /* KAY-1024 with the 2010 ROM */
+    MACHINE_PHOENIX,        /* ZXM-Phoenix: KAY paging, 2 MB of decode, 1 MB fitted here */
+    MACHINE_ATM1,           /* MicroART ATM-Turbo 1, BIOS 1.04 */
+    MACHINE_ATM2,           /* ATM-Turbo 2, BIOS 1.06.02 */
+    MACHINE_ATM2P,          /* ATM-Turbo 2+, BIOS 1.07.13 */
+    MACHINE_ATM2X,          /* ATM-Turbo 2+, xBIOS 1.37 */
+    MACHINE_ATM3,           /* NedoPC ATM-Turbo 3 (1 MB of its 4 here), test ROM + xBIOS */
+    MACHINE_ALF,            /* ALF TV Game: a 128K with banked cartridges */
     MACHINE_COUNT,
 } machine_t;
+
+/*
+ * The families, for the checks that mean "a machine like that" rather
+ * than one machine. A 48K-class machine has one ROM, 48 KB and no #7FFD.
+ */
+static inline bool spec_is_48k_class(const machine_t m) {
+    return m == MACHINE_48K || m == MACHINE_16K || m == MACHINE_TC2048 || m == MACHINE_GAMA
+        || m == MACHINE_LENINGRAD1 || m == MACHINE_LENINGRAD2 || m == MACHINE_BYTE;
+}
+
+/* The +2A/+3 gate array: four ROMs, #1FFD, the special all-RAM modes. */
+static inline bool spec_is_plus3_class(const machine_t m) {
+    return m == MACHINE_PLUS3 || m == MACHINE_PLUS2A;
+}
+
+/* The Pentagons: Pentagon timing, no contention, TR-DOS at home. */
+static inline bool spec_is_pentagon_class(const machine_t m) {
+    return m == MACHINE_PENTAGON || m == MACHINE_PENT512 || m == MACHINE_PENT1024;
+}
+
+/*
+ * The Scorpion's descendants: #1FFD, four ROM roles (BASIC 128, BASIC 48,
+ * service, TR-DOS), and more RAM at #C000 the newer the board.
+ */
+static inline bool spec_is_scorpion_class(const machine_t m) {
+    return m == MACHINE_SCORPION || m == MACHINE_ZS1024 || m == MACHINE_SCORPEVO
+        || m == MACHINE_KAY256 || m == MACHINE_KAY1024 || m == MACHINE_KAY1024B
+        || m == MACHINE_PHOENIX;
+}
+
+/* KAY's level, as pico-speccy numbers it: 2 the 256, 3 the 1024s, 4 Phoenix. */
+static inline unsigned spec_kay_level(const machine_t m) {
+    return m == MACHINE_KAY256 ? 2u : (m == MACHINE_KAY1024 || m == MACHINE_KAY1024B) ? 3u
+         : m == MACHINE_PHOENIX ? 4u : 0u;
+}
+
+/* The SCLD's video modes are built in, not a card. */
+static inline bool spec_has_scld(const machine_t m) {
+    return m == MACHINE_TIMEX || m == MACHINE_TC2048;
+}
 
 extern machine_t spec_machine;
 
@@ -85,6 +166,15 @@ extern volatile uint8_t spec_port_1ffd;
  *             have a renderer for and ignores
  */
 extern volatile uint8_t spec_port_dffd;
+
+/*
+ * The Pentagon 1024SL's #EFF7: D0 the 16-colour mode, D2 "no more than
+ * 128K" (#7FFD bit 5 is a lock again), D3 the cache page at #0000, D4
+ * turbo (latched, ignored: the clock is the clock). And whether the
+ * 512/1024's hidden cache page is in, by IN #FB / IN #7B.
+ */
+extern volatile uint8_t spec_port_eff7;
+extern volatile bool    spec_pent16c;
 
 /*
  * The Timex's horizontal select register, port #F4, and the DOCK/EX-ROM
@@ -165,6 +255,27 @@ extern uint8_t spec_ram[SPEC_RAM_BANKS][SPEC_BANK_SIZE];
  */
 #define SPEC_MAX_BANKS 64                   /* 1 MB, which is the Profi */
 uint8_t *spec_bank_ptr(unsigned bank);
+
+/*
+ * A RAM page for a machine that can put any page in any window (the ATM):
+ * the first eight from SRAM, the rest straight through the PSRAM's XIP
+ * cache. Never staged, so never out of step with itself.
+ */
+uint8_t *spec_ram_page(unsigned page);
+
+/*
+ * A 16 KB ROM page from flash, in one of the four SRAM ROM slots: the
+ * least recently used is refilled on a miss. For the machines whose ROM
+ * is bigger than four pages and pages any of it anywhere.
+ */
+uint8_t *spec_rom_page(const uint8_t *src);
+
+/*
+ * The same bank for reading from the host, without staging it: a
+ * snapshot writer walking every bank must not page the machine's own
+ * window about while it does.
+ */
+const uint8_t *spec_bank_host(unsigned bank);
 
 /* Push the staged bank back before anything reads the PSRAM copy. */
 void spec_bank_flush(void);
@@ -251,6 +362,9 @@ extern volatile uint8_t  spec_port_7ffd;
 // with everything else that is a preference.
 extern volatile uint32_t spec_ay_writes;
 
+/* Does this machine have an AY at all? A 48K only with settings.ay48. */
+bool spec_have_ay(void);
+
 /*
  * Put a known 441 Hz sine straight into the mixer.
  *
@@ -268,6 +382,13 @@ bool spec_test_tone_is_on(void);
 /* True while the beeper bit is set. The mixer samples it; nothing drives
  * the pin directly any more — see src/drivers/audio/audio.h. */
 extern volatile bool spec_beeper;
+
+/* The Kempston mouse: see spectrum.c. Written by the USB driver. */
+extern volatile uint8_t spec_mouse_x, spec_mouse_y, spec_mouse_buttons, spec_mouse_wheel;
+extern volatile bool    spec_mouse_seen;
+
+/* Gigascreen "Auto" has seen a program flipping screens every frame. */
+extern volatile bool spec_giga_auto;
 
 // ============================================================================
 // Running it
@@ -303,6 +424,35 @@ void spec_run_frame(void);
  */
 uint32_t spec_tune_clock(void);
 
+/* An Interface 2 ROM cartridge: takes the 48K's ROM's place from its next reset. */
+void spec_if2_insert(const uint8_t *img, uint32_t len);
+
+/* An ALF cartridge, up to 1 MB in 16 KB banks. */
+bool spec_alf_insert(const uint8_t *img, uint32_t len);
+void spec_if2_eject(void);
+bool spec_if2_present(void);
+
+/* The machine's own clock in Hz, turbo included. */
+uint32_t spec_cpu_hz(void);
+
+/*
+ * How the frames are keeping time, for the settings page.
+ *
+ * idle_us is how long the last frame waited for its deadline -- the
+ * headroom, measured. A machine with none is late, and late counts the
+ * frames that were. capacity is what the engine managed unpaced the last
+ * time spec_tune_clock() looked; target is the machine's own rate.
+ */
+typedef struct {
+    uint32_t run_us;            // the last frame, start to deadline check
+    uint32_t idle_us;           // ...and how long it then waited
+    uint32_t idle_min_us;       // the least it has waited since the last tune
+    uint32_t late;              // frames that missed their deadline
+    uint32_t capacity_mfps;     // fps x1000, unpaced
+    uint32_t target_mfps;       // fps x1000, the machine's own
+} spec_timing_t;
+extern spec_timing_t spec_timing;
+
 /*
  * How many samples a frame is currently cut into.
  *
@@ -337,6 +487,14 @@ bool spec_is_paused(void);
 
 /* Set the paging latch from this side, as though the CPU had written it. */
 void spec_set_paging(uint8_t value);
+
+/*
+ * Read the CPU's registers, by NMI. The machine must be paused; core 1
+ * does the work from its pause loop and this waits for it. See the NMI
+ * dump in spectrum.c for what it costs the guest and what it cannot see.
+ */
+struct z80_state_s;
+bool spec_capture_state(struct z80_state_s *st);
 
 /*
  * Map `page` over the ROM window and arm the swap back.

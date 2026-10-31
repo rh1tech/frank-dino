@@ -159,11 +159,18 @@ static const char *type_label(const storage_entry_t *e) {
         case FILE_DIR: return "Folder";
         case FILE_TAP:
         case FILE_TZX:
-        case FILE_PZX: return "Tape image";
+        case FILE_PZX:
+        case FILE_CSW:
+        case FILE_WAV: return "Tape image";
+        case FILE_GZ:  return "Gzipped file";
+        case FILE_ROM: return "ROM cartridge";
         case FILE_SNA:
         case FILE_Z80: return "Snapshot";
         case FILE_TRD:
-        case FILE_SCL: return "TR-DOS disk";
+        case FILE_SCL:
+        case FILE_FDI:
+        case FILE_UDI:
+        case FILE_TD0: return "TR-DOS disk";
         case FILE_DSK: return "+3 disk";
         case FILE_DCK: return "Timex cartridge";
         case FILE_MMC: return "esxDOS card";
@@ -560,6 +567,19 @@ static void activate(void) {
         draw_footer();
         frame_fix();
         open_archive(path);
+        return;
+    }
+
+    if (e->kind == FILE_GZ) {
+        snprintf(status, sizeof status, "Unpacking %s...", e->name);
+        draw_footer();
+        frame_fix();
+        char detail[64];
+        file_kind_t inner;
+        if (zip_gunzip(path, &inner, detail, sizeof detail)
+            && loader_load(ZIP_TEMP_PATH, inner, detail, sizeof detail))
+            loaded_something = true;
+        snprintf(status, sizeof status, "%s", detail);
         return;
     }
 

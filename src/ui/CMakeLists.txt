@@ -12,6 +12,7 @@ add_library(dino_ui INTERFACE)
 target_sources(dino_ui INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/screen.c
         ${CMAKE_CURRENT_LIST_DIR}/menu.c
+        ${CMAKE_CURRENT_LIST_DIR}/conmon.c
         ${CMAKE_CURRENT_LIST_DIR}/ui_font.c
         ${CMAKE_CURRENT_LIST_DIR}/ui_gfx.c
         ${CMAKE_CURRENT_LIST_DIR}/ui_render.c

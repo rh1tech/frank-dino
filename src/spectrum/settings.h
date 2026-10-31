@@ -86,11 +86,23 @@ typedef enum : uint8_t {
 typedef enum : uint8_t {
     OUTPUT_JACK = 0,    // the 3.5 mm jack (J2) or the speaker, through U6
     OUTPUT_HDMI,        // the MS9288A's line inputs, which want a third of it
+    OUTPUT_LOUD,        // the speaker, two and a half times up, clipping the peaks
     OUTPUT_COUNT,
 } output_t;
 
 /* The directions, as the rest of the firmware talks about them. */
 enum { JOY_BIT_RIGHT = 0, JOY_BIT_LEFT, JOY_BIT_DOWN, JOY_BIT_UP, JOY_BIT_FIRE };
+
+/*
+ * Where the Covox answers. #FB is the Pentagon's and the common one;
+ * #DD is the Scorpion's, which pico-speccy offers too.
+ */
+typedef enum : uint8_t {
+    COVOX_OFF = 0,
+    COVOX_FB,
+    COVOX_DD,
+    COVOX_COUNT,
+} covox_t;
 
 typedef struct {
     // --- machine ---
@@ -117,12 +129,21 @@ typedef struct {
     uint8_t ay_stereo;      // ay_stereo_t: mono, ABC or ACB
     uint8_t ay48;           // an AY on a 48K, as half the clones had
     uint8_t turbosound;     // a second AY behind the same pair of ports
-    uint8_t covox;          // 8-bit DAC on port #FB
+    uint8_t covox;          // covox_t: an 8-bit DAC on #FB or #DD
+    uint8_t specdrum;       // the Cheetah SpecDrum's DAC on #DF
+    uint8_t tsfm;           // TurboSound FM: a YM2203's FM half behind each AY
+    uint8_t opl3;           // the VGM card's YMF262 on #C4-#C7
+    uint8_t opll;           // its YM2413 on #C0/#C1
+    uint8_t sn76489;        // its SN76489 pair on #C2/#C3 (#C9)
+    uint8_t cms;            // Creative Music System: two SAA1099s on the #FF family
     uint8_t soundrive;      // four 8-bit DACs on #0F/#1F/#4F/#5F
     uint8_t saa;            // a SAA1099 on the #FF family, as the Profi has
     uint8_t real_player;    // load from a cassette on J8 rather than an image
 
     // --- video ---
+    uint8_t rom_spanish;    // Investronica's ROMs on the 48K, 128K and +2
+    uint8_t contention;     // the ULA stops the CPU for screen fetches, as on a real 48K/128K
+    uint8_t beam;           // build the picture as the ULA saw it: multicolour, border effects
     uint8_t scanlines;      // dim every second output line
     /*
      * ULA+: sixty-four programmable colours through ports #BF3B/#FF3B.
@@ -167,7 +188,13 @@ typedef struct {
 
     // --- input ---
     uint8_t joystick;       // joystick_t
-    uint8_t kempston_port;  // 0 = #1F, 1 = #DF
+    uint8_t kempston_port;  // 0 = #1F, 1 = #DF, 2 = #37, 3 = #5F
+    uint8_t mouse;          // a USB mouse is a Kempston mouse
+    uint8_t rtc;            // Mr Gluk's clock on #DFF7/#BFF7
+    uint8_t ide;            // ide_scheme_t: a hard disk behind NEMO, DivIDE or ATM ports
+    uint8_t zcontroller;    // a Z-Controller on #57/#77, on the DivMMC's card image
+    uint8_t trdos_rom;      // 0 5.04T, 1 5.03, 2 5.04TM, 3 5.05D, 4 6.11e
+    uint8_t mouse_sens;     // 1-8, in halves: 2 is one count per USB count
     uint8_t cursor_as_joy;  // the cursor keys drive the selected joystick too
 
     // --- diagnostics ---
@@ -193,6 +220,8 @@ typedef struct {
      */
     uint8_t esxdos;
     uint8_t tape_autostart; // type LOAD "" after mounting a .tap
+    uint8_t tape_realtime;  // play every tape as a signal, never by the ROM trap
+    uint8_t tape_rg;        // Rodolfo Guerra's fast-load ROM timings for .tap blocks
 } settings_t;
 
 extern settings_t settings;

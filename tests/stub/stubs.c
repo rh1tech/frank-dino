@@ -38,6 +38,7 @@ void beta_set_rom_paged(bool on) { stub_beta_paged = on; }
 bool beta_take_boot_request(void){ bool b = stub_beta_boot; stub_beta_boot = false; return b; }
 void beta_reset(void)            { }
 bool beta_port_in(uint16_t p, uint8_t *v)  { (void)p; (void)v; return false; }
+volatile bool beta_ports_open;
 bool beta_port_out(uint16_t p, uint8_t v)  { (void)p; (void)v; return false; }
 
 #endif
@@ -62,6 +63,8 @@ void     divmmc_opfetch(uint16_t a) { (void)a; }
 void     divmmc_reset(void)       { stub_divmmc_mapped = false; }
 bool     divmmc_port_in(uint16_t p, uint8_t *v)  { (void)p; (void)v; return false; }
 bool     divmmc_port_out(uint16_t p, uint8_t v)  { (void)p; (void)v; return false; }
+bool     divmmc_zc_in(uint16_t p, uint8_t *v)    { (void)p; (void)v; return false; }
+bool     divmmc_zc_out(uint16_t p, uint8_t v)    { (void)p; (void)v; return false; }
 
 #endif
 
@@ -102,9 +105,12 @@ void tapein_frame_started(uint32_t t)  { (void)t; }
 bool tapein_level(uint32_t t)          { (void)t; return false; }
 
 /* --- audio ----------------------------------------------------------- */
+#ifndef REAL_AUDIO_CAPTURE
 void     audio_push(int32_t l, int32_t r) { (void)l; (void)r; }
+#endif
 void     audio_reset_stats(void)   { }
 uint32_t audio_ring_level(void)    { return 0; }
+uint32_t audio_rate_millihz(void)  { return 44100000u; }
 void     audio_set_enabled(bool o) { (void)o; }
 
 /* --- the SIO block the bus engine bit-bangs --------------------------
@@ -128,6 +134,7 @@ volatile bool    spec_timex_exrom = false;
 uint8_t spec_ram[SPEC_RAM_BANKS][SPEC_BANK_SIZE];
 void apply_paging_hook(void) { }
 uint8_t *spec_bank_ptr(unsigned b) { return spec_ram[b & 7]; }
+const uint8_t *spec_bank_host(unsigned b) { return spec_ram[b & 7]; }
 void     spec_bank_flush(void) { }
 /* One 16 KB page standing in for the machine's BASIC ROM, so the tape
  * trap has somewhere to patch. */
@@ -139,6 +146,9 @@ volatile uint8_t spec_ulaplus_reg = 0;
 uint8_t          spec_ulaplus_pal[64];
 volatile uint32_t spec_frames = 0;
 volatile bool     spec_flash = false;
+volatile bool     spec_giga_auto = false;
+volatile bool     spec_pent16c = false;
+volatile uint8_t  spec_port_eff7 = 0;
 volatile uint8_t  spec_timex_mode = 0, spec_timex_ink = 0;
 #endif
 
@@ -155,4 +165,52 @@ struct pio_hw pio0_hw_inst, pio1_hw_inst;
 uint8_t vga_ui_fb[VGA_UI_W * VGA_UI_H];
 void vga_set_mode(vga_mode_t m) { (void)m; }
 void vga_build_ui_palette(void) { }
+#endif
+
+/* --- the trampoline's page, which the NMI dump borrows ---------------- */
+#ifndef REAL_LAUNCH
+static uint8_t stub_launch_page[16384];
+uint8_t *spec_launch_page(void) { return stub_launch_page; }
+#endif
+
+/* --- the beam-accurate frame: off, unless the test links the real one - */
+#ifndef REAL_ULA
+#include "ula_frame.h"
+volatile bool ula_beam;
+const ula_frame_t *ula_frame_latest(void) { return NULL; }
+void ula_border(uint32_t t, uint8_t c) { (void)t; (void)c; }
+void ula_rewatch(void) { }
+void ula_frame_begin(void) { }
+void ula_frame_end(void) { }
+void ula_set_enabled(bool on) { (void)on; }
+#endif
+
+/* --- the ATM, for the video test: never the running machine there --- */
+#ifndef REAL_ATM
+#include "atm.h"
+volatile bool atm_pal_dirty;
+void atm_palette_rgb2(uint8_t rgb[16][3]) { memset(rgb, 0, 48); }
+atm_vmode_t atm_video_mode(void) { return ATM_VM_ZX; }
+uint8_t atm_border_index(void) { return 0; }
+const uint8_t *atm_font_ptr(void) { static uint8_t f[2048]; return f; }
+#endif
+
+/* --- the FM and PSG cores: silent, unless a test links them ----------- */
+#ifndef REAL_CHIPS
+#include "chips.h"
+void chips_init(int r) { (void)r; }
+void chips_reset(void) { }
+void chips_opn_write(int c, bool d, uint8_t v) { (void)c; (void)d; (void)v; }
+void chips_opl_write(int p, uint8_t v) { (void)p; (void)v; }
+void chips_opll_write(bool d, uint8_t v) { (void)d; (void)v; }
+void chips_sn_write(int c, uint8_t v) { (void)c; (void)v; }
+void chips_sample(int32_t *l, int32_t *r) { *l = *r = 0; }
+bool chips_any(void) { return false; }
+#endif
+
+/* --- the hard disk: never fitted on a host --------------------------- */
+#ifndef REAL_IDE
+bool ide_port_out(uint16_t p, uint8_t v) { (void)p; (void)v; return false; }
+bool ide_port_in(uint16_t p, uint8_t *v) { (void)p; (void)v; return false; }
+void ide_reset(void) { }
 #endif

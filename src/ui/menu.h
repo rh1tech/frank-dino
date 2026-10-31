@@ -60,6 +60,10 @@ int menu_wait_key(void);
 /* The same, giving up after `ms` and returning -1. */
 int menu_wait_key_timeout(unsigned ms);
 
+/* getchar_timeout_us(0), with the harness's memory commands taken out
+ * on the way. See conmon.c. */
+int console_getchar(void);
+
 /*
  * Set by the settings page's "Re-read the card" action.
  *

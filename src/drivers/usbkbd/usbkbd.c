@@ -37,6 +37,14 @@ bool usbkbd_take_menu_request(void) {
 
 bool usbkbd_menu_request_was_settings(void) { return menu_wanted_settings; }
 
+static volatile bool pause_wanted;
+
+bool usbkbd_take_pause_request(void) {
+    const bool w = pause_wanted;
+    pause_wanted = false;
+    return w;
+}
+
 // ---------------------------------------------------------------------------
 // USB HID usage codes to the Spectrum's matrix
 // ---------------------------------------------------------------------------
@@ -103,9 +111,13 @@ static const uint16_t hid_to_spec[0x68] = {
 
     // The chords. A Spectrum spells these with a shift and a key, and so
     // does this — pressing DELETE really does hold CAPS SHIFT and 0.
+    // Backspace, Esc and Caps Lock are what pico-speccy and SpeccyP make
+    // them; Tab is SpeccyP's EDIT.
     [0x2A] = CS | KEY(R_09876, 0),  // Backspace  = CAPS + 0 (DELETE)
     [0x29] = CS | KEY(R_SPACE, 0),  // Escape     = CAPS + SPACE (BREAK)
     [0x4C] = CS | KEY(R_09876, 0),  // Delete     = the same DELETE
+    [0x39] = CS | KEY(R_12345, 1),  // Caps Lock  = CAPS + 2 (CAPS LOCK)
+    [0x2B] = CS | KEY(R_12345, 0),  // Tab        = CAPS + 1 (EDIT)
 
     [0x50] = CS | KEY(R_12345, 4),  // Left   = CAPS + 5
     [0x51] = CS | KEY(R_09876, 4),  // Down   = CAPS + 6
@@ -119,6 +131,31 @@ static const uint16_t hid_to_spec[0x68] = {
     [0x36] = SS | KEY(R_SPACE, 3),  // ,  = SYM + N
     [0x37] = SS | KEY(R_SPACE, 2),  // .  = SYM + M
     [0x38] = SS | KEY(R_CSZXCV, 4), // /  = SYM + V
+    // SpeccyP's, except \ -- it gives ':' there, and the Spectrum has a
+    // backslash of its own.
+    [0x2F] = SS | KEY(R_09876, 2),  // [  = SYM + 8  (()
+    [0x30] = SS | KEY(R_09876, 1),  // ]  = SYM + 9  ())
+    [0x31] = SS | KEY(R_ASDFG, 2),  // \  = SYM + D
+    [0x35] = SS | KEY(R_ASDFG, 0),  // `  = SYM + A  (STOP)
+    [0x32] = SS | KEY(R_ASDFG, 0),  // the non-US # beside Enter, the same
+
+    // The keypad types what is printed on it, as on SpeccyP. Its '.' is
+    // left out: that is joystick fire, below.
+    [0x54] = SS | KEY(R_CSZXCV, 4), // KP /  = SYM + V
+    [0x55] = SS | KEY(R_SPACE, 4),  // KP *  = SYM + B
+    [0x56] = SS | KEY(R_ENTER, 3),  // KP -  = SYM + J
+    [0x57] = SS | KEY(R_ENTER, 2),  // KP +  = SYM + K
+    [0x58] = KEY(R_ENTER, 0),       // KP Enter
+    [0x59] = KEY(R_12345, 0),       // KP 1
+    [0x5A] = KEY(R_12345, 1),       // KP 2
+    [0x5B] = KEY(R_12345, 2),       // KP 3
+    [0x5C] = KEY(R_12345, 3),       // KP 4
+    [0x5D] = KEY(R_12345, 4),       // KP 5
+    [0x5E] = KEY(R_09876, 4),       // KP 6
+    [0x5F] = KEY(R_09876, 3),       // KP 7
+    [0x60] = KEY(R_09876, 2),       // KP 8
+    [0x61] = KEY(R_09876, 1),       // KP 9
+    [0x62] = KEY(R_09876, 0),       // KP 0
 };
 
 // The two shifts, which are keys in their own right and also the thing
@@ -139,14 +176,13 @@ static const uint16_t hid_to_spec[0x68] = {
  * being broken rather than as one lost packet.
  */
 /*
- * Which joystick direction a HID usage stands for, or -1.
+ * Which joystick bit a HID usage stands for, or -1.
  *
- * The four arrows and the two obvious fire keys. Held apart from the
- * matrix table because a direction is not a key: with a Kempston
- * selected it reaches the guest through a port that has nothing to do
- * with the keyboard, and with a Sinclair selected it reaches the same
- * rows the arrows already use -- which would be the arrows pressing
- * themselves twice if this were merged into that table.
+ * The four arrows and the keypad's '.', which is SpeccyP's fire key.
+ * Held apart from the matrix table because these are in addition to the
+ * keys, not instead of them: an arrow still presses CAPS SHIFT and its
+ * digit, as it does in pico-speccy, so the 128K menu and BASIC never
+ * lose the cursor keys to a game's joystick.
  */
 static int joy_dir(const uint8_t usage) {
     switch (usage) {
@@ -154,8 +190,7 @@ static int joy_dir(const uint8_t usage) {
         case 0x50: return JOY_BIT_LEFT;
         case 0x51: return JOY_BIT_DOWN;
         case 0x52: return JOY_BIT_UP;
-        case 0x2C: return JOY_BIT_FIRE;     // Space
-        case 0x2B: return JOY_BIT_FIRE;     // Tab
+        case 0x63: return JOY_BIT_FIRE;     // keypad '.'
         default:   return -1;
     }
 }
@@ -170,25 +205,23 @@ void usbkbd_release_all(void) {
 static void apply_report(const uint8_t *r) {
     usbkbd_release_all();
 
-    const bool arrows_are_joy = settings.joystick != JOY_NONE && settings.cursor_as_joy;
+    const bool joy = settings.joystick != JOY_NONE && settings.cursor_as_joy;
 
+    // Shift is CAPS SHIFT and Ctrl is SYMBOL SHIFT, in both pico-speccy
+    // and SpeccyP. Alt is not on the matrix in either; here it is fire,
+    // as LAlt is in pico-speccy and RAlt in SpeccyP.
     const uint8_t mods = r[0];
     bool caps = (mods & 0x22) != 0;         // either Shift
-    bool sym  = (mods & 0x11) != 0 ||       // either Ctrl
-                (mods & 0x44) != 0;         // either Alt
+    bool sym  = (mods & 0x11) != 0;         // either Ctrl
+    if (joy && (mods & 0x44)) spec_joy_set(JOY_BIT_FIRE, true);
 
     for (int i = 2; i < 8; i++) {
         const uint8_t usage = r[i];
         if (!usage || usage >= 0x68) continue;
 
-        if (arrows_are_joy) {
+        if (joy) {
             const int d = joy_dir(usage);
-            if (d >= 0) {
-                spec_joy_set((uint8_t)d, true);
-                // Space and Tab are still their own keys; only the four
-                // arrows are taken over by the joystick.
-                if (usage == 0x4F || usage == 0x50 || usage == 0x51 || usage == 0x52) continue;
-            }
+            if (d >= 0) spec_joy_set((uint8_t)d, true);
         }
 
         const uint16_t m = hid_to_spec[usage];
@@ -230,6 +263,9 @@ static void apply_report(const uint8_t *r) {
  */
 /* Defined with the keyboard's translation, below. */
 static void menu_arrow(char last);
+
+static bool    mouse_present;
+static uint8_t mouse_addr, mouse_inst;
 
 static bool    pad_present;
 static uint8_t pad_addr, pad_inst;
@@ -316,7 +352,25 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
         return;
     }
 
-    if (proto != HID_ITF_PROTOCOL_KEYBOARD) return;    // a mouse; nothing wants one
+    if (proto == HID_ITF_PROTOCOL_MOUSE) {
+        /*
+         * A Kempston mouse. Boot protocol: three or four bytes -- the
+         * buttons, X, Y, and on most mice the wheel -- with no descriptor
+         * to walk. pico-speccy asks for report protocol to be sure of the
+         * wheel; boot mode keeps this to one shape, and most wheel mice
+         * send it there too.
+         */
+        tuh_hid_set_protocol(dev_addr, instance, HID_PROTOCOL_BOOT);
+        tuh_hid_receive_report(dev_addr, instance);
+        mouse_addr = dev_addr;
+        mouse_inst = instance;
+        mouse_present = true;
+        spec_mouse_seen = true;
+        printf("[usbkbd] mouse on address %u instance %u\n", dev_addr, instance);
+        return;
+    }
+
+    if (proto != HID_ITF_PROTOCOL_KEYBOARD) return;
 
     // Boot protocol, so the report is the fixed eight bytes above rather
     // than something that has to be parsed out of a report descriptor.
@@ -328,6 +382,11 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
 }
 
 void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
+    if (mouse_present && dev_addr == mouse_addr && instance == mouse_inst) {
+        mouse_present = false;
+        spec_mouse_buttons = 0;
+        return;
+    }
     if (pad_present && dev_addr == pad_addr && instance == pad_inst) {
         pad_present = false;
         pad_prev = 0;
@@ -492,8 +551,34 @@ static void repeat_task(void) {
     repeat_due = make_timeout_time_ms(REPEAT_RATE_MS);
 }
 
+/*
+ * A mouse report onto the Kempston counters.
+ *
+ * Sensitivity is in halves, with the remainder carried so slow movement
+ * is not lost to rounding. The Kempston Y counter goes UP when the mouse
+ * goes away from you; USB's goes down.
+ */
+static void mouse_decode(const uint8_t *r, const uint16_t len) {
+    if (len < 3) return;
+    static int32_t fx, fy;
+    const int32_t s = settings.mouse_sens ? settings.mouse_sens : 2;
+    fx += (int8_t)r[1] * s;
+    fy += (int8_t)r[2] * s;
+    spec_mouse_x = (uint8_t)(spec_mouse_x + fx / 2);
+    spec_mouse_y = (uint8_t)(spec_mouse_y - fy / 2);
+    fx %= 2;
+    fy %= 2;
+    spec_mouse_buttons = r[0] & 7u;
+    if (len >= 4) spec_mouse_wheel = (uint8_t)(spec_mouse_wheel + (int8_t)r[3]);
+}
+
 void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
                                 uint8_t const *report, uint16_t len) {
+    if (mouse_present && dev_addr == mouse_addr && instance == mouse_inst) {
+        mouse_decode(report, len);
+        tuh_hid_receive_report(dev_addr, instance);
+        return;
+    }
     if (pad_present && dev_addr == pad_addr && instance == pad_inst) {
         pad_decode(report, len);
         tuh_hid_receive_report(dev_addr, instance);
@@ -515,6 +600,9 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
             for (int i = 2; i < 8; i++)
                 if (last_report[i] && is_new(last_report, before, last_report[i]))
                     repeat_arm(last_report[i]);
+        } else if (is_new(last_report, before, 0x48)) {
+            // Pause: not the Spectrum's, so it never reaches the matrix.
+            pause_wanted = true;
         } else if (is_new(last_report, before, HID_F11) ||
                    is_new(last_report, before, HID_F12)) {
             /*

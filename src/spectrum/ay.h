@@ -64,6 +64,8 @@ typedef enum : uint8_t {
     AY_STEREO_MONO = 0,
     AY_STEREO_ABC,
     AY_STEREO_ACB,
+    AY_STEREO_BAC,          // the two pico-speccy adds: B left, A in the middle
+    AY_STEREO_CBA,          // ...and ABC mirrored
     AY_STEREO_COUNT,
 } ay_stereo_t;
 

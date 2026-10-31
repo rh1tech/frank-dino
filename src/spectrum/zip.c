@@ -216,3 +216,75 @@ bool zip_extract(const char *path, const zip_member_t *m,
     snprintf(detail, detail_len, "%s", m->name);
     return true;
 }
+
+/* ── gzip ────────────────────────────────────────────────────────────── */
+
+bool zip_gunzip(const char *path, file_kind_t *kind, char *detail, const unsigned detail_len) {
+    // What it will be is the name without the .gz.
+    char inner[STORAGE_MAX_NAME];
+    const char *slash = strrchr(path, '/');
+    snprintf(inner, sizeof inner, "%s", slash ? slash + 1 : path);
+    const size_t n = strlen(inner);
+    if (n > 3) inner[n - 3] = 0;
+    *kind = storage_kind(inner);
+    if (*kind == FILE_OTHER || *kind == FILE_GZ || *kind == FILE_ZIP) {
+        snprintf(detail, detail_len, "%s is nothing this can open.", inner);
+        return false;
+    }
+
+    FIL in, out;
+    if (f_open(&in, path, FA_READ) != FR_OK) {
+        snprintf(detail, detail_len, "Could not open the file.");
+        return false;
+    }
+    const uint32_t size = (uint32_t)f_size(&in);
+
+    uint8_t h[10];
+    UINT got = 0;
+    if (f_read(&in, h, sizeof h, &got) != FR_OK || got != sizeof h
+        || h[0] != 0x1F || h[1] != 0x8B || h[2] != 8) {
+        f_close(&in);
+        snprintf(detail, detail_len, "That is not a gzip file.");
+        return false;
+    }
+
+    // The optional fields, in the order RFC 1952 puts them.
+    uint32_t at = 10;
+    const uint8_t flg = h[3];
+    if (flg & 0x04) {                               // FEXTRA
+        uint8_t x[2];
+        f_read(&in, x, 2, &got);
+        at += 2u + (uint32_t)x[0] + ((uint32_t)x[1] << 8);
+    }
+    f_lseek(&in, at);
+    for (int field = 0; field < 2; field++) {       // FNAME, then FCOMMENT
+        if (!(flg & (field ? 0x10 : 0x08))) continue;
+        uint8_t c = 1;
+        while (c && f_read(&in, &c, 1, &got) == FR_OK && got == 1) at++;
+    }
+    if (flg & 0x02) at += 2;                        // FHCRC
+    f_lseek(&in, at);
+
+    // Eight bytes of CRC and length at the end are not deflate.
+    if (size < at + 8) {
+        f_close(&in);
+        snprintf(detail, detail_len, "The gzip file is truncated.");
+        return false;
+    }
+
+    if (f_open(&out, ZIP_TEMP_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) {
+        f_close(&in);
+        snprintf(detail, detail_len, "The card would not take a temporary file.");
+        return false;
+    }
+    const bool ok = copy_deflate(&in, &out, size - at - 8);
+    f_close(&out);
+    f_close(&in);
+
+    if (!ok) {
+        f_unlink(ZIP_TEMP_PATH);
+        snprintf(detail, detail_len, "%s would not unpack.", inner);
+        return false;
+    }
+    return true;
+}

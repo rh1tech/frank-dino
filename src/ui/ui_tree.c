@@ -41,6 +41,13 @@
 #include "storage.h"
 #include "usbdisk.h"
 #include "tape.h"
+#include "tapeplay.h"
+#include "ide.h"
+#include "ula_frame.h"
+#include "snapshot.h"
+#include "loader.h"
+#include "taperec.h"
+#include "pulse.h"
 #include "ui_nav.h"
 #include "ui_capture.h"
 #include "ui_dialog.h"
@@ -107,6 +114,27 @@ static const ui_option_t opt_machine[] = {
     { "Scorpion ZS-256",  MACHINE_SCORPION, "Scorpion" },
     { "Profi 1024",       MACHINE_PROFI,    "Profi"    },
     { "Timex TC2068",     MACHINE_TIMEX,    "Timex"    },
+    { "ZX Spectrum 16K",  MACHINE_16K,      "16K"      },
+    { "ZX Spectrum +2A",  MACHINE_PLUS2A,   "+2A"      },
+    { "Timex TC2048",     MACHINE_TC2048,   "TC2048"   },
+    { "Didaktik Gama 89", MACHINE_GAMA,     "Gama 89"  },
+    { "Leningrad-1",      MACHINE_LENINGRAD1, "Len-1"  },
+    { "Leningrad-2",      MACHINE_LENINGRAD2, "Len-2"  },
+    { "Byte",             MACHINE_BYTE,     "Byte"     },
+    { "Pentagon 512",     MACHINE_PENT512,  "Pent 512" },
+    { "Pentagon 1024SL",  MACHINE_PENT1024, "Pent 1024"},
+    { "Scorpion ZS-1024", MACHINE_ZS1024,   "ZS-1024"  },
+    { "ScorpEvo",         MACHINE_SCORPEVO, "ScorpEvo" },
+    { "Nemo KAY-256",     MACHINE_KAY256,   "KAY-256"  },
+    { "Nemo KAY-1024",    MACHINE_KAY1024,  "KAY-1024" },
+    { "KAY-1024 (2010)",  MACHINE_KAY1024B, "KAY 2010" },
+    { "ZXM-Phoenix",      MACHINE_PHOENIX,  "Phoenix"  },
+    { "ATM-Turbo 1",      MACHINE_ATM1,     "ATM 1"    },
+    { "ATM-Turbo 2",      MACHINE_ATM2,     "ATM 2"    },
+    { "ATM-Turbo 2+",     MACHINE_ATM2P,    "ATM 2+"   },
+    { "ATM-Turbo 2+ xBIOS", MACHINE_ATM2X,  "ATM xBIOS"},
+    { "ATM-Turbo 3",      MACHINE_ATM3,     "ATM 3"    },
+    { "ALF TV Game",      MACHINE_ALF,      "ALF"      },
 };
 
 static const ui_option_t opt_turbo[] = {
@@ -118,12 +146,48 @@ static const ui_option_t opt_turbo[] = {
 static const ui_option_t opt_output[] = {
     { "Jack / speaker",    OUTPUT_JACK, "Jack" },
     { "HDMI (line level)", OUTPUT_HDMI, "HDMI" },
+    { "Speaker, loud",     OUTPUT_LOUD, "Loud" },
 };
 
 static const ui_option_t opt_ay_stereo[] = {
     { "Mono",              AY_STEREO_MONO, NULL },
     { "ABC (A left, C right)", AY_STEREO_ABC, "ABC" },
     { "ACB (A left, B right)", AY_STEREO_ACB, "ACB" },
+    { "BAC (B left, C right)", AY_STEREO_BAC, "BAC" },
+    { "CBA (C left, A right)", AY_STEREO_CBA, "CBA" },
+};
+
+static void say(const char *fmt, ...);
+
+static const ui_option_t opt_ide[] = {
+    { "Off",    0, NULL },
+    { "NEMO",   1, NULL },
+    { "DivIDE", 2, NULL },
+    { "ATM",    3, NULL },
+};
+
+static bool ide_on(void) { return settings.ide != 0; }
+
+static const char *ide_info(void) { return ide_mounted() ? "in" : "empty"; }
+
+static void ide_eject_action(void) {
+    if (!ide_mounted()) { say("No hard disk image is in."); return; }
+    ide_eject();
+    say("Hard disk out.");
+}
+
+static const ui_option_t opt_trdos[] = {
+    { "5.04T",  0, NULL },
+    { "5.03",   1, NULL },
+    { "5.04TM", 2, NULL },
+    { "5.05D",  3, NULL },
+    { "6.11e",  4, NULL },
+};
+
+static const ui_option_t opt_covox[] = {
+    { "Off",  COVOX_OFF, NULL },
+    { "#FB",  COVOX_FB,  NULL },
+    { "#DD",  COVOX_DD,  NULL },
 };
 
 static const ui_option_t opt_joystick[] = {
@@ -138,6 +202,8 @@ static const ui_option_t opt_joystick[] = {
 static const ui_option_t opt_kport[] = {
     { "#1F", 0, NULL },
     { "#DF", 1, NULL },
+    { "#37", 2, NULL },
+    { "#5F", 3, NULL },
 };
 
 static const ui_option_t opt_uitheme[] = {
@@ -174,13 +240,19 @@ static void machine_changed(void) {
  * failure is invisible from the inside, so the measured frame rate goes
  * on the status line and the user can see 41 Hz and pick a lower one.
  */
+static void contention_changed(void) {
+    spec_tune_clock();          // re-reads the setting, then measures
+    say(settings.contention ? "The ULA holds the CPU, as it did" : "No contention");
+}
+
 static void turbo_changed(void) {
     const uint32_t fps = spec_tune_clock();
     say("%lu.%02lu fps", (unsigned long)(fps / 1000), (unsigned long)((fps % 1000) / 10));
 }
 
 static void output_changed(void) {
-    say(settings.output == OUTPUT_HDMI ? "A third of full scale" : "Full scale");
+    say(settings.output == OUTPUT_HDMI ? "A third of full scale"
+        : settings.output == OUTPUT_LOUD ? "Two and a half times; peaks clip" : "Full scale");
 }
 
 static void betadisk_changed(void) {
@@ -230,10 +302,86 @@ static void mmc_action(void) {
 
 static const char *tape_info(void) {
     static char buf[UI_DYN_VALUE_LEN];
+    if (tapeplay_active) {
+        snprintf(buf, sizeof buf, "%lu/%lu %s",
+                 (unsigned long)pulse_block_index() + 1, (unsigned long)pulse_block_count(),
+                 tapeplay_motor_on() ? "playing" : "stopped");
+        return buf;
+    }
     if (!tape_mounted()) return "no tape";
     snprintf(buf, sizeof buf, "%lu/%lu",
              (unsigned long)tape_block_index() + 1, (unsigned long)tape_block_count());
     return buf;
+}
+
+static bool tape_realtime_on(void) { return tapeplay_active; }
+
+/*
+ * The tape browser: the blocks of a real-time tape, around the one that
+ * is playing. Enter moves the tape to a block, which is how a multi-load
+ * game is pointed at level three without playing levels one and two.
+ */
+static void tape_blocks_build(ui_dynrows_t *d) {
+    ui_dyn_clear(d);
+    const uint32_t n = pulse_block_count(), cur = pulse_block_index();
+    uint32_t first = cur > 8u ? cur - 8u : 0u;
+    if (first + UI_DYN_MAX_ROWS > n) first = n > UI_DYN_MAX_ROWS ? n - UI_DYN_MAX_ROWS : 0u;
+    for (uint32_t i = first; i < n && i < first + UI_DYN_MAX_ROWS; i++) {
+        char line[UI_DYN_LABEL_LEN];
+        pulse_block_describe(i, line, sizeof line);
+        char val[12];
+        snprintf(val, sizeof val, "%s%u", i == cur ? ">" : "", (unsigned)((i + 1u) % 100000u));
+        ui_dyn_add(d, line, val, (int32_t)i, false);
+    }
+    ui_dyn_focus_tag(d, (int32_t)cur);
+}
+
+static void tape_blocks_key(const int32_t tag, const uint8_t key) {
+    if (key) return;
+    if (tapeplay_seek((uint32_t)tag)) say("Tape at block %ld.", (long)tag + 1);
+}
+
+static const char *tape_motor_info(void) {
+    if (!tapeplay_active) return "no tape";
+    return tapeplay_motor_on() ? "playing" : "stopped";
+}
+
+static void tape_playstop_action(void) {
+    if (!tapeplay_active) { say("No real-time tape is mounted."); return; }
+    if (tapeplay_motor_on()) { tapeplay_stop(); say("Tape stopped."); }
+    else                     { tapeplay_play(); say("Tape playing."); }
+}
+
+static const char *rec_info(void) {
+    static char buf[UI_DYN_VALUE_LEN];
+    if (!taperec_blocks()) return "nothing yet";
+    snprintf(buf, sizeof buf, "%u blocks, %uK", (unsigned)(taperec_blocks() % 10000u),
+             (unsigned)((taperec_bytes() / 1024u) % 10000u));
+    return buf;
+}
+
+/*
+ * Whatever has been SAVEd since the last time, onto the card.
+ *
+ * The recorder runs all the time and costs nothing when nothing is being
+ * saved, so there is no "record" button to forget to press -- SAVE, then
+ * come here.
+ */
+static void rec_save_action(void) {
+    if (!taperec_blocks()) { say("Nothing has been SAVEd yet."); return; }
+    char path[40];
+    if (taperec_write(path, sizeof path)) {
+        say("Saved to %s", path);
+        taperec_clear();
+    } else {
+        say("Could not write the tape.");
+    }
+}
+
+static void tape_rewind_action(void) {
+    if (!tapeplay_active) { say("No real-time tape is mounted."); return; }
+    tapeplay_rewind();
+    say("Tape rewound.");
 }
 
 static const char *disk_info(void) {
@@ -245,6 +393,15 @@ static const char *disk_info(void) {
 
 static bool is_plus3(void) { return spec_machine == MACHINE_PLUS3; }
 static bool is_timex(void) { return spec_machine == MACHINE_TIMEX; }
+
+static bool if2_in(void) { return spec_if2_present(); }
+
+static void if2_action(void) {
+    if (!ui_confirm("Pull the cartridge out?", "Interface 2", false)) return;
+    spec_if2_eject();
+    spec_set_machine(MACHINE_48K);
+    say("Cartridge out; the 48K ROM is back.");
+}
 
 static const char *dck_info(void) {
     static char buf[UI_DYN_VALUE_LEN];
@@ -367,6 +524,33 @@ static const char *z80_info(void) {
     return buf;
 }
 
+/*
+ * How the frames are keeping time.
+ *
+ * The engine runs flat out at its floor and every frame then waits for
+ * its deadline, so the wait is the room left -- the one number that says
+ * whether a new feature can be afforded. It is measured on the running
+ * machine, every frame; "min" is the worst since the last re-tune.
+ */
+static const char *frame_info(void) {
+    static char buf[UI_DYN_VALUE_LEN];
+    const spec_timing_t *t = &spec_timing;
+    const unsigned hz = (unsigned)(t->target_mfps % 100000u);
+    const unsigned id = (unsigned)(t->idle_us % 100000u);
+    snprintf(buf, sizeof buf, "%u.%02uHz idle %u.%ums",
+             hz / 1000u % 100u, (hz % 1000u) / 10u, id / 1000u % 100u, (id % 1000u) / 100u);
+    return buf;
+}
+
+static const char *headroom_info(void) {
+    static char buf[UI_DYN_VALUE_LEN];
+    const spec_timing_t *t = &spec_timing;
+    const unsigned m = t->idle_min_us == UINT32_MAX ? 0u : (unsigned)(t->idle_min_us % 100000u);
+    snprintf(buf, sizeof buf, "min %u.%ums late %u",
+             m / 1000u % 100u, (m % 1000u) / 100u, (unsigned)(t->late % 100000u));
+    return buf;
+}
+
 #if USB_KEYBOARD
 static const char *kbd_info(void) {
     if (usbkbd_present() && usbkbd_pad_present()) return "kbd + pad";
@@ -451,7 +635,7 @@ static void info_page(void) {
         yn[settings.scanlines ? 1 : 0],
         yn[settings.ulaplus ? 1 : 0],
         spec_ulaplus_on ? UI_MK_OK "enabled by the guest" : UI_MK_DIM "not enabled",
-        yn[settings.gigascreen ? 1 : 0],
+        settings.gigascreen == 2 ? UI_MK_OK "Auto" : yn[settings.gigascreen ? 1 : 0],
         settings.timex ? (spec_timex_mode == 6 ? UI_MK_OK "hi-res"
                         : spec_timex_mode == 2 ? UI_MK_OK "hi-colour"
                         : spec_timex_mode == 1 ? UI_MK_OK "second screen"
@@ -530,9 +714,10 @@ static void trace_page(void) {
 /* ── actions ─────────────────────────────────────────────────────────── */
 
 static void tape_action(void) {
-    if (!tape_mounted()) { say("No tape is mounted."); return; }
+    if (!tape_mounted() && !tapeplay_active) { say("No tape is mounted."); return; }
     if (!ui_confirm("Eject the tape?", "Tape", false)) return;
     tape_eject();
+    tapeplay_eject();
     say("Tape ejected.");
 }
 
@@ -652,10 +837,99 @@ static void reset_action(void) {
 
 /* ── the tree ────────────────────────────────────────────────────────── */
 
+// ── snapshots ───────────────────────────────────────────────────────────
+
+static uint8_t quick_slot = 1;
+
+static void snap_save_action(void) {
+    char d[64];
+    snapshot_save_new(d, sizeof d);
+    say("%s", d);
+}
+
+static void quick_save_action(void) {
+    char d[64];
+    snapshot_quick_save(quick_slot, d, sizeof d);
+    say("%s", d);
+}
+
+static void quick_load_action(void) {
+    if (!snapshot_quick_exists(quick_slot)) { say("Slot %u is empty.", quick_slot); return; }
+    char path[32], d[64];
+    snapshot_quick_path(quick_slot, path, sizeof path);
+    loader_load(path, FILE_Z80, d, sizeof d);
+    say("%s", d);
+}
+
+static const char *quick_info(void) {
+    return snapshot_quick_exists(quick_slot) ? "saved" : "empty";
+}
+
+/*
+ * The CPU's registers, read by NMI. Each visit reads them afresh -- the
+ * machine is paused while the menu is up, so they are the registers it
+ * stopped with.
+ */
+static void regs_page(void) {
+    char d[64];
+    if (!snapshot_peek_registers(d, sizeof d)) {
+        snprintf(page_buf, sizeof page_buf, UI_MK_DIM "%s", d);
+        ui_text_page("Registers", page_buf, NULL);
+        return;
+    }
+    const z80_state_t *r = &snapshot_last;
+    snprintf(page_buf, sizeof page_buf,
+        UI_MK_HEAD "--- Main ---\n"
+        UI_MK_TEXT "AF " UI_MK_WHITE "%04X   " UI_MK_TEXT "AF' " UI_MK_WHITE "%04X\n"
+        UI_MK_TEXT "BC " UI_MK_WHITE "%04X   " UI_MK_TEXT "BC' " UI_MK_WHITE "%04X\n"
+        UI_MK_TEXT "DE " UI_MK_WHITE "%04X   " UI_MK_TEXT "DE' " UI_MK_WHITE "%04X\n"
+        UI_MK_TEXT "HL " UI_MK_WHITE "%04X   " UI_MK_TEXT "HL' " UI_MK_WHITE "%04X\n"
+        UI_MK_TEXT "IX " UI_MK_WHITE "%04X   " UI_MK_TEXT "IY  " UI_MK_WHITE "%04X\n"
+        UI_MK_TEXT "SP " UI_MK_WHITE "%04X   " UI_MK_TEXT "PC  " UI_MK_WHITE "%04X\n"
+        UI_MK_TEXT "I  " UI_MK_WHITE "%02X     " UI_MK_TEXT "R   " UI_MK_WHITE "%02X\n"
+        UI_MK_TEXT "Interrupts " UI_MK_WHITE "%s" UI_MK_TEXT ", IM " UI_MK_WHITE "%u" UI_MK_DIM " (inferred)\n"
+        "\n"
+        UI_MK_DIM "Read by NMI: the stub's thirty bytes of stack\n"
+        "are put back, R is approximate, and IM is\n"
+        "inferred from I -- nothing in a Z80 reads it.",
+        r->af, r->af_, r->bc, r->bc_, r->de, r->de_, r->hl, r->hl_,
+        r->ix, r->iy, r->sp, r->pc, r->i, r->r, r->iff ? "on" : "off", r->im);
+    ui_text_page("Registers", page_buf, NULL);
+}
+
+/* POKE: the address in two bytes, because a menu row holds one. */
+static uint8_t poke_hi = 0x5C, poke_lo = 0x00, poke_val = 0;
+
+static const char *poke_info(void) {
+    static char buf[UI_DYN_VALUE_LEN];
+    snprintf(buf, sizeof buf, "%u,%u", (unsigned)((poke_hi << 8) | poke_lo), poke_val);
+    return buf;
+}
+
+static void poke_action(void) {
+    const uint16_t a = (uint16_t)((poke_hi << 8) | poke_lo);
+    z80_poke(a, poke_val);
+    say("POKE %u,%u", (unsigned)a, poke_val);
+}
+
+static const ui_node_t snapshot_kids[] = {
+    UI_ACTION ("Save a snapshot",  snap_save_action),
+    UI_INT    ("Quick slot",       &quick_slot, 1, 10, 1, NULL),
+    UI_ACTIONV("  Quick save",     quick_save_action, quick_info),
+    UI_ACTION ("  Quick load",     quick_load_action),
+    UI_PAGE   ("Registers",        regs_page),
+    UI_INT    ("POKE address high", &poke_hi, 0, 255, 1, NULL),
+    UI_INT    ("POKE address low",  &poke_lo, 0, 255, 1, NULL),
+    UI_INT    ("POKE value",        &poke_val, 0, 255, 1, NULL),
+    UI_ACTIONV("  POKE it",        poke_action, poke_info),
+};
+
 static const ui_node_t machine_kids[] = {
     UI_RADIO("Machine",           &settings.machine,  opt_machine, machine_changed),
     UI_BOOL ("Issue 2 keyboard",  &settings.issue2,   NULL),
     UI_RADIO("Z80 speed",         &settings.turbo,    opt_turbo,   turbo_changed),
+    UI_BOOL ("ULA contention",    &settings.contention, contention_changed),
+    UI_BOOL ("Spanish ROMs",      &settings.rom_spanish, machine_changed),
     UI_ACTION("Reset the machine", reset_action),
 };
 
@@ -667,9 +941,15 @@ static const ui_node_t audio_kids[] = {
     UI_RADIO("AY stereo",         &settings.ay_stereo,  opt_ay_stereo, NULL),
     UI_BOOL ("AY-3-8912 on a 48K", &settings.ay48,      NULL),
     UI_BOOL ("TurboSound",        &settings.turbosound, NULL),
-    UI_BOOL ("Covox (#FB)",       &settings.covox,      NULL),
+    UI_RADIO("Covox",             &settings.covox,      opt_covox, NULL),
+    UI_BOOL ("SpecDrum (#DF)",    &settings.specdrum,   NULL),
     UI_BOOL ("SounDrive",         &settings.soundrive,  NULL),
     UI_BOOL ("SAA1099 (#FF)",     &settings.saa,        NULL),
+    UI_BOOL ("TurboSound FM",     &settings.tsfm,       NULL),
+    UI_BOOL ("CMS (2 x SAA1099)", &settings.cms,        NULL),
+    UI_BOOL ("OPL3 (#C4)",        &settings.opl3,       NULL),
+    UI_BOOL ("YM2413 (#C0)",      &settings.opll,       NULL),
+    UI_BOOL ("SN76489 (#C3)",     &settings.sn76489,    NULL),
     UI_ACTION("Test tone (441 Hz)", tone_action),
     UI_ACTIONV("Audio ring",       NULL, audio_info),
 };
@@ -708,15 +988,28 @@ static void timex_changed(void) {
                        : "Port #FF is the floating bus again");
 }
 
+static const ui_option_t opt_giga[] = {
+    { "Off",  0, NULL },
+    { "On",   1, NULL },
+    { "Auto", 2, NULL },
+};
+
 static void gigascreen_changed(void) {
     say(settings.gigascreen ? "Banks 5 and 7 blended, no flicker"
                             : "One screen at a time again");
 }
 
+/* The builder is core 1's; the machine is paused, so this is safe. */
+static void beam_changed(void) {
+    ula_set_enabled(settings.beam != 0);
+    say(settings.beam ? "As the ULA saw it" : "Live from memory");
+}
+
 static const ui_node_t video_kids[] = {
+    UI_BOOL ("Beam-accurate picture", &settings.beam, beam_changed),
     UI_BOOL ("Scanlines",    &settings.scanlines, NULL),
     UI_BOOL ("ULA+ (64 colours)", &settings.ulaplus, ulaplus_changed),
-    UI_BOOL ("Gigascreen",   &settings.gigascreen, gigascreen_changed),
+    UI_RADIO("Gigascreen",   &settings.gigascreen, opt_giga, gigascreen_changed),
     UI_BOOL ("Timex video (#FF)", &settings.timex, timex_changed),
     UI_RADIO("Menu colours", &settings.ui_theme,  opt_uitheme, uitheme_changed),
 };
@@ -725,6 +1018,9 @@ static const ui_node_t input_kids[] = {
     UI_RADIO("Joystick",           &settings.joystick,      opt_joystick, NULL),
     UI_RADIO("Kempston port",      &settings.kempston_port, opt_kport,    NULL),
     UI_BOOL ("Cursor keys as joy", &settings.cursor_as_joy, NULL),
+    UI_BOOL ("Kempston mouse",     &settings.mouse, NULL),
+    UI_BOOL ("Gluk clock (#BFF7)", &settings.rtc, NULL),
+    UI_INT  ("Mouse speed",        &settings.mouse_sens, 1, 8, 1, NULL),
 };
 
 /* GP45 is the tape input's alone, so this only starts and stops it. */
@@ -749,17 +1045,28 @@ static const ui_node_t storage_kids[] = {
     UI_ACTIONV_EN("  Tape input",  NULL, tapein_info, real_player_on),
     UI_BOOL   ("Write-protect disks", &settings.disk_wrprot, NULL),
     UI_ACTIONV("Eject tape",       tape_action, tape_info),
+    UI_ACTIONV_EN("  Play / stop", tape_playstop_action, tape_motor_info, tape_realtime_on),
+    UI_ACTIONV_EN("  Rewind",      tape_rewind_action, NULL, tape_realtime_on),
+    UI_DYN    ("  Tape blocks",    tape_blocks_build, tape_blocks_key, NULL),
+    UI_ACTIONV("Save SAVEd blocks", rec_save_action, rec_info),
+    UI_BOOL   ("Every tape in real time", &settings.tape_realtime, NULL),
+    UI_BOOL   ("Rodolfo Guerra timings",  &settings.tape_rg, NULL),
     UI_BOOL   ("Beta Disk (TR-DOS)", &settings.betadisk, betadisk_changed),
+    UI_RADIO_EN("  TR-DOS version", &settings.trdos_rom, opt_trdos, machine_changed, betadisk_on),
     UI_ACTIONV_EN("  Eject disk",     disk_action, disk_info, betadisk_on),
     UI_ACTIONV_EN("  Save disk",      disk_save_action, disk_state, betadisk_on),
     UI_ACTIONV_EN("  Last FDC command", NULL,      fdc_info,  betadisk_on),
     UI_ACTIONV_EN("+3 drive",        dsk_action, dsk_info, is_plus3),
     UI_ACTIONV_EN("  Save +3 disk",  dsk_save_action, dsk_state, is_plus3),
     UI_ACTIONV_EN("Timex dock",     dck_action, dck_info, is_timex),
+    UI_ACTIONV_EN("IF2 cartridge",  if2_action, NULL, if2_in),
     UI_ACTIONV_EN("  uPD765",        NULL,       upd_info, is_plus3),
     UI_ACTION ("Screenshot to card", capture_action),
     UI_ACTIONV("USB stick",       NULL, usb_info),
     UI_BOOL   ("DivMMC / esxDOS", &settings.esxdos, esxdos_changed),
+    UI_BOOL   ("Z-Controller (#57)", &settings.zcontroller, NULL),
+    UI_RADIO  ("Hard disk (IDE)",    &settings.ide, opt_ide, NULL),
+    UI_ACTIONV_EN("  Eject hard disk", ide_eject_action, ide_info, ide_on),
     UI_ACTIONV_EN("  Card image",  mmc_action, mmc_info, esxdos_on),
     UI_ACTION ("Re-read the card", rescan_action),
 };
@@ -768,6 +1075,8 @@ static const ui_node_t system_kids[] = {
     UI_ACTIONV("PSRAM",          NULL, psram_info),
     UI_ACTION ("Test the PSRAM", psram_test_action),
     UI_ACTIONV("Z80",            NULL, z80_info),
+    UI_ACTIONV("Frame",          NULL, frame_info),
+    UI_ACTIONV("Headroom",       NULL, headroom_info),
 #if USB_KEYBOARD
     UI_ACTIONV("USB keyboard",   NULL, kbd_info),
 #endif
@@ -777,6 +1086,7 @@ static const ui_node_t system_kids[] = {
 
 static const ui_node_t root[] = {
     UI_SUB("Machine",  machine_kids, NULL),
+    UI_SUB("Snapshots", snapshot_kids, NULL),
     UI_SUB("Audio",    audio_kids,   NULL),
     UI_SUB("Video",    video_kids,   NULL),
     UI_SUB("Input",    input_kids,   NULL),

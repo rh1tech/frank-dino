@@ -425,6 +425,34 @@ bool __not_in_flash_func(divmmc_port_out)(const uint16_t port, const uint8_t val
     }
 }
 
+/*
+ * The Z-Controller: the same SD card behind Pentagon/Evo-style ports, #77
+ * the configuration (bit 1 low selects the card) and #57 the SPI data.
+ *
+ * pico-speccy's Z-Controller drives the host's own card raw; this one is
+ * given the card image instead -- the same one esxDOS sees -- because the
+ * host card is this firmware's own filing system, and a guest writing
+ * sectors to it raw is a guest that can destroy it.
+ */
+bool __not_in_flash_func(divmmc_zc_out)(const uint16_t port, const uint8_t value) {
+    if (!settings.zcontroller) return false;
+    switch (port & 0xFFu) {
+        case 0x77: divmmc_card_cs((value & 0x02u) ? 1u : 0u); return true;
+        case 0x57: card_write(value); return true;
+        default:   return false;
+    }
+}
+
+bool __not_in_flash_func(divmmc_zc_in)(const uint16_t port, uint8_t *value) {
+    if (!settings.zcontroller) return false;
+    switch (port & 0xFFu) {
+        case 0x57: *value = card_read(); return true;
+        // Status: bit 0 clear = a card is in, bit 1 clear = writable.
+        case 0x77: *value = card_open ? 0x00u : 0x01u; return true;
+        default:   return false;
+    }
+}
+
 bool __not_in_flash_func(divmmc_port_in)(const uint16_t port, uint8_t *value) {
     if (!settings.esxdos) return false;
     if ((port & 0xFFu) != 0xEB) return false;

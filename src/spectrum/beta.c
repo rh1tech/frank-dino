@@ -432,10 +432,17 @@ static void command(const uint8_t cmd) {
 #define BETA_SELECTED(p) (((p) & 0x03) == 0x03)
 #define BETA_REG(p)      (((p) >> 5) & 0x07)
 
+/*
+ * The controller's ports open without the TR-DOS ROM: the Profi's CP/M
+ * mode reaches the WD1793 through its own port numbers, which spectrum.c
+ * translates to these, with no ROM switch at all.
+ */
+volatile bool beta_ports_open;
+
 bool __not_in_flash_func(beta_port_out)(const uint16_t port, const uint8_t value) {
     // Only while the ROM is in. That is the real interface's rule, and it
     // is what lets a Kempston joystick share #1F with the status register.
-    if (!settings.betadisk || !rom_paged || !BETA_SELECTED(port)) return false;
+    if (!settings.betadisk || !(rom_paged || beta_ports_open) || !BETA_SELECTED(port)) return false;
 
     switch (BETA_REG(port)) {
         case 0: last_port = port; command(value); break;         // #1F
@@ -472,7 +479,7 @@ bool __not_in_flash_func(beta_port_out)(const uint16_t port, const uint8_t value
 }
 
 bool __not_in_flash_func(beta_port_in)(const uint16_t port, uint8_t *value) {
-    if (!settings.betadisk || !rom_paged || !BETA_SELECTED(port)) return false;
+    if (!settings.betadisk || !(rom_paged || beta_ports_open) || !BETA_SELECTED(port)) return false;
 
     switch (BETA_REG(port)) {
         case 0:                                                 // #1F, status

@@ -61,6 +61,9 @@ bool usbkbd_pad_present(void);
 
 bool usbkbd_take_menu_request(void);
 
+/* The Pause key was pressed: freeze or unfreeze the machine. */
+bool usbkbd_take_pause_request(void);
+
 /* True when the request came from F12 (settings) rather than F11 (files). */
 bool usbkbd_menu_request_was_settings(void);
 

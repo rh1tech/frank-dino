@@ -14,44 +14,59 @@ this is built around answering a real one. Where a sequence *is* theirs
 [ps]: https://github.com/xrip/pico-speccy
 [esp]: https://github.com/EremusOne/ZX-ESPectrum-IDF
 
-## The four machines
+## The machines
 
-| | ROM 0 | ROM 1 | T-states | Notes |
-|---|---|---|---|---|
-| **48K** | Sinclair 48K BASIC | — | 69888 | One ROM, no paging port |
-| **128K** | Sinclair 128 editor | 48K BASIC | 70908 | Port 0x7FFD, AY-3-8912 |
-| **+2** | Amstrad's | 48K BASIC | 70908 | The 128K with a different menu |
-| **Pentagon 128** | Pentagon's | 48K BASIC | 71680 | No contention; TR-DOS is native |
+| Family | Machines | RAM | Notes |
+|---|---|---|---|
+| Sinclair 48K | 16K, 48K (Sinclair or Spanish ROM) | 16-48 KB | One ROM, no paging port; contended, floating bus |
+| Clones of the 48K | Timex TC2048, Didaktik Gama 89, Leningrad-1 and -2, Byte | 48 KB | Their own ROMs; the TC2048 has the SCLD's video, the Byte an 8253 for sound, the Leningrads a short ~INT |
+| Sinclair 128K | 128K, +2 (Sinclair or Spanish ROMs) | 128 KB | #7FFD; contended, floating bus |
+| Amstrad | +2A, +3 | 128 KB | #1FFD and the all-RAM modes; the +3 has the uPD765 |
+| Pentagon | 128, 512, 1024SL | up to 1 MB | 71680 T-states, no contention, TR-DOS native; the 1024SL's #EFF7, cache page and 16 colours |
+| Scorpion | ZS-256, ZS-1024 (ProfROM 4.44), ScorpEvo, Nemo KAY-256 / KAY-1024 / KAY-1024 (2010), ZXM-Phoenix | up to 1 MB | #1FFD in each one's own shape; ProfROM's four planes |
+| Profi | Profi 1024 | 1 MB | #DFFD; DS80 512x240 and CP/M mode |
+| ATM-Turbo | 1, 2, 2+ (BIOS 1.07.13 or xBIOS 1.37), 3 | 1 MB | The memory manager in every window; EGA, hires and text modes; the 3 has 4 MB on the real board, 1 MB here |
+| Timex | TC2068 | 48 KB | The SCLD, the dock and the EX-ROM |
+| ALF | ALF TV Game | 128 KB | Banked cartridges |
 
-The T-state counts are not decoration. A 128's ULA runs 311 lines to the
-48's 312 and the line is a T-state longer; a Pentagon's is longer again.
-Getting one wrong does not break anything visibly — it makes the machine
-run at the wrong speed and every piece of music play flat.
+Every machine runs at its own clock and frame length -- a 128's ULA runs
+311 lines to the 48's 312 and the line is a T-state longer; a Pentagon's
+is longer again -- and is paced against the wall clock, so it plays in
+tune whatever it is doing.
 
-Switching machines restarts the machine. The choice is saved with
-everything else, so the board comes up as whatever it was last set to.
+Turbo bits (the Pentagon 1024SL's #EFF7, the KAY's #1FFD, the ATM's #77)
+are latched and ignored: the clock is a real Z84C00's and this board does
+not reach 7 MHz.
 
-### What none of them have
+Not here, because they need more than one Z80 or a faster one: the
+Spectrum Next, SAM Coupe, TS-Conf, Scorpion GMX, MB-02+ and General
+Sound. ZX-Evo BaseConf is not here yet either: it needs a behavioural
+model of its AVR and FPGA that has not been ported.
 
-**Contention.** A real ULA steals cycles from the CPU when it is drawing
-and the CPU touches contended memory. Here the CPU has its own clock and
-the video is a DMA channel; they share nothing to be contended over.
-Programs whose timing depends on it — a handful of demos, the tighter
-multicolour effects — will run, and run wrong.
+### Timing
 
-**The floating bus.** An unclaimed `IN` returns 0xFF. On real hardware it
-returns whatever the ULA was fetching at that instant, which a few
-loading effects depend on and which needs the same shared clock.
+**Contention.** The 48K, 128K, +2, +2A and +3 lose time to their ULA as
+the real ones did: a contended access moves the frame's T-state on with
+no clock edges, which is exactly what the ULA's stopped clock looks like
+to a static CPU. The Fuse patterns, at the Fuse T-states.
+
+**The floating bus.** An unclaimed `IN` on a 48K or 128K returns the
+byte the ULA is fetching at that T-state, in its order -- bitmap,
+attribute, bitmap, attribute, then four idle -- and 0xFF in the border.
+
+**The picture.** With *Beam-accurate picture* on, core 1 builds each
+frame as the ULA fetched it, so multicolour and border effects come out
+as they did on a television.
 
 ## Getting to the browser
 
 | | Console build | USB keyboard build |
 |---|---|---|
-| Open the file browser | **Tab** | **F1** |
-| Leave it | Tab | F1, Tab or Escape |
+| Open the file browser | **Tab** | **F11** |
+| Leave it | Tab | F11, Tab or Escape |
 
-It has to be F1 on a real keyboard because every key a Spectrum has
-belongs to the matrix, and Tab is a joystick fire button. And it has to
+It has to be F11 on a real keyboard (F12 opens the settings directly) because every key a Spectrum has
+belongs to the matrix, and Tab is EDIT. And it has to
 be *something*, because a USB_KEYBOARD build has no console to press Tab
 at: S1 has given those pins to the host controller, so if the keyboard
 cannot reach the browser then nothing can.
@@ -59,6 +74,27 @@ cannot reach the browser then nothing can.
 Inside the browser: the arrows move, Enter opens, Backspace goes up, any
 letter or digit jumps to the next entry beginning with it, and backslash
 opens the settings page.
+
+## The keyboard
+
+A USB keyboard is mapped the way pico-speccy and SpeccyP map it: by key
+position, not by character. Shift is CAPS SHIFT and Ctrl is SYMBOL
+SHIFT, so Shift+2 is CAPS LOCK and not `@`, exactly as on the real
+machine.
+
+| PC key | Spectrum |
+|---|---|
+| Letters, digits, Enter, Space | the same key |
+| Shift / Ctrl | CAPS SHIFT / SYMBOL SHIFT |
+| Arrows | CAPS SHIFT + 5 6 7 8, always — and the joystick too, if *Cursor keys as joystick* is on |
+| Backspace, Delete | DELETE (CAPS + 0) |
+| Esc | BREAK (CAPS + SPACE) |
+| Caps Lock | CAPS LOCK (CAPS + 2) |
+| Tab | EDIT (CAPS + 1) |
+| `; ' , . / - =` | SYMBOL SHIFT + O P N M V J L |
+| `[ ] \` `` ` `` | SYMBOL SHIFT + 8 9 D A — `(` `)` `\` STOP |
+| Keypad | its digits and Enter; `/ * - +` as SYMBOL SHIFT + V B J K |
+| Alt, keypad `.` | joystick fire, when *Cursor keys as joystick* is on |
 
 ## Settings
 
@@ -122,7 +158,7 @@ one step to give, which is why it is a toggle and not a strength.
 |---|---|
 | **Joystick** | None, Kempston, Sinclair 1, Sinclair 2, Cursor or Fuller. |
 | **Kempston port** | 0x1F, or 0xDF for the interfaces that used it. |
-| **Cursor keys as joystick** | The four arrows drive the selected joystick instead of being CAPS SHIFT and a digit. |
+| **Cursor keys as joystick** | The four arrows drive the selected joystick as well as being CAPS SHIFT and a digit; Alt and the keypad's `.` are fire. |
 
 Nothing about a Spectrum joystick is standard, because the machine has no
 joystick port: every interface is somebody's add-on and they agree about

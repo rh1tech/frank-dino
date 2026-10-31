@@ -16,24 +16,24 @@ because the two CPUs share none of the signals that matter.
 
 ## What it is now
 
-A **ZX Spectrum**, in four flavours, with sound, storage and a settings
-page — all of it executed by a Z84C00 in a socket, with the RP2350B
-being everything else the CPU can see.
+A **ZX Spectrum** and some forty of its relatives, with sound, storage
+and a settings page — all of it executed by a Z84C00 in a socket, with
+the RP2350B being everything else the CPU can see.
 
 | | |
 |---|---|
-| Machines | 48K, 128K, +2, Pentagon 128 — chosen at runtime, saved to the card |
-| CPU | A real Z84C00 at **3.5469 MHz**, tuned against the wall clock; 5.3 and 7 MHz on request |
-| RAM | 128 KB, eight banks, port 0x7FFD |
-| Machines | 48K, 128K, +2, +3, Pentagon 128, Scorpion ZS-256, Profi 1024 and Timex TC2068 |
-| ROM | The stock Sinclair pair, Amstrad's +2 ROM 0 and the +3's four, the Pentagon's, and TR-DOS 5.04T |
-| Video | The ULA's 256x192 and border, doubled into 640x480 over HDMI; ULA+, Gigascreen, the Timex SCLD modes, optional scanlines |
-| Sound | Beeper, AY-3-8912, TurboSound (two of them), SAA1099, Covox and SounDrive, mixed in stereo to two 44.1 kHz PWM DACs on GP46 and GP44; the AY in ABC, ACB or mono |
-| Input | The full matrix over USB or the console; USB gamepads; Kempston, Sinclair 1 and 2, Cursor and Fuller joysticks |
-| Storage | microSD and a USB stick: a file browser, `.tap`, `.tzx`, `.pzx`, `.sna`, `.z80`, `.trd`, `.scl`, `.dsk`, `.dck`, `.mmc`, `.hdf`, `.scr` and `.zip` |
-| Disks | A Beta Disk and a WD1793 with TR-DOS in ROM; the +3's uPD765 and +3DOS; DivMMC with esxDOS in its EEPROM. What the guest writes goes back to the card when you ask it to |
+| Machines | 16K, 48K, 128K, +2, +2A, +3; Pentagon 128, 512 and 1024SL; Scorpion ZS-256 and ZS-1024 (ProfROM), ScorpEvo; Nemo KAY-256, KAY-1024 (two ROMs), ZXM-Phoenix; Profi 1024 with DS80 and CP/M; ATM-Turbo 1, 2, 2+ (two BIOSes) and 3; Timex TC2048 and TC2068; Didaktik Gama 89; Leningrad-1 and -2; Byte; ALF TV Game. Spanish ROMs for the 48K, 128K and +2 |
+| CPU | A real Z84C00 at each machine's own clock (3.5, 3.5469 or 3.528 MHz), paced by the wall clock; 5.3 and 7 MHz on request |
+| Timing | Every handler is told its T-state: the ULA's contention and floating bus on the Sinclair machines, a picture built as the ULA fetched it (multicolour, border effects), Gigascreen with an Auto mode |
+| RAM | 128 KB in SRAM; up to 1 MB more in the 8 MB PSRAM, at #C000 through a staging page or anywhere at all through the XIP cache (the ATM) |
+| Video | 256x192 and border doubled into 640x480 over HDMI; ULA+, Gigascreen, the Timex modes, Pentagon 16 colours, Profi 512x240, ATM EGA/hires/80x25 text with its palette |
+| Sound | Beeper, two AYs (TurboSound and TurboSound FM's YM2203s), SAA1099 and the CMS pair, OPL3, YM2413, two SN76489s, Covox (#FB or #DD), SounDrive, SpecDrum, the Byte's 8253 -- synthesised on core 0 from timestamped writes, stereo to two PWM DACs |
+| Tape | `.tap`, `.tzx` (every block type, GDB included), `.pzx`, `.csw`, `.wav` in real time onto the EAR bit, or instantly by ROM trap when a tape is all standard blocks; a tape browser; SAVE recorded back to `.tap`; Rodolfo Guerra timings |
+| Snapshots | `.sna` and `.z80` in; `.z80` v3 out, ten quick-save slots, a register page -- the registers read from the real CPU by NMI |
+| Disks | Beta Disk with TR-DOS 5.03, 5.04T, 5.04TM, 5.05D or 6.11e: `.trd`, `.scl`, `.fdi`, `.udi`, `.td0`; the +3's uPD765; DivMMC/esxDOS and a Z-Controller on its card image; an IDE hard disk behind NEMO, DivIDE or ATM ports |
+| Input | The full matrix over USB or the console, mapped the way pico-speccy and SpeccyP map it; USB gamepads and mice (Kempston mouse with wheel); Kempston, Sinclair 1 and 2, Cursor and Fuller joysticks; Pause |
+| Other | Mr Gluk's clock with its NVRAM on the card, Interface 2 and ALF cartridges, POKE, `.gz` and `.zip` |
 | Menus | pico-speccy's, ported: browser, settings tree, dialogs and info pages on their own 320x240 surface |
-| Memory | 128 KB of guest RAM in SRAM; the Scorpion's 256 KB and the Profi's 1 MB staged out of the 8 MB PSRAM, which the board does not run without |
 
 Five of those are worth a sentence each, because they are not what an
 emulator does.
@@ -371,6 +371,28 @@ the hooks and CI both call it.
 make hooks               # once per clone; also runs the self-test
 make check-attribution   # scan what this branch adds over the remote
 ```
+
+## Credits
+
+Much of the machine above the bus is ported from other people's work, all
+of it GPL-3.0 or compatible, and each ported file says so at its top:
+
+- **pico-speccy** (https://github.com/drewpo28/pico-speccy) by drew.po28 —
+  the machine models (Pentagon 512/1024, Scorpion/ProfROM/KAY/Phoenix,
+  ATM-Turbo, Byte, ALF, Profi DS80), the FM and PSG cores, the tape timings,
+  the TD0 decoder, the Kempston mouse decode, the menus and their font.
+- **ESPectrum** by Víctor Iborra [Eremus] and David Crespo [dcrespo3d], from
+  which pico-speccy grew, and ZX-ESPectrum-Wiimote, Ramón Martinez and
+  Jorge Fuertes, and Pete Todd's paseVGA before it.
+- **MAME** — fm.cpp, ymf262.cpp and ym2413.cpp by Jarek Burczynski and
+  Tatsuyuki Satoh, under the FM cores; the Scorpion and ATM hardware
+  derivations.
+- **UnrealSpeccy** — the ATM memory manager and the Teledisk loader.
+- **Fuse** — the contention patterns and the first contended T-states.
+- **SpeccyP** — the keyboard's extra keys.
+
+The ROM images are their owners'; `roms/README.md` says where each came
+from.
 
 ## Licence
 

@@ -61,3 +61,14 @@ int zip_list(const char *path, zip_member_t *out, int max);
  */
 bool zip_extract(const char *path, const zip_member_t *m,
                  char *detail, unsigned detail_len);
+
+/*
+ * A .gz: one file, deflated, with a header saying little more than
+ * that. Unpacked to ZIP_TEMP_PATH like an archive member; `kind` is what
+ * the name under the .gz says it is (GAME.TZX.GZ is a tape).
+ *
+ * Added with pico-speccy's support for gzip-wrapped images (its
+ * ZipExtract.cpp, drew.po28), which carries .tzx.gz, .trd.gz and the like
+ * from the archives that publish them that way.
+ */
+bool zip_gunzip(const char *path, file_kind_t *kind, char *detail, unsigned detail_len);

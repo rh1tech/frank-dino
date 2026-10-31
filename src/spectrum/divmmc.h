@@ -69,6 +69,10 @@ void divmmc_opfetch(uint16_t addr);
 
 /* Ports, called from the I/O handlers. True if this was ours. */
 bool divmmc_port_out(uint16_t port, uint8_t value);
+/* The Z-Controller's #57/#77, on the same card. True if it was theirs. */
+bool divmmc_zc_out(uint16_t port, uint8_t value);
+bool divmmc_zc_in(uint16_t port, uint8_t *value);
+
 bool divmmc_port_in(uint16_t port, uint8_t *value);
 
 /* What the card is doing, as a short line of text. */

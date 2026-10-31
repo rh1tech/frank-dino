@@ -100,7 +100,7 @@ static bool ro(const unsigned s) {
     return discarded;
 }
 
-static void out(const uint16_t port, const uint8_t v) { z80_io_out(port, v); }
+static void out(const uint16_t port, const uint8_t v) { z80_io_out(port, v, 0); }
 
 static void boot(const machine_t m) {
     stub_beta_paged = false;
@@ -382,6 +382,145 @@ int main(void) {
      * still be the very pages the rest of the machine sees. */
     out(0x1FFD, 0x00); out(0x7FFD, 0x03);
     STREQ(slot(6), "ram3.lo", "a low bank is the real page, not a stage");
+
+    /* ---------------------------------------------------------------- */
+    GROUP("the 48K family");
+    boot(MACHINE_16K);
+    EQ(z80_rpage[4][0], 0xFF, "a 16K has nothing at #8000");
+    EQ(z80_rpage[7][8191], 0xFF, "...or at #FFFF");
+    z80_wpage[4][0] = 0x12;
+    EQ(z80_rpage[4][0], 0xFF, "and writing there changes nothing");
+    STREQ(slot(2), "ram5.lo", "but its 16 KB is where a 48K's screen is");
+    boot(MACHINE_TC2048);
+    STREQ(slot(2), "ram5.lo", "a TC2048 is a 48K underneath");
+    STREQ(slot(6), "ram0.lo", "...all the way up");
+    boot(MACHINE_LENINGRAD1);
+    out(0x7FFD, 0x07);
+    STREQ(slot(6), "ram0.lo", "a clone has no #7FFD to page with");
+    boot(MACHINE_PLUS2A);
+    out(0x1FFD, 0x01);
+    STREQ(slot(0), "ram0.lo", "a +2A has the +3's all-RAM modes");
+    out(0x1FFD, 0x07);
+    STREQ(slot(0), "ram4.lo", "...all four of them");
+
+    /* ---------------------------------------------------------------- */
+    GROUP("Pentagon 512 and 1024SL");
+    boot(MACHINE_PENT512);
+    out(0x7FFD, 0xC3);                            // 3 + 8 + 16
+    z80_wpage[6][0] = 0x5B;
+    out(0x7FFD, 0x03);
+    CHECK(z80_rpage[6][0] != 0x5B, "bank 27 is not bank 3");
+    out(0x7FFD, 0xC3);
+    EQ(z80_rpage[6][0], 0x5B, "and comes back");
+    boot(MACHINE_PENT1024);
+    out(0x7FFD, 0x23);                            // bit 5 is a page bit here
+    z80_wpage[6][1] = 0x6C;
+    out(0x7FFD, 0x03);
+    EQ(z80_rpage[6][1] == 0x6C, 0, "bank 35 is not bank 3");
+    out(0x7FFD, 0x23);
+    EQ(z80_rpage[6][1], 0x6C, "a 1024SL pages bank 35 without locking");
+    out(0xEFF7, 0x04);                            // 128K mode: bit 5 locks again
+    out(0x7FFD, 0x20);
+    out(0x7FFD, 0x01);
+    STREQ(slot(6), "ram0.lo", "...until #EFF7 bit 2 makes it a lock");
+    boot(MACHINE_PENT1024);
+    out(0xEFF7, 0x01);
+    EQ(spec_pent16c, true, "#EFF7 bit 0 is the 16-colour mode");
+    z80_io_in(0x00FB, 0);
+    CHECK(z80_wpage[0] != NULL && z80_rpage[0] == z80_wpage[0], "IN #FB puts writable cache at #0000");
+    z80_io_in(0x007B, 0);
+    STREQ(slot(0), "pentagon.lo", "IN #7B puts the ROM back");
+
+    /* ---------------------------------------------------------------- */
+    GROUP("Scorpion family");
+    {
+        extern const uint8_t spec_romprof[], spec_romkay1024[];
+        boot(MACHINE_KAY1024);
+        out(0x0001, 0x80);                            // 1FFD D7: +16
+        out(0x7FFD, 0x81);                            // 7FFD D7: +32, low bits 1
+        z80_wpage[6][2] = 0x77;
+        out(0x0001, 0x00);
+        out(0x7FFD, 0x01);
+        CHECK(z80_rpage[6][2] != 0x77, "bank 49 is not bank 1");
+        out(0x0001, 0x80);
+        out(0x7FFD, 0x81);
+        EQ(z80_rpage[6][2], 0x77, "a KAY-1024 reaches bank 49");
+        out(0x0001, 0x00);
+        out(0x7FFD, 0x10);
+        CHECK(!memcmp(z80_rpage[0], spec_romkay1024 + 16384, 16), "KAY: #7FFD D4 is its BASIC 48");
+        out(0x0001, 0x08);
+        CHECK(!memcmp(z80_rpage[0], spec_romkay1024 + 2 * 16384, 16), "...and #1FFD D3 swaps the pair (TR-DOS, page 2 of the image)");
+
+        boot(MACHINE_ZS1024);
+        out(0x1FFD, 0x02);                            // the service ROM, which arms the tap
+        CHECK(!memcmp(z80_rpage[0], spec_romprof + 2 * 16384, 16), "ProfROM plane 0, service bank");
+        CHECK(z80_opfetch_cb != NULL, "and the plane switch is watching fetches");
+        z80_opfetch_cb(0x0101, 0);                    // row 0 keeps the plane
+        CHECK(!memcmp(z80_rpage[0], spec_romprof + 2 * 16384, 16), "a jump to #0101 stays on plane 0");
+        z80_opfetch_cb(0x010C, 0);                    // row 3, from plane 0 -> plane 1
+        CHECK(!memcmp(z80_rpage[0], spec_romprof + (4 + 2) * 16384, 16), "a jump to #010C is plane 1");
+        out(0x1FFD, 0xC0);                            // D6,D7: +16, +32
+        out(0x7FFD, 0x05);
+        z80_wpage[6][3] = 0x99;
+        out(0x1FFD, 0x00);
+        CHECK(z80_rpage[6][3] != 0x99, "bank 53 is not bank 5");
+        out(0x1FFD, 0xC0);
+        EQ(z80_rpage[6][3], 0x99, "a ZS-1024 reaches bank 53");
+    }
+
+    /* ---------------------------------------------------------------- */
+    GROUP("ATM-Turbo");
+    {
+        extern const uint8_t atm_rom2_107[];
+        boot(MACHINE_ATM2P);
+        CHECK(!memcmp(z80_rpage[0], atm_rom2_107 + 3 * 16384, 16), "reset: the BIOS at #0000");
+        CHECK(!memcmp(z80_rpage[6], atm_rom2_107 + 3 * 16384, 16), "...and in every window");
+        out(0x0177, 0x03);                            // #77 with A8: the manager on, ZX mode
+        out(0xC0F7, (uint8_t)(0x40 | (~10 & 0x3F)));  // window 3, set 0: RAM page 10 (D7=0: the page from here)
+        out(0x40F7, (uint8_t)(0x40 | (~5 & 0x3F)));   // window 1: RAM 5
+        z80_wpage[6][4] = 0x3C;
+        EQ(z80_rpage[6][4], 0x3C, "RAM page 10 at #C000 is writable");
+        out(0xC0F7, (uint8_t)(0x40 | (~2 & 0x3F)));   // now page 2 there
+        CHECK(z80_rpage[6][4] != 0x3C || z80_rpage[6] == spec_ram[2], "a different page");
+        STREQ(slot(6), "ram2.lo", "page 2 is the SRAM bank");
+        out(0xC0F7, (uint8_t)(0x40 | (~10 & 0x3F)));
+        EQ(z80_rpage[6][4], 0x3C, "and page 10 kept its byte");
+        STREQ(slot(2), "ram5.lo", "window 1 follows its register");
+    }
+
+    /* ---------------------------------------------------------------- */
+    GROUP("contention and the floating bus");
+    boot(MACHINE_48K);
+    settings.contention = 1;
+    spec_init();
+    EQ(z80_contend.on, true, "a 48K contends");
+    EQ(z80_contend.mask, 0x02, "only the window at 0x4000");
+    EQ(z80_contend.t0, 14335u, "from Fuse's first contended T-state");
+    spec_ram[5][0x0000] = 0x81;                   // bitmap, top-left
+    spec_ram[5][0x1800] = 0x47;                   // its attribute
+    spec_ram[5][0x0001] = 0x82;
+    spec_ram[5][0x1801] = 0x46;
+    EQ(z80_io_in(0x40FF, 14335), 0x81, "the bitmap byte under the beam");
+    EQ(z80_io_in(0x40FF, 14336), 0x47, "then its attribute");
+    EQ(z80_io_in(0x40FF, 14337), 0x82, "then the next cell's bitmap");
+    EQ(z80_io_in(0x40FF, 14338), 0x46, "and its attribute");
+    EQ(z80_io_in(0x40FF, 14339), 0xFF, "idle for the rest of the eight");
+    EQ(z80_io_in(0x40FF, 14335 + 130), 0xFF, "the right border floats high");
+    EQ(z80_io_in(0x40FF, 100), 0xFF, "and so does the top border");
+
+    boot(MACHINE_128K);
+    settings.contention = 1;
+    spec_init();
+    out(0x7FFD, 0x03);
+    EQ(z80_contend.mask, 0x0A, "a 128K with bank 3 paged in contends the top window too");
+    out(0x7FFD, 0x02);
+    EQ(z80_contend.mask, 0x02, "...and not with bank 2");
+
+    boot(MACHINE_PENTAGON);
+    settings.contention = 1;
+    spec_init();
+    EQ(z80_contend.on, false, "a Pentagon does not contend");
+    EQ(z80_io_in(0x40FF, 14335), 0xFF, "and its floating bus is high");
 
     return tap_done("paging");
 }

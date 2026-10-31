@@ -48,6 +48,9 @@
 #define AUDIO_RATE_HZ 44100u
 #define AUDIO_SAMPLES_PER_FRAME 882u
 
+/* The rate the DAC actually runs at, in millihertz. See audio.c. */
+uint32_t audio_rate_millihz(void);
+
 // Duty values per DMA block. 2048 at the oversampled rate is ~5.8 ms of
 // latency and ~170 refills a second, comfortably slower than anything
 // else core 0 does -- and it is 256 audio samples, because the duty is

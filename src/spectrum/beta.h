@@ -127,4 +127,7 @@ void beta_stats(char *out, unsigned len);
 
 /* Ports, called from the bus handlers. True if this was ours. */
 bool beta_port_out(uint16_t port, uint8_t value);
+/* Set while something other than the TR-DOS ROM has the ports open. */
+extern volatile bool beta_ports_open;
+
 bool beta_port_in(uint16_t port, uint8_t *value);

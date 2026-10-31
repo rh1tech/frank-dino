@@ -40,12 +40,13 @@ uint8_t *z80_wpage[Z80_PAGES];
 /*
  * Where writes to a read-only window go.
  *
- * A whole 16 KB thrown away so the write path can be a single indexed
- * store with no test for ROM. The alternative costs a compare and a branch
- * on a path the CPU takes several million times a second, and this chip
- * has the memory to not care.
+ * Thrown away so the write path can be a single indexed store with no
+ * test for ROM. The alternative costs a compare and a branch on a path
+ * the CPU takes several million times a second. One window's worth --
+ * 8 KB since the windows halved -- because every read-only window's
+ * write pointer aims at the same bucket.
  */
-static uint8_t write_bitbucket[16384] __attribute__((aligned(4)));
+static uint8_t write_bitbucket[8192] __attribute__((aligned(4)));
 
 void z80_map_page8(const unsigned slot, uint8_t *read_from, uint8_t *write_to) {
     z80_rpage[slot] = read_from;
@@ -79,13 +80,59 @@ volatile bool     z80_trace_on = false;
 bus_event_t       z80_trace[BUS_TRACE_DEPTH];
 volatile uint32_t z80_trace_pos = 0;
 
-static uint8_t io_in_default(uint16_t port);
-static void    io_out_default(uint16_t port, uint8_t val) { (void)port; (void)val; }
+static uint8_t io_in_default(uint16_t port, uint32_t t);
+static void    io_out_default(uint16_t port, uint8_t val, uint32_t t) { (void)port; (void)val; (void)t; }
 
 z80_io_in_fn  z80_io_in  = io_in_default;
 z80_io_out_fn z80_io_out = io_out_default;
 
 z80_opfetch_fn z80_opfetch_cb;
+
+volatile uint8_t z80_wwatch_mask;
+z80_wwatch_fn    z80_wwatch_cb;
+
+uint32_t z80_t;
+volatile uint32_t z80_fetch0;
+/* Set by a debugger: the trace stops at the next fetch from #0000, so the
+ * ring holds the way into a reset (tools/dino.py). */
+volatile bool     z80_trace_stop0;
+
+z80_contend_t z80_contend;
+
+/*
+ * How long the ULA holds the CPU for an access at frame T-state t.
+ *
+ * Zero outside the 192 lines of paper and outside the 128 T-states of
+ * each line the ULA spends fetching; inside, the pattern for the
+ * position within the ULA's eight-T-state fetch cycle. The modulo is
+ * the one division here, and the M33 does it in a few cycles.
+ */
+__force_inline static uint32_t contend_at(const uint32_t t) {
+    const uint32_t d = t - z80_contend.t0;
+    if (d >= z80_contend.span) return 0;
+    const uint32_t x = d % z80_contend.line;
+    return x < 128u ? z80_contend.pat[x & 7u] : 0u;
+}
+
+/*
+ * An I/O cycle's contention, the four cases Fuse documents: the high
+ * byte decides whether the address is contended, A0 whether the ULA is
+ * being addressed, and the two together the shape. Only on the machines
+ * whose ULA contends I/O at all -- not the +2A/+3.
+ */
+static uint32_t __not_in_flash_func(contend_io)(const uint16_t port, uint32_t t) {
+    const uint32_t t_in = t;
+    const bool hi = ((z80_contend.mask >> (port >> 14)) & 1u) != 0;
+    if (!z80_contend.io) return 0;
+    if (hi) {
+        if (!(port & 1u)) { t += contend_at(t) + 1u; t += contend_at(t) + 3u; }
+        else for (int i = 0; i < 4; i++) t += contend_at(t) + 1u;
+    } else {
+        if (!(port & 1u)) { t += 1u; t += contend_at(t) + 3u; }
+        else t += 4u;
+    }
+    return t - t_in - 4u;
+}
 
 /*
  * An unterminated Z80 data bus does not read as zero.
@@ -98,7 +145,10 @@ z80_opfetch_fn z80_opfetch_cb;
  */
 #define BUS_FLOAT 0xFF
 
-static uint8_t __not_in_flash_func(io_in_default)(uint16_t port) { (void)port; return BUS_FLOAT; }
+static uint8_t __not_in_flash_func(io_in_default)(uint16_t port, uint32_t t) {
+    (void)port; (void)t;
+    return BUS_FLOAT;
+}
 
 // How many consecutive quiet samples with ~M1 low and ~MREQ high mean an
 // interrupt acknowledge rather than the first half-T-state of an ordinary
@@ -236,7 +286,15 @@ bus_event_t z80_trace_get(const uint32_t i) {
  */
 static uint32_t prev_ctl = 0xFFFFFFFFu;
 
-__force_inline static uint32_t bus_service(const uint32_t prev) {
+/*
+ * `diag` is a compile-time constant at every call site, so this is two
+ * routines from one source: the diagnostic one counts every cycle into
+ * z80_stats, and the production one counts nothing but the last fetch
+ * address. The counters were five loads and stores per fetch on the loop
+ * that is the machine's speed, read by nothing but stage 0.
+ */
+__force_inline static uint32_t bus_service(const uint32_t prev, uint32_t *const tp,
+                                           const bool diag) {
     const uint32_t g    = sio_hw->gpio_in;
     const uint32_t fell = prev & ~g;
 
@@ -245,29 +303,47 @@ __force_inline static uint32_t bus_service(const uint32_t prev) {
         uint8_t v;
         bus_cycle_t kind;
 
+        /*
+         * The ULA's contention, as time the frame moves on by with no
+         * clock edge at all -- which is what the ULA does to a real Z80:
+         * it stops its clock. The CPU is static and cannot tell.
+         */
+        if (!diag && unlikely(z80_contend.on)) {
+            if (!(g & Z80_MREQ)) {
+                if ((z80_contend.mask >> (a >> 14)) & 1u) *tp += contend_at(*tp);
+            } else {
+                *tp += contend_io(a, *tp);
+            }
+        }
+        const uint32_t t = *tp;
+
         if (!(g & Z80_MREQ)) {
             if (!(g & Z80_M1)) {
                 kind = BUS_OPFETCH;
-                z80_stats.opfetch++;
+                if (diag) z80_stats.opfetch++;
+                // A fetch from #0000 is a reset or an RST 0: worth knowing about.
+                if (unlikely(!a)) { z80_fetch0++; if (z80_trace_stop0) z80_trace_on = false; }
                 z80_stats.last_opfetch_addr = a;
                 // Before the read, not after: the callback exists to
                 // change what this fetch will see. See z80_bus.h.
-                if (unlikely(z80_opfetch_cb)) z80_opfetch_cb(a);
+                if (unlikely(z80_opfetch_cb)) z80_opfetch_cb(a, t);
             } else {
                 kind = BUS_MEM_READ;
-                z80_stats.mem_read++;
+                if (diag) z80_stats.mem_read++;
             }
             v = mem_read(a);
         } else {
             // ~MREQ idle with ~RD active is an I/O read and nothing else.
-            v = z80_io_in(a);
+            v = z80_io_in(a, t);
             kind = BUS_IO_READ;
-            z80_stats.io_read++;
+            if (diag) z80_stats.io_read++;
         }
 
         dbus_drive(v);
-        z80_stats.last_addr = a;
-        z80_stats.last_data = v;
+        if (diag) {
+            z80_stats.last_addr = a;
+            z80_stats.last_data = v;
+        }
         trace_put(a, v, kind);
         inta_run = 0;
         return g;
@@ -282,17 +358,30 @@ __force_inline static uint32_t bus_service(const uint32_t prev) {
         const uint16_t a = (uint16_t)(g & Z80_ADDR_MASK);
         const uint8_t  v = (uint8_t)((g & Z80_DATA_MASK) >> Z80_DATA_BASE);
 
+        if (!diag && unlikely(z80_contend.on)) {
+            if (!(g & Z80_MREQ)) {
+                if ((z80_contend.mask >> (a >> 14)) & 1u) *tp += contend_at(*tp);
+            } else {
+                *tp += contend_io(a, *tp);
+            }
+        }
+        const uint32_t t = *tp;
+
         if (!(g & Z80_MREQ)) {
+            // Before the store: a watcher wants the byte it replaces.
+            if (unlikely((z80_wwatch_mask >> (a >> 13)) & 1u)) z80_wwatch_cb(a, v, t);
             mem_write(a, v);
-            z80_stats.mem_write++;
+            if (diag) z80_stats.mem_write++;
             trace_put(a, v, BUS_MEM_WRITE);
         } else {
-            z80_io_out(a, v);
-            z80_stats.io_write++;
+            z80_io_out(a, v, t);
+            if (diag) z80_stats.io_write++;
             trace_put(a, v, BUS_IO_WRITE);
         }
-        z80_stats.last_addr = a;
-        z80_stats.last_data = v;
+        if (diag) {
+            z80_stats.last_addr = a;
+            z80_stats.last_data = v;
+        }
         inta_run = 0;
         return g;
     }
@@ -317,7 +406,7 @@ __force_inline static uint32_t bus_service(const uint32_t prev) {
      */
     if (!(g & Z80_M1) && (g & Z80_MREQ)) {
         if (++inta_run == INTA_SETTLE) {
-            z80_stats.int_ack++;
+            if (diag) z80_stats.int_ack++;
             trace_put((uint16_t)(g & Z80_ADDR_MASK), z80_int_vector, BUS_INT_ACK);
             dbus_drive(z80_int_vector);
         }
@@ -384,15 +473,17 @@ __force_inline static void edge_watch(void) {
  * `prev` is the previous sample, in and out; the paces come from the
  * caller. See settle() for why none of them is read from memory here.
  */
-__force_inline static uint32_t t_state_r(uint32_t prev, const uint32_t pa, const uint32_t pb) {
+__force_inline static uint32_t t_state_r(uint32_t prev, const uint32_t pa, const uint32_t pb,
+                                         const uint32_t t) {
+    uint32_t tt = t;
     sio_hw->gpio_set = Z80_CLK;
     settle(pa);
-    prev = bus_service(prev);
+    prev = bus_service(prev, &tt, true);
     edge_watch();
 
     sio_hw->gpio_clr = Z80_CLK;
     settle(pb);
-    prev = bus_service(prev);
+    prev = bus_service(prev, &tt, true);
     edge_watch();
 
     return prev;
@@ -400,7 +491,8 @@ __force_inline static uint32_t t_state_r(uint32_t prev, const uint32_t pa, const
 
 /* The same, for the callers that run a handful of cycles and go away. */
 __force_inline static void t_state(void) {
-    prev_ctl = t_state_r(prev_ctl, pace_settle, pace_settle_b);
+    prev_ctl = t_state_r(prev_ctl, pace_settle, pace_settle_b, z80_t);
+    z80_t++;
     z80_stats.t_states++;
 }
 
@@ -557,15 +649,69 @@ uint32_t z80_edge_watch_stuck_low(void)  { return (~seen_high) & Z80_ADDR_MASK; 
 void __not_in_flash_func(z80_run)(const uint32_t t_states) {
     const uint32_t pa = pace_settle, pb = pace_settle_b;
     uint32_t prev = prev_ctl;
+    uint32_t t = z80_t;
 
-    for (uint32_t i = t_states; i--; ) prev = t_state_r(prev, pa, pb);
+    for (uint32_t i = t_states; i--; t++) prev = t_state_r(prev, pa, pb, t);
 
     prev_ctl = prev;
+    z80_t = t;
 
     // Counted once rather than once per T-state: the loop always runs
     // the whole count, and a register held for the duration is a
     // register the settle loop could have had.
     z80_stats.t_states += t_states;
+}
+
+/*
+ * The machine's loop: z80_run() without the counting.
+ *
+ * No stuck-line watch -- two loads and a branch per T-state for a test
+ * that only stage 0 runs -- and no counters but the last fetch address.
+ * The frame's T-state is the loop variable rather than a down-counter, so
+ * every handler is told when it was called at no cost at all.
+ */
+void __not_in_flash_func(z80_run_until)(const uint32_t t_stop) {
+    const uint32_t pa = pace_settle, pb = pace_settle_b;
+    uint32_t prev = prev_ctl;
+    uint32_t t = z80_t;
+
+    while ((int32_t)(t - t_stop) < 0) {
+        sio_hw->gpio_set = Z80_CLK;
+        settle(pa);
+        prev = bus_service(prev, &t, false);
+
+        sio_hw->gpio_clr = Z80_CLK;
+        settle(pb);
+        prev = bus_service(prev, &t, false);
+        t++;
+    }
+
+    prev_ctl = prev;
+    z80_t = t;
+}
+
+/*
+ * Stop the clock HIGH.
+ *
+ * The engine ends every T-state with the clock low, which is fine for
+ * the millisecond between two frames and not for longer: a 128K paused
+ * in a menu for a second or two came back with an interrupt's return
+ * address gone -- on most pauses, not all -- and walked off through
+ * empty RAM into a cold start. Zilog specifies the Z84C00 as static with
+ * the clock stopped high; held low for seconds, this one is not.
+ *
+ * So any stop that can be long is made in the high half of a T-state:
+ * the rising edge and its sample now. Nothing undoes it -- the run loop
+ * starts every T-state by setting the clock high, which from here is no
+ * edge at all, then takes the falling edge as usual, so the T-state
+ * parked in is simply a long one.
+ */
+void __not_in_flash_func(z80_park)(void) {
+    if (sio_hw->gpio_out & Z80_CLK) return;     // already high
+    uint32_t t = z80_t;
+    sio_hw->gpio_set = Z80_CLK;
+    settle(pace_settle);
+    prev_ctl = bus_service(prev_ctl, &t, false);
 }
 
 uint32_t __not_in_flash_func(z80_run_to_opfetch)(const uint32_t max_t_states) {

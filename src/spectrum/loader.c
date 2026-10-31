@@ -20,6 +20,11 @@
 #include "settings.h"
 #include "spectrum.h"
 #include "tape.h"
+#include "tapeplay.h"
+#include "pulse.h"
+#include "miniz.h"
+#include "diskconv.h"
+#include "ide.h"
 #include "z80_bus.h"
 
 #define FAIL(...) do { snprintf(detail, detail_len, __VA_ARGS__); return false; } while (0)
@@ -323,8 +328,14 @@ static machine_t z80_machine(const uint8_t ver, const uint8_t mch, bool *exact) 
     switch (mch) {
         case 0: case 1: case 3: return MACHINE_48K;     // 48K, +IF1, +MGT
         case 4: case 5: case 6: return MACHINE_128K;    // 128K, +IF1, +MGT
+        case 7: case 8:         return MACHINE_PLUS3;
+        case 13:                return MACHINE_PLUS2A;
+        case 14:                return MACHINE_TC2048;
+        case 9:                 return MACHINE_PENTAGON;
+        case 10:                return MACHINE_SCORPION;
         case 12:                return MACHINE_PLUS2;
-        default: *exact = false; return MACHINE_128K;   // +3, Pentagon, Scorpion...
+        case 15: case 128:      return MACHINE_TIMEX;   // TC2068, TS2068
+        default: *exact = false; return MACHINE_128K;
     }
 }
 
@@ -376,7 +387,7 @@ static bool load_z80(FIL *f, const uint32_t size, char *detail, const unsigned d
 
         if (b12 & 0x20) unpack(&r, size - 30, NULL, 0x4000, 0xC000);
         else            raw(&r, NULL, 0x4000, 0xC000);
-    } else if (m == MACHINE_48K) {
+    } else if (spec_is_48k_class(m)) {
         st.port7ffd = 0x30;
         spec_set_paging(st.port7ffd);
 
@@ -395,8 +406,11 @@ static bool load_z80(FIL *f, const uint32_t size, char *detail, const unsigned d
         }
     } else {
         // Byte 35 is the paging latch itself, which is the whole of a
-        // 128K's memory state.
+        // 128K's memory state; byte 86, when there is one, the +3's and
+        // the Scorpion's second latch.
         st.port7ffd = h[35];
+        if (ext == 55) st.port1ffd = h[86];
+        spec_port_1ffd = st.port1ffd;
         spec_set_paging(st.port7ffd);
 
         for (;;) {
@@ -404,10 +418,12 @@ static bool load_z80(FIL *f, const uint32_t size, char *detail, const unsigned d
             if (l0 < 0 || l1 < 0 || id < 0) break;
             const uint16_t len = (uint16_t)(l0 | (l1 << 8));
 
-            // 3..10 are RAM banks 0..7. Anything else is a ROM block,
-            // which is ours rather than the snapshot's -- so it is read
-            // past rather than stored, to keep the stream in step.
-            uint8_t *page = (id >= 3 && id <= 10) ? spec_ram[id - 3] : NULL;
+            // 3..10 are RAM banks 0..7, and on a Scorpion 11..18 are its
+            // 8..15. Anything else is a ROM block, which is ours rather
+            // than the snapshot's -- so it is read past rather than
+            // stored, to keep the stream in step.
+            const unsigned top = m == MACHINE_SCORPION ? 18u : 10u;
+            uint8_t *page = (id >= 3 && id <= (int)top) ? spec_bank_ptr((unsigned)id - 3u) : NULL;
 
             if (len == 0xFFFF) {
                 if (page) raw(&r, page, 0, SPEC_BANK_SIZE);
@@ -446,31 +462,202 @@ static bool load_z80(FIL *f, const uint32_t size, char *detail, const unsigned d
  * then into an editor with no keyword mode at all, where LOAD is spelled
  * out letter by letter.
  */
-/* Which of the three tape formats is in the file. */
-typedef enum { TAPE_RAW = 0, TAPE_TZX, TAPE_PZX } tape_format_t;
+/* Which tape format is in the file. */
+typedef enum { TAPE_RAW = 0, TAPE_TZX, TAPE_PZX, TAPE_CSW, TAPE_WAV } tape_format_t;
 
+/*
+ * The whole tape, as the file has it, for the real-time player.
+ *
+ * Two megabytes of the PSRAM. A .tzx of a multi-load game is a few
+ * hundred kilobytes; a .csw is larger but still run-length coded; a .wav
+ * is converted to CSW on the way in, so its size here is that of its
+ * edges, not of its samples.
+ */
+#define TAPE_RAW_MAX (1536u * 1024u)
+static uint8_t tape_raw[TAPE_RAW_MAX] __attribute__((section(".psram")));
+
+/* A CSW v2 header, made up for a .wav: the player reads CSW. */
+static uint32_t csw_header(const uint32_t rate) {
+    memset(tape_raw, 0, 0x34);
+    memcpy(tape_raw, "Compressed Square Wave\x1A", 23);
+    tape_raw[0x17] = 2;                         // v2.00
+    tape_raw[0x19] = (uint8_t)rate;
+    tape_raw[0x1A] = (uint8_t)(rate >> 8);
+    tape_raw[0x1B] = (uint8_t)(rate >> 16);
+    tape_raw[0x1C] = (uint8_t)(rate >> 24);
+    tape_raw[0x21] = 1;                         // RLE
+    tape_raw[0x22] = 0;                         // starts low
+    tape_raw[0x23] = 0;                         // no extension
+    return 0x34;
+}
+
+/*
+ * A .wav, turned into edges as it is read.
+ *
+ * Whatever sampled the cassette sampled it at its own rate and depth;
+ * what a loader wants is when the level crosses. So the samples are
+ * reduced to a sign with a little hysteresis -- a quiet hiss around zero
+ * would otherwise be thousands of edges -- and the distance between
+ * crossings is written out as CSW run lengths, which is what the player
+ * already reads.
+ */
+static bool load_wav(FIL *f, const uint32_t size, uint32_t *out_len,
+                     char *detail, const unsigned detail_len) {
+    uint8_t h[12];
+    UINT got = 0;
+    if (f_read(f, h, 12, &got) != FR_OK || got != 12 || memcmp(h, "RIFF", 4) || memcmp(h + 8, "WAVE", 4))
+        FAIL("that is not a .wav");
+
+    uint32_t rate = 0, channels = 0, bits = 0, data_left = 0;
+    for (;;) {
+        uint8_t c[8];
+        if (f_read(f, c, 8, &got) != FR_OK || got != 8) FAIL("no audio in that .wav");
+        const uint32_t clen = (uint32_t)c[4] | ((uint32_t)c[5] << 8) | ((uint32_t)c[6] << 16) | ((uint32_t)c[7] << 24);
+        if (!memcmp(c, "fmt ", 4)) {
+            uint8_t fm[16];
+            if (clen < 16 || f_read(f, fm, 16, &got) != FR_OK || got != 16) FAIL("a broken .wav");
+            if (fm[0] != 1) FAIL("only uncompressed .wav can be played");
+            channels = fm[2];
+            rate = (uint32_t)fm[4] | ((uint32_t)fm[5] << 8) | ((uint32_t)fm[6] << 16) | ((uint32_t)fm[7] << 24);
+            bits = fm[14];
+            if (clen > 16) f_lseek(f, f_tell(f) + ((clen - 16 + 1) & ~1u));
+        } else if (!memcmp(c, "data", 4)) {
+            data_left = clen;
+            break;
+        } else {
+            f_lseek(f, f_tell(f) + ((clen + 1) & ~1u));
+        }
+        if (f_tell(f) >= size) FAIL("no audio in that .wav");
+    }
+    if (!rate || !channels || (bits != 8 && bits != 16)) FAIL("a .wav this cannot read");
+
+    const uint32_t frame = channels * (bits / 8u);
+    uint32_t at = csw_header(rate);
+    uint32_t run = 0;
+    bool hi = false;
+    // A twentieth of full scale either side of zero before the level
+    // is believed to have changed.
+    const int32_t hyst = bits == 8 ? 6 : 1600;
+
+    static uint8_t buf[4096] __attribute__((section(".psram")));
+    while (data_left) {
+        UINT want = data_left < sizeof buf ? (UINT)data_left : (UINT)sizeof buf;
+        want -= want % frame;
+        if (!want) break;
+        if (f_read(f, buf, want, &got) != FR_OK || !got) break;
+        data_left -= got;
+        for (UINT i = 0; i + frame <= got; i += frame) {
+            const int32_t v = bits == 8 ? (int32_t)buf[i] - 128
+                                        : (int32_t)(int16_t)((uint16_t)buf[i] | ((uint16_t)buf[i + 1] << 8));
+            run++;
+            const bool flip = hi ? (v < -hyst) : (v > hyst);
+            if (!flip) continue;
+            hi = !hi;
+            if (at + 5 >= TAPE_RAW_MAX) FAIL("that .wav has too many edges to hold");
+            if (run < 256) {
+                tape_raw[at++] = (uint8_t)run;
+            } else {
+                tape_raw[at++] = 0;
+                tape_raw[at++] = (uint8_t)run;
+                tape_raw[at++] = (uint8_t)(run >> 8);
+                tape_raw[at++] = (uint8_t)(run >> 16);
+                tape_raw[at++] = (uint8_t)(run >> 24);
+            }
+            run = 0;
+        }
+    }
+    *out_len = at;
+    return true;
+}
+
+/*
+ * A CSW's Z-RLE, inflated into the same buffer.
+ *
+ * The compressed stream is read into the top half and inflated into the
+ * bottom, after a copy of the header -- which then says RLE, because
+ * that is what it now is.
+ */
+static bool inflate_csw(const uint32_t size, uint32_t *out_len,
+                        char *detail, const unsigned detail_len) {
+    const uint32_t hdr = tape_raw[0x17] == 1 ? 0x20u : 0x34u + tape_raw[0x23];
+    if (size <= hdr) FAIL("a broken .csw");
+    const uint32_t comp_len = size - hdr;
+    if (comp_len > TAPE_RAW_MAX / 2) FAIL("that .csw is too big");
+    uint8_t *const comp = tape_raw + TAPE_RAW_MAX / 2;
+    memmove(comp, tape_raw + hdr, comp_len);
+    const size_t n = tinfl_decompress_mem_to_mem(tape_raw + hdr, TAPE_RAW_MAX / 2 - hdr,
+                                                 comp, comp_len, TINFL_FLAG_PARSE_ZLIB_HEADER);
+    if (n == TINFL_DECOMPRESS_MEM_TO_MEM_FAILED) FAIL("that .csw does not inflate");
+    tape_raw[tape_raw[0x17] == 1 ? 0x1B : 0x21] = 1;
+    *out_len = hdr + (uint32_t)n;
+    return true;
+}
+
+/*
+ * Mount the tape, cold-start the machine, and type LOAD "" into it.
+ *
+ * Two ways to play it. A tape of nothing but standard blocks is served
+ * by the ROM trap in tape.c, which hands each block to LD-BYTES at once
+ * and never makes a signal at all. Anything else -- a turbo loader, a
+ * pulse train, a recording -- is played in real time onto the EAR bit by
+ * tapeplay.c, and loads as slowly as it did in 1985. settings.tape_realtime
+ * forces the second for everything, for the protected tapes that load
+ * standard blocks with a loader of their own.
+ *
+ * The typing is the part worth explaining. Nothing about either way
+ * needs it -- a tape sitting mounted will be picked up by a LOAD typed by
+ * hand -- but "select a file and watch it load" is the whole point of a
+ * browser, and the alternative is a status line telling the user to go
+ * and type something.
+ *
+ * What to type depends on the machine, in a way that is not cosmetic. A
+ * 48K boots into K mode, where the first keypress of a line is a keyword
+ * and LOAD is the J key; typing L, O, A, D there produces four different
+ * keywords. A 128K boots into a menu that has to be dismissed first, and
+ * then into an editor with no keyword mode at all, where LOAD is spelled
+ * out letter by letter.
+ */
 static bool load_tap(FIL *f, const uint32_t size, const tape_format_t fmt,
                      char *detail, const unsigned detail_len) {
-    if (size > TAPE_MAX_BYTES)
-        FAIL("that tape is %luK; the limit is %uK",
-             (unsigned long)(size / 1024), TAPE_MAX_BYTES / 1024);
+    uint32_t len = size;
+    tape_eject();
+    tapeplay_eject();
 
-    // Straight into the tape's own buffer: 64 KB is too much to have two of.
-    UINT got = 0;
-    if (f_read(f, tape_image, size, &got) != FR_OK || got != size)
-        FAIL("could not read the whole tape");
+    if (fmt == TAPE_WAV) {
+        if (!load_wav(f, size, &len, detail, detail_len)) return false;
+    } else {
+        if (size > TAPE_RAW_MAX)
+            FAIL("that tape is %luK; the limit is %luK",
+                 (unsigned long)(size / 1024), (unsigned long)(TAPE_RAW_MAX / 1024));
+        UINT got = 0;
+        if (f_read(f, tape_raw, size, &got) != FR_OK || got != size)
+            FAIL("could not read the whole tape");
+        if (fmt == TAPE_CSW && size > 0x22 && tape_raw[tape_raw[0x17] == 1 ? 0x1B : 0x21] == 2
+            && !inflate_csw(size, &len, detail, detail_len))
+            return false;
+    }
 
-    // A .TZX or a .PZX is converted to a .TAP in place before it is
-    // mounted; see src/spectrum/tape.c for what survives that and what
-    // does not.
-    const bool ok = (fmt == TAPE_TZX) ? tape_mount_tzx(size, detail, detail_len)
-                  : (fmt == TAPE_PZX) ? tape_mount_pzx(size, detail, detail_len)
-                  : tape_mount(tape_image, size, detail, detail_len);
-    if (!ok) return false;
+    static const pulse_fmt_t pf[] = { PULSE_TAP, PULSE_TZX, PULSE_PZX, PULSE_CSW, PULSE_CSW };
+    pulse_set_is_48k(spec_is_48k_class(spec_machine));
+    pulse_set_rg_timings(settings.tape_rg != 0);
+    if (!pulse_open(tape_raw, len, pf[fmt])) FAIL("that is not a tape this can play");
 
-    // Keep the message tape_mount() wrote, and add to it below.
     char mounted[64];
-    snprintf(mounted, sizeof mounted, "%s", detail);
+    const bool trap = !settings.tape_realtime && pulse_all_rom_loadable()
+                      && len <= TAPE_MAX_BYTES && fmt != TAPE_CSW && fmt != TAPE_WAV;
+    if (trap) {
+        // Into the trap's own buffer, converted in place; see tape.c.
+        memcpy(tape_image, tape_raw, len);
+        const bool ok = (fmt == TAPE_TZX) ? tape_mount_tzx(len, detail, detail_len)
+                      : (fmt == TAPE_PZX) ? tape_mount_pzx(len, detail, detail_len)
+                      : tape_mount(tape_image, len, detail, detail_len);
+        if (!ok) return false;
+        snprintf(mounted, sizeof mounted, "%s", detail);
+    } else {
+        if (!tapeplay_mount(tape_raw, len, pf[fmt])) FAIL("that tape has nothing to play");
+        snprintf(mounted, sizeof mounted, "tape: %lu blocks, real time",
+                 (unsigned long)pulse_block_count());
+    }
 
     if (!settings.tape_autostart) {
         snprintf(detail, detail_len, "%s -- type LOAD \"\"", mounted);
@@ -480,7 +667,7 @@ static bool load_tap(FIL *f, const uint32_t size, const tape_format_t fmt,
     spec_set_machine(spec_machine);      // cold start, tape still mounted
 
     // ENTER picks "128 BASIC" off the menu; the 48K has no menu to pick from.
-    spec_type(spec_machine == MACHINE_48K ? "j\"\"\r" : "\rload \"\"\r", 100);
+    spec_type(spec_is_48k_class(spec_machine) ? "j\"\"\r" : "\rload \"\"\r", 100);
 
     snprintf(detail, detail_len, "%s -- loading", mounted);
     return true;
@@ -544,6 +731,18 @@ static void disk_autorun(void) {
  * fight over the bottom of the address space.
  */
 static bool load_mmc(const char *path, char *detail, const unsigned detail_len) {
+    /*
+     * An .hdf is a hard disk to an IDE interface and a card to DivMMC;
+     * with an IDE interface chosen, the drive takes it.
+     */
+    if (settings.ide != IDE_OFF) {
+        if (!ide_mount(path, detail, detail_len)) return false;
+        char mounted[80];
+        snprintf(mounted, sizeof mounted, "%s", detail);
+        spec_set_machine(spec_machine);
+        snprintf(detail, detail_len, "hard disk: %s", mounted);
+        return true;
+    }
     if (!divmmc_mount(path, detail, detail_len)) return false;
 
     char mounted[80];
@@ -720,6 +919,75 @@ static bool load_scl(FIL *f, char *detail, const unsigned detail_len) {
 }
 
 // ---------------------------------------------------------------------------
+// FDI, UDI, TD0
+// ---------------------------------------------------------------------------
+/*
+ * A TR-DOS disk in one of the formats that describe its tracks, unwrapped
+ * into a .trd (see diskconv.c) and mounted like a .scl -- with no path to
+ * save back to, because what is in the drive is no longer that file.
+ */
+static uint8_t disk_scratch[1024u * 1024u] __attribute__((section(".psram")));
+
+static bool load_wrapped_disk(FIL *f, const uint32_t size, const file_kind_t kind,
+                              char *detail, const unsigned detail_len) {
+    uint32_t len = 0;
+    bool ok;
+    if (kind == FILE_TD0) {
+        ok = diskconv_td0(f, disk_scratch, sizeof disk_scratch, trd_image, TRD_MAX_BYTES, &len);
+    } else {
+        if (size > sizeof disk_scratch) FAIL("that image is %luK; the limit is 1024K",
+                                             (unsigned long)(size / 1024));
+        UINT got = 0;
+        if (f_read(f, disk_scratch, size, &got) != FR_OK || got != size) FAIL("could not read the image");
+        ok = (kind == FILE_FDI) ? diskconv_fdi(disk_scratch, size, trd_image, TRD_MAX_BYTES, &len)
+                                : diskconv_udi(disk_scratch, size, trd_image, TRD_MAX_BYTES, &len);
+    }
+    if (!ok) FAIL("no TR-DOS sectors in that image");
+    // Whole tracks, so the drive reports a geometry TR-DOS believes.
+    len = (len + 4095u) & ~4095u;
+    if (!beta_mount(len, NULL, detail, detail_len)) return false;
+
+    char mounted[80];
+    snprintf(mounted, sizeof mounted, "%s", detail);
+    settings.betadisk = 1;
+    beta_boot_next_reset();
+    spec_set_machine((machine_t)spec_machine);
+    disk_autorun();
+    snprintf(detail, detail_len, "%s -- booting", mounted);
+    return true;
+}
+
+// ---------------------------------------------------------------------------
+// Interface 2 cartridges
+// ---------------------------------------------------------------------------
+/*
+ * A .rom is a cartridge for Sinclair's Interface 2: up to 16 KB that
+ * takes the ROM's place on a 48K. Plugging one in is a power cycle,
+ * as it was -- nobody hot-plugged an Interface 2 twice.
+ */
+static bool load_if2(FIL *f, const uint32_t size, char *detail, const unsigned detail_len) {
+    // On the ALF, a cartridge is the ALF's, up to a megabyte of banks.
+    if (spec_machine == MACHINE_ALF) {
+        if (size > 512u * 1024u) FAIL("an ALF cartridge is at most 512K");
+        UINT got = 0;
+        if (f_read(f, disk_scratch, size, &got) != FR_OK || got != size) FAIL("could not read the cartridge");
+        spec_alf_insert(disk_scratch, size);
+        spec_set_machine(MACHINE_ALF);
+        snprintf(detail, detail_len, "ALF cartridge in, %lu banks", (unsigned long)((size + 16383u) / 16384u));
+        return true;
+    }
+    if (size == 0 || size > SPEC_BANK_SIZE) FAIL("a cartridge is at most 16K; that is %luK",
+                                               (unsigned long)(size / 1024));
+    static uint8_t buf[SPEC_BANK_SIZE] __attribute__((section(".psram")));
+    UINT got = 0;
+    if (f_read(f, buf, size, &got) != FR_OK || got != size) FAIL("could not read the cartridge");
+    spec_if2_insert(buf, size);
+    spec_set_machine(MACHINE_48K);
+    snprintf(detail, detail_len, "Interface 2 cartridge in, %luK", (unsigned long)(size / 1024));
+    return true;
+}
+
+// ---------------------------------------------------------------------------
 
 bool loader_load(const char *path, const file_kind_t kind,
                  char *detail, const unsigned detail_len) {
@@ -737,6 +1005,12 @@ bool loader_load(const char *path, const file_kind_t kind,
         case FILE_TAP: ok = load_tap(&f, (uint32_t)fi.fsize, TAPE_RAW, detail, detail_len); break;
         case FILE_TZX: ok = load_tap(&f, (uint32_t)fi.fsize, TAPE_TZX, detail, detail_len); break;
         case FILE_PZX: ok = load_tap(&f, (uint32_t)fi.fsize, TAPE_PZX, detail, detail_len); break;
+        case FILE_CSW: ok = load_tap(&f, (uint32_t)fi.fsize, TAPE_CSW, detail, detail_len); break;
+        case FILE_WAV: ok = load_tap(&f, (uint32_t)fi.fsize, TAPE_WAV, detail, detail_len); break;
+        case FILE_ROM: ok = load_if2(&f, (uint32_t)fi.fsize, detail, detail_len); break;
+        case FILE_FDI:
+        case FILE_UDI:
+        case FILE_TD0: ok = load_wrapped_disk(&f, (uint32_t)fi.fsize, kind, detail, detail_len); break;
         case FILE_Z80: ok = load_z80(&f, (uint32_t)fi.fsize, detail, detail_len); break;
         case FILE_TRD: ok = load_trd(&f, (uint32_t)fi.fsize, path, detail, detail_len); break;
         case FILE_SCL: ok = load_scl(&f, detail, detail_len); break;

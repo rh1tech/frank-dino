@@ -159,8 +159,14 @@ void z80_map_page8(unsigned slot, uint8_t *read_from, uint8_t *write_to);
 // Spectrum decodes on A0 alone and on the high half for the keyboard, so
 // handing over the whole word rather than the low byte is not generality
 // for its own sake.
-typedef uint8_t (*z80_io_in_fn)(uint16_t port);
-typedef void    (*z80_io_out_fn)(uint16_t port, uint8_t value);
+//
+// Every handler is also told *when*: t is the T-state within the frame at
+// which the strobe was seen (see z80_t below). An I/O cycle is seen in its
+// T2, so it began at t-1; a memory read or fetch is seen in T1; a write in
+// T2. Whatever needs the ULA's view of the cycle -- the border, the EAR
+// bit, the floating bus -- applies its own offset to that.
+typedef uint8_t (*z80_io_in_fn)(uint16_t port, uint32_t t);
+typedef void    (*z80_io_out_fn)(uint16_t port, uint8_t value, uint32_t t);
 
 extern z80_io_in_fn  z80_io_in;
 extern z80_io_out_fn z80_io_out;
@@ -177,8 +183,55 @@ extern z80_io_out_fn z80_io_out;
  * the jump reads its operands from the wrong page, one later and the
  * destination's first byte comes from the trampoline.
  */
-typedef void (*z80_opfetch_fn)(uint16_t addr);
+typedef void (*z80_opfetch_fn)(uint16_t addr, uint32_t t);
 extern z80_opfetch_fn z80_opfetch_cb;
+
+/*
+ * Called before a memory write lands, for the windows whose bit is set
+ * in z80_wwatch_mask (bit n = window n, the 8 KB one at n * 0x2000).
+ *
+ * The mask is the whole cost on the hot path -- one load and a test per
+ * write cycle -- so a machine that watches nothing pays almost nothing.
+ * What watches: the frame builder, for the windows the screen is in, and
+ * the bank cache, for the first write to a page it would otherwise not
+ * need to write back.
+ */
+typedef void (*z80_wwatch_fn)(uint16_t addr, uint8_t value, uint32_t t);
+extern volatile uint8_t z80_wwatch_mask;
+extern z80_wwatch_fn    z80_wwatch_cb;
+
+/*
+ * Where in the frame the machine is, in T-states.
+ *
+ * Kept by both loops and handed to every handler, so anything that has
+ * to know *when* -- the tape's EAR level, a border change, a sound chip's
+ * register write -- knows to the T-state rather than to whichever slice
+ * of the frame it happened in. The frame loop sets it to zero at the
+ * start of each frame, which is where ~INT goes down.
+ */
+extern uint32_t z80_t;
+
+/* Opcode fetches from #0000 since boot: resets and RST 0s. A diagnostic. */
+extern volatile uint32_t z80_fetch0;
+
+/*
+ * The ULA's contention, for the production loop.
+ *
+ * A contended access does not slow the clock here -- there is no ~WAIT
+ * to slow it with -- it moves z80_t on by the delay, with no edges. To
+ * the frame that is exactly a CPU held by the ULA; to the CPU, which is
+ * static, it is nothing at all. See contend_at() in z80_bus.c.
+ */
+typedef struct {
+    bool           on;          // this machine contends, and it is not in turbo
+    bool           io;          // ...and contends I/O too (not the +2A/+3)
+    uint8_t        mask;        // which 16 KB windows are contended
+    uint32_t       t0;          // the first contended T-state
+    uint32_t       line;        // T-states a line
+    uint32_t       span;        // 192 lines of them
+    const uint8_t *pat;         // the delay at each of the eight positions
+} z80_contend_t;
+extern z80_contend_t z80_contend;
 
 // ============================================================================
 // The trace ring
@@ -336,8 +389,31 @@ uint32_t z80_edge_watch_stuck_low(void);
  */
 void z80_reset(void);
 
-/* Clock the CPU for n T-states, answering every cycle it starts. */
+/*
+ * Clock the CPU for n T-states, answering every cycle it starts.
+ *
+ * The diagnostic loop: it counts every cycle into z80_stats and feeds the
+ * stuck-line watch, which is what stage 0 and the launch checks read.
+ * The machine itself runs on z80_run_until(), which does neither.
+ */
 void z80_run(uint32_t t_states);
+
+/*
+ * Clock the CPU until z80_t reaches t_stop.
+ *
+ * The production loop. The frame's T-state is its loop variable, held in
+ * a register and handed to every handler, and nothing is counted that
+ * nothing reads -- only the last fetch address, which the settings page
+ * shows. Returns with z80_t == t_stop.
+ */
+void z80_run_until(uint32_t t_stop);
+
+/*
+ * Stop the clock in its high half. For any stop that can be long: the
+ * CPU keeps its state with the clock held high, and does not reliably
+ * with it held low. Whoever is clocking the CPU calls it.
+ */
+void z80_park(void);
 
 /*
  * Clock until the next opcode fetch, or until the budget runs out.

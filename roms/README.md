@@ -54,6 +54,41 @@ machine pages one of four into the bottom window: #7FFD bit 4 is the low
 bit of the ROM number and #1FFD bit 2 is the high one. They come from
 pico-speccy's `src/roms/plus3/src/`, where they are kept unpacked.
 
+
+## The rest of the machines
+
+From pico-speccy's `src/speccy/roms/*/src/` (the raw images), or flattened
+from its run-list overlays where only an overlay exists. Their copyright is
+their makers'; they are carried here as pico-speccy carries them.
+
+| Machine | File | Bytes | MD5 | What |
+|---|---|---|---|---|
+| 16K / 48K Spanish | `es48.rom` | 16384 | `60e1bd8b4d59b55e5b2175126239517f` | 48K ROM with pico-speccy's 48k_es overlay applied |
+| 128K Spanish | `es128-0.rom` | 16384 | `c1231a70b8129311216acb7479b031d5` | ROM 0, Investronica's editor (pico-speccy rom128Kspanish.h) |
+| 128K Spanish | `es128-1.rom` | 16384 | `4f341936594cbcab75cfa62ce96e3682` | ROM 1, the translated 48 BASIC (128k_es overlay) |
+| +2 Spanish | `plus2es-0.rom` | 16384 | `7b92332e5dc791ab75d1a7e97dbf02fb` | ROM 0 (RomPlus2spanish.h) |
+| +2 Spanish | `plus2es-1.rom` | 16384 | `a0218949af7ff6fe7acc8d52ae92734a` | ROM 1 (128k_plus2es overlay) |
+| TC2048 | `tc2048.rom` | 16384 | `9dd7ecf784a6c04265c073c236f5fadb` | Timex TC2048 |
+| Gama 89 | `gama89.rom` | 16384 | `28287c397defff765b39bd0660da6d01` | Didaktik Gama 89 |
+| Byte | `byte48.rom` | 16384 | `295773ea298373ff80230d7f48c751a6` | Byte 48K |
+| TR-DOS | `trdos-503.rom` | 16384 | `0da70a5d2a0e733398e005b96b7e4ba6` | TR-DOS 5.03 |
+| TR-DOS | `trdos-504tm.rom` | 16384 | `f61f9fc0ca97498ff812884b5abbeb03` | TR-DOS 5.04TM |
+| TR-DOS | `trdos-505d.rom` | 16384 | `4283ab5829a14bee31fd436989f2f1b2` | TR-DOS 5.05D |
+| TR-DOS | `trdos-611e.rom` | 16384 | `116bf9177c846e0dc756b059fcd6a8fe` | TR-DOS 6.11e |
+| ZS-1024 | `profrom.rom` | 262144 | `1d0cfcf57739e9c265713f8960018be0` | ProfROM 4.44s, four planes of four ROMs |
+| ScorpEvo | `scorpevo.rom` | 262144 | `095ddc547179f55f52127a131c70300b` | ProfROM 4.44 as the Evo runs it |
+| KAY-256 | `kay256.rom` | 65536 | `a115a10de8fae68c4b09009f936d76c6` | Nemo KAY-256 |
+| KAY-1024 | `kay1024.rom` | 65536 | `b73346ac326ed486c5df4e1ac1f3d012` | Nemo KAY-1024, 2000 |
+| KAY-1024 (2010) | `kay1024las.rom` | 65536 | `f84eaa6b31100cbe3f7fc8509369547d` | Nemo KAY-1024, 2002 LAS |
+| Phoenix | `phoenix.rom` | 65536 | `bf74a90ac25c5b0e9b7056b7b02e7971` | ZXM-Phoenix BIOS 5.04T |
+| ATM-Turbo 1 | `atm1.rom` | 65536 | `c5de7f62d86fa808b8c8150c216f3a82` | BIOS 1.04rs |
+| ATM-Turbo 2 | `atm2-106.rom` | 65536 | `29979687d68d0107001edbf369d435de` | BIOS 1.06.02 |
+| ATM-Turbo 2+ | `atm2-107.rom` | 65536 | `28ce89a88089417db4d3057de942a1bb` | BIOS 1.07.13 |
+| ATM-Turbo 2+ | `atm2-xbios.rom` | 131072 | `323688eecf221d2c6808ad498a88cb22` | xBIOS 1.37 |
+| ATM-Turbo 3 | `atm3.rom` | 262144 | `e4a297ab905cd77be3dc486245067aaa` | MSD888's test ROM and xBIOS 1.37 |
+| ATM | `atm-font.rom` | 2048 | `bd4e0f6f9177f38a71f081882ba3c454` | The text mode's character generator (SGEN) |
+| ALF | `alf.rom` | 32768 | `0f896b0811e6db1cdd72f68760331fbc` | The ALF TV Game system ROM |
+
 ## Where they live, which is not where they used to
 
 They are **not** in the SRAM any more. `src/spectrum/spectrum.c` still

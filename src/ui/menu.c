@@ -94,7 +94,7 @@ int menu_wait_key_timeout(const unsigned ms) {
             keyq_tail = (uint8_t)(keyq_tail + 1);
             return k;
         }
-        const int c = getchar_timeout_us(0);
+        const int c = console_getchar();
         if (c != PICO_ERROR_TIMEOUT) return c;
         if (absolute_time_diff_us(get_absolute_time(), deadline) <= 0) return -1;
         sleep_ms(1);

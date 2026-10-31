@@ -40,6 +40,13 @@ typedef enum : uint8_t {
     FILE_DCK,          // a Timex dock cartridge
     FILE_MMC,          // an esxDOS card image (.mmc / .hdf)
     FILE_ZIP,          // an archive; what is inside decides what it is
+    FILE_CSW,          // tape image: a sampled signal, run-length coded
+    FILE_WAV,          // tape image: a recording of a real cassette
+    FILE_GZ,           // one file, gzipped; the name under the .gz decides
+    FILE_ROM,          // an Interface 2 cartridge
+    FILE_FDI,          // a TR-DOS disk as a Full Disk Image
+    FILE_UDI,          // ...as an Ultra Disk Image (raw MFM tracks)
+    FILE_TD0,          // ...as a Teledisk image
 } file_kind_t;
 
 typedef struct {

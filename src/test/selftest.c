@@ -81,7 +81,13 @@ uint32_t selftest_probe_pace_floor(void) {
         wipe();
         load(0x0000, prog_checksum, sizeof prog_checksum);
         z80_reset();
-        z80_run(PROG_CHECKSUM_TSTATES);
+        /*
+         * On the production loop, not the diagnostic one: the boundary
+         * moves with the size of the service routine, and the machine
+         * runs on z80_run_until().
+         */
+        z80_t = 0;
+        z80_run_until(PROG_CHECKSUM_TSTATES);
 
         /*
          * Through the window table, not through z80_mem directly.
@@ -115,13 +121,15 @@ static volatile uint8_t  io_seen_value;
 static volatile uint32_t io_seen_writes;
 static volatile uint8_t  io_answer = 0x00;
 
-static void test_io_out(const uint16_t port, const uint8_t value) {
+static void test_io_out(const uint16_t port, const uint8_t value, const uint32_t t) {
+    (void)t;
     io_seen_port  = port;
     io_seen_value = value;
     io_seen_writes++;
 }
 
-static uint8_t test_io_in(const uint16_t port) {
+static uint8_t test_io_in(const uint16_t port, const uint32_t t) {
+    (void)t;
     (void)port;
     return io_answer;
 }

@@ -272,6 +272,23 @@ static void side_init(side_t *const sd) {
     }
 }
 
+/*
+ * The rate the DAC really runs at, which is not quite AUDIO_RATE_HZ.
+ *
+ * The pacing timer divides the system clock by a whole number, and 504
+ * MHz over 44100 x 8 is 1428.6 -- so it is 1429, and the DAC takes
+ * 44086.8 samples a second. A machine that hands it 44100 a second
+ * overfills the ring by thirteen a second, for ever. The frame pacer
+ * asks this instead, and since the timer and time_us_64() run off the
+ * same crystal the two cannot drift apart.
+ */
+static uint32_t pacer_den;
+
+uint32_t audio_rate_millihz(void) {
+    if (!pacer_den) return AUDIO_RATE_HZ * 1000u;
+    return (uint32_t)(((uint64_t)clock_get_hz(clk_sys) * 1000u) / ((uint64_t)pacer_den * AUDIO_OSR));
+}
+
 void audio_init(void) {
     // A DMA pacing timer rather than a PWM wrap interrupt, so nothing
     // needs servicing per sample: each side's two channels chain to each
@@ -284,6 +301,7 @@ void audio_init(void) {
     const uint32_t out_hz = AUDIO_RATE_HZ * AUDIO_OSR;
     const uint32_t den = (clock_get_hz(clk_sys) + out_hz / 2) / out_hz;
     dma_timer_set_fraction(pacer, 1, (uint16_t)(den > 0xFFFFu ? 0xFFFFu : den));
+    pacer_den = den > 0xFFFFu ? 0xFFFFu : den;
 
     side_init(&side[LEFT]);
     side_init(&side[RIGHT]);

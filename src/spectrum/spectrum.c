@@ -18,12 +18,20 @@
 #include "dck.h"
 #include "divmmc.h"
 #include "fdc.h"
+#include "launch.h"
 #include "saa.h"
+#include "sound.h"
 #include "tapein.h"
+#include "tapeplay.h"
+#include "ula_frame.h"
+#include "pulse.h"
 #include "dino.h"
 #include "settings.h"
 #include "tape.h"
 #include "z80_bus.h"
+#include "atm.h"
+#include "rtc.h"
+#include "ide.h"
 
 // ============================================================================
 // The ROMs
@@ -81,6 +89,25 @@ IMPORT_BIN("roms/timex-exrom.rom", spec_romtx_ex);
 IMPORT_BIN("roms/esxdos.rom", spec_romesx);
 IMPORT_BIN("roms/pentagon-0.rom", spec_rompent);
 IMPORT_BIN("roms/trdos.rom", spec_romtrd);
+IMPORT_BIN("roms/tc2048.rom", spec_romtc2048);
+IMPORT_BIN("roms/alf.rom", spec_romalf);
+IMPORT_BIN("roms/trdos-503.rom", spec_romtrd503);
+IMPORT_BIN("roms/trdos-504tm.rom", spec_romtrd504tm);
+IMPORT_BIN("roms/trdos-505d.rom", spec_romtrd505d);
+IMPORT_BIN("roms/trdos-611e.rom", spec_romtrd611e);
+IMPORT_BIN("roms/gama89.rom", spec_romgama);
+IMPORT_BIN("roms/byte48.rom", spec_rombyte);
+IMPORT_BIN("roms/es48.rom", spec_romes48);
+IMPORT_BIN("roms/profrom.rom", spec_romprof);
+IMPORT_BIN("roms/scorpevo.rom", spec_romsevo);
+IMPORT_BIN("roms/kay256.rom", spec_romkay256);
+IMPORT_BIN("roms/kay1024.rom", spec_romkay1024);
+IMPORT_BIN("roms/kay1024las.rom", spec_romkay1024b);
+IMPORT_BIN("roms/phoenix.rom", spec_romphoenix);
+IMPORT_BIN("roms/es128-0.rom", spec_romes0);
+IMPORT_BIN("roms/es128-1.rom", spec_romes1);
+IMPORT_BIN("roms/plus2es-0.rom", spec_romp2es0);
+IMPORT_BIN("roms/plus2es-1.rom", spec_romp2es1);
 extern const uint8_t spec_rom0[SPEC_BANK_SIZE];
 extern const uint8_t spec_rom1[SPEC_BANK_SIZE];
 extern const uint8_t spec_rom48[SPEC_BANK_SIZE];
@@ -102,6 +129,37 @@ extern const uint8_t spec_romtx_ex[8192];
 extern const uint8_t spec_romesx[8192];
 extern const uint8_t spec_rompent[SPEC_BANK_SIZE];
 extern const uint8_t spec_romtrd[SPEC_BANK_SIZE];
+extern const uint8_t spec_romtc2048[SPEC_BANK_SIZE];
+extern const uint8_t spec_romalf[2 * SPEC_BANK_SIZE];
+extern const uint8_t spec_romtrd503[SPEC_BANK_SIZE], spec_romtrd504tm[SPEC_BANK_SIZE];
+extern const uint8_t spec_romtrd505d[SPEC_BANK_SIZE], spec_romtrd611e[SPEC_BANK_SIZE];
+
+/*
+ * Which TR-DOS the Beta Disk carries: 5.04T is the common one and the
+ * default; 5.03, 5.04TM, 5.05D and 6.11e as pico-speccy offers them.
+ */
+static const uint8_t *trdos_image(void) {
+    switch (settings.trdos_rom) {
+        case 1:  return spec_romtrd503;
+        case 2:  return spec_romtrd504tm;
+        case 3:  return spec_romtrd505d;
+        case 4:  return spec_romtrd611e;
+        default: return spec_romtrd;
+    }
+}
+extern const uint8_t spec_romgama[SPEC_BANK_SIZE];
+extern const uint8_t spec_rombyte[SPEC_BANK_SIZE];
+extern const uint8_t spec_romes48[SPEC_BANK_SIZE];
+extern const uint8_t spec_romprof[16 * SPEC_BANK_SIZE];
+extern const uint8_t spec_romsevo[16 * SPEC_BANK_SIZE];
+extern const uint8_t spec_romkay256[4 * SPEC_BANK_SIZE];
+extern const uint8_t spec_romkay1024[4 * SPEC_BANK_SIZE];
+extern const uint8_t spec_romkay1024b[4 * SPEC_BANK_SIZE];
+extern const uint8_t spec_romphoenix[4 * SPEC_BANK_SIZE];
+extern const uint8_t spec_romes0[SPEC_BANK_SIZE];
+extern const uint8_t spec_romes1[SPEC_BANK_SIZE];
+extern const uint8_t spec_romp2es0[SPEC_BANK_SIZE];
+extern const uint8_t spec_romp2es1[SPEC_BANK_SIZE];
 
 /*
  * The pages the running machine can put in the bottom window.
@@ -123,16 +181,144 @@ static uint8_t rom_window[ROMW_SLOTS][SPEC_BANK_SIZE] __attribute__((aligned(4))
  * family as ROM 1, and a +3 as ROM 3.
  */
 static unsigned basic_slot(const machine_t m) {
-    if (m == MACHINE_48K)   return ROMW_0;
-    if (m == MACHINE_PLUS3) return ROMW_3;
+    if (spec_is_48k_class(m))   return ROMW_0;
+    if (spec_is_plus3_class(m)) return ROMW_3;
     if (m == MACHINE_TIMEX) return ROMW_0;      /* not a Sinclair ROM; no trap lands */
     return ROMW_1;
 }
 
 uint8_t *spec_basic_slot(void) { return rom_window[basic_slot(spec_machine)]; }
 
+/*
+ * An Interface 2 cartridge, in the PSRAM until it is pulled out.
+ *
+ * Sinclair's ROM cartridge replaces the 48K's ROM outright -- the
+ * interface pulls the ROM's chip-select and puts its own 16 KB there --
+ * so a mounted one simply takes the ROM's place when the window is
+ * filled, on a 48K and on nothing else. After pico-speccy's If2.cpp.
+ */
+static uint8_t if2_image[SPEC_BANK_SIZE] __attribute__((section(".psram")));
+static bool    if2_in;
+
+void spec_if2_insert(const uint8_t *img, const uint32_t len) {
+    memset(if2_image, 0xFF, sizeof if2_image);
+    memcpy(if2_image, img, len < sizeof if2_image ? len : sizeof if2_image);
+    if2_in = true;
+}
+void spec_if2_eject(void) { if2_in = false; }
+bool spec_if2_present(void) { return if2_in; }
+
+/*
+ * The ProfROM's plane and the KAY's extra #7FFD bit.
+ *
+ * ProfROM is four planes of the usual four 16 KB ROMs; the service code
+ * switches plane by jumping through #0100-#010F (see spec_opfetch). The
+ * four SRAM slots hold the current plane, refilled from flash on a
+ * switch -- a millisecond's stall, at boot and in the service menu.
+ */
+static uint8_t  prof_plane;
+static uint8_t  kay_7ffd_d7;
+
+static const uint8_t *scorpion_image(const machine_t m) {
+    switch (m) {
+        case MACHINE_ZS1024:   return spec_romprof;
+        case MACHINE_SCORPEVO: return spec_romsevo;
+        case MACHINE_KAY256:   return spec_romkay256;
+        case MACHINE_KAY1024:  return spec_romkay1024;
+        case MACHINE_KAY1024B: return spec_romkay1024b;
+        case MACHINE_PHOENIX:  return spec_romphoenix;
+        default:               return NULL;
+    }
+}
+
+static void load_plane(const machine_t m, const unsigned plane) {
+    const uint8_t *img = scorpion_image(m);
+    if (!img) return;
+    /*
+     * The slots are roles -- 128, 48, service, TR-DOS -- and the KAY and
+     * Phoenix images keep their pages in their own order (rom_pack.py's
+     * KAY_ROMSETS): the KAY-256/1024 swap the last two, the Phoenix BIOS
+     * starts with its empty service page and TR-DOS.
+     */
+    static const uint8_t ident[4] = {0, 1, 2, 3}, kay[4] = {0, 1, 3, 2}, phx[4] = {2, 3, 0, 1};
+    const uint8_t *page = (m == MACHINE_KAY256 || m == MACHINE_KAY1024) ? kay
+                        : m == MACHINE_PHOENIX ? phx : ident;
+    for (unsigned i = 0; i < 4; i++)
+        memcpy(rom_window[i], img + ((plane * 4u + page[i]) * SPEC_BANK_SIZE), SPEC_BANK_SIZE);
+}
+
+/*
+ * The four ROM slots as a cache, for the ATM: which flash page each one
+ * holds, and when it was last asked for.
+ */
+static const uint8_t *rom_slot_src[4];
+static uint32_t       rom_slot_used[4];
+static uint32_t       rom_slot_clock;
+
+uint8_t *spec_rom_page(const uint8_t *src) {
+    rom_slot_clock++;
+    unsigned victim = 0;
+    for (unsigned i = 0; i < 4; i++) {
+        if (rom_slot_src[i] == src) { rom_slot_used[i] = rom_slot_clock; return rom_window[i]; }
+        if (rom_slot_used[i] < rom_slot_used[victim]) victim = i;
+    }
+    memcpy(rom_window[victim], src, SPEC_BANK_SIZE);
+    rom_slot_src[victim]  = src;
+    rom_slot_used[victim] = rom_slot_clock;
+    return rom_window[victim];
+}
+
+/*
+ * The ALF TV Game, after pico-speccy's Alf.cpp. OUT with A7=0 and A0=1
+ * picks the ROM in the bottom window: bits 0-5 the bank, bit 7 the
+ * cartridge rather than the 32 KB system ROM. IN #1D puts a RAM page
+ * there instead and IN #1F takes it away. The cartridge sits in the
+ * PSRAM and the selected bank is copied into ROM slot 2.
+ */
+#define ALF_MAX (512u * 1024u)
+static uint8_t  alf_cart[ALF_MAX] __attribute__((section(".psram")));
+static uint8_t  alf_ram[SPEC_BANK_SIZE] __attribute__((section(".psram")));
+static uint32_t alf_banks;
+static uint8_t  alf_sel;
+static bool     alf_sram;
+
+bool spec_alf_insert(const uint8_t *img, const uint32_t len) {
+    const uint32_t n = len < ALF_MAX ? len : ALF_MAX;
+    memcpy(alf_cart, img, n);
+    if (n % SPEC_BANK_SIZE) memset(alf_cart + n, 0, SPEC_BANK_SIZE - n % SPEC_BANK_SIZE);
+    alf_banks = (n + SPEC_BANK_SIZE - 1u) / SPEC_BANK_SIZE;
+    return alf_banks != 0;
+}
+
+static void alf_select(const uint8_t v) {
+    alf_sel = v;
+    const unsigned b = (v & 0x7Fu) % 64u;
+    if ((v & 0x80u) && b < alf_banks)
+        memcpy(rom_window[ROMW_2], alf_cart + b * SPEC_BANK_SIZE, SPEC_BANK_SIZE);
+}
+
 /* The flash master a slot is filled from, per machine. */
 static void rom_load_window(const machine_t m) {
+    if (m == MACHINE_ALF) {
+        memcpy(rom_window[ROMW_0], spec_romalf, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_1], spec_romalf + SPEC_BANK_SIZE, SPEC_BANK_SIZE);
+        memset(rom_window[ROMW_3], 0x00, SPEC_BANK_SIZE);    // an empty bank reads zeros
+        memcpy(rom_window[ROMW_TRDOS], trdos_image(), SPEC_BANK_SIZE);
+        alf_sel = 0;
+        alf_sram = false;
+        return;
+    }
+    if (spec_is_atm(m)) {
+        for (unsigned i = 0; i < 4; i++) { rom_slot_src[i] = NULL; rom_slot_used[i] = 0; }
+        memcpy(rom_window[ROMW_TRDOS], trdos_image(), SPEC_BANK_SIZE);
+        return;
+    }
+    if (scorpion_image(m)) {
+        prof_plane = 0;
+        load_plane(m, 0);
+        memcpy(rom_window[ROMW_TRDOS], trdos_image(), SPEC_BANK_SIZE);
+        return;
+    }
     if (m == MACHINE_SCORPION || m == MACHINE_PROFI) {
         /*
          * Four each: 0 BASIC-128, 1 BASIC-48, 2 the service monitor and
@@ -144,7 +330,7 @@ static void rom_load_window(const machine_t m) {
             ? (const uint8_t *const[]){ spec_romsc_0, spec_romsc_1, spec_romsc_2, spec_romsc_3 }
             : (const uint8_t *const[]){ spec_rompr_0, spec_rompr_1, spec_rompr_2, spec_rompr_3 };
         for (int i = 0; i < 4; i++) memcpy(rom_window[i], r[i], SPEC_BANK_SIZE);
-        memcpy(rom_window[ROMW_TRDOS], spec_romtrd, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_TRDOS], trdos_image(), SPEC_BANK_SIZE);
         return;
     }
 
@@ -153,17 +339,36 @@ static void rom_load_window(const machine_t m) {
         memcpy(rom_window[ROMW_0], spec_romtx_home, SPEC_BANK_SIZE);
         memcpy(rom_window[ROMW_1], spec_romtx_home, SPEC_BANK_SIZE);
         memcpy(rom_window[ROMW_2], spec_romtx_ex, 8192);
-        memcpy(rom_window[ROMW_TRDOS], spec_romtrd, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_TRDOS], trdos_image(), SPEC_BANK_SIZE);
         return;
     }
 
-    if (m == MACHINE_PLUS3) {
+    if (spec_is_48k_class(m)) {
+        /*
+         * One ROM, whichever this clone has; the 48K's for the ones that
+         * kept Sinclair's. ROMW_2 is spare on all of them, so the 16K
+         * borrows it as the page of 0xFF its missing RAM reads as.
+         */
+        const uint8_t *r = (m == MACHINE_TC2048) ? spec_romtc2048
+                         : (m == MACHINE_GAMA)   ? spec_romgama
+                         : (m == MACHINE_BYTE)   ? spec_rombyte
+                         : (m == MACHINE_48K && if2_in) ? if2_image
+                         : (m == MACHINE_48K && settings.rom_spanish) ? spec_romes48
+                                                 : spec_rom48;
+        memcpy(rom_window[ROMW_0], r, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_1], r, SPEC_BANK_SIZE);
+        if (m == MACHINE_16K) memset(rom_window[ROMW_2], 0xFF, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_TRDOS], trdos_image(), SPEC_BANK_SIZE);
+        return;
+    }
+
+    if (spec_is_plus3_class(m)) {
         /* Four of its own: 0 editor, 1 syntax, 2 +3DOS, 3 48K BASIC. */
         memcpy(rom_window[ROMW_0], spec_romp3_0, SPEC_BANK_SIZE);
         memcpy(rom_window[ROMW_1], spec_romp3_1, SPEC_BANK_SIZE);
         memcpy(rom_window[ROMW_2], spec_romp3_2, SPEC_BANK_SIZE);
         memcpy(rom_window[ROMW_3], spec_romp3_3, SPEC_BANK_SIZE);
-        memcpy(rom_window[ROMW_TRDOS], spec_romtrd, SPEC_BANK_SIZE);
+        memcpy(rom_window[ROMW_TRDOS], trdos_image(), SPEC_BANK_SIZE);
         return;
     }
 
@@ -180,16 +385,26 @@ static void rom_load_window(const machine_t m) {
      * it in the copyright line and little else, and pico-speccy does
      * not carry a separate one either.
      */
-    const uint8_t *r0 = (m == MACHINE_PENTAGON) ? spec_rompent
-                      : (m == MACHINE_48K)      ? spec_rom48
-                                                : spec_rom0;
-    const uint8_t *r1 = (m == MACHINE_48K)   ? spec_rom48
-                      : (m == MACHINE_PLUS2) ? spec_romp2
-                                             : spec_rom1;
+    /*
+     * The Spanish 128K and +2 -- Investronica's -- have their own
+     * editor and a translated BASIC; flattened from pico-speccy's
+     * overlays, see roms/README.md.
+     */
+    const bool es = settings.rom_spanish != 0;
+    const uint8_t *r0 = spec_is_pentagon_class(m) ? spec_rompent
+                      : (m == MACHINE_48K)       ? spec_rom48
+                      : (es && m == MACHINE_128K) ? spec_romes0
+                      : (es && m == MACHINE_PLUS2) ? spec_romp2es0
+                                                 : spec_rom0;
+    const uint8_t *r1 = (m == MACHINE_48K)       ? spec_rom48
+                      : (es && m == MACHINE_128K) ? spec_romes1
+                      : (es && m == MACHINE_PLUS2) ? spec_romp2es1
+                      : (m == MACHINE_PLUS2)     ? spec_romp2
+                                                 : spec_rom1;
 
     memcpy(rom_window[ROMW_0], r0, SPEC_BANK_SIZE);
     memcpy(rom_window[ROMW_1], r1, SPEC_BANK_SIZE);
-    memcpy(rom_window[ROMW_TRDOS], spec_romtrd, SPEC_BANK_SIZE);
+    memcpy(rom_window[ROMW_TRDOS], trdos_image(), SPEC_BANK_SIZE);
 }
 
 machine_t spec_machine = MACHINE_128K;
@@ -203,6 +418,27 @@ const char *spec_machine_name(void) {
         case MACHINE_PROFI:    return "Profi 1024";
         case MACHINE_TIMEX:    return "Timex TC2068";
         case MACHINE_PENTAGON: return "Pentagon 128";
+        case MACHINE_16K:      return "ZX Spectrum 16K";
+        case MACHINE_PLUS2A:   return "ZX Spectrum +2A";
+        case MACHINE_TC2048:   return "Timex TC2048";
+        case MACHINE_GAMA:     return "Didaktik Gama 89";
+        case MACHINE_LENINGRAD1: return "Leningrad-1";
+        case MACHINE_LENINGRAD2: return "Leningrad-2";
+        case MACHINE_BYTE:     return "Byte";
+        case MACHINE_PENT512:  return "Pentagon 512";
+        case MACHINE_PENT1024: return "Pentagon 1024SL";
+        case MACHINE_ZS1024:   return "Scorpion ZS-1024";
+        case MACHINE_SCORPEVO: return "ScorpEvo";
+        case MACHINE_KAY256:   return "Nemo KAY-256";
+        case MACHINE_KAY1024:  return "Nemo KAY-1024";
+        case MACHINE_KAY1024B: return "Nemo KAY-1024 (2010)";
+        case MACHINE_PHOENIX:  return "ZXM-Phoenix";
+        case MACHINE_ATM1:     return "ATM-Turbo 1";
+        case MACHINE_ATM2:     return "ATM-Turbo 2";
+        case MACHINE_ATM2P:    return "ATM-Turbo 2+";
+        case MACHINE_ATM2X:    return "ATM-Turbo 2+ xBIOS";
+        case MACHINE_ATM3:     return "ATM-Turbo 3";
+        case MACHINE_ALF:      return "ALF TV Game";
         default:               return "ZX Spectrum 128K";
     }
 }
@@ -225,12 +461,33 @@ static inline uint32_t turbo_num(void) { return 2u + settings.turbo; }
 
 uint32_t spec_frame_tstates(void) {
     uint32_t base;
-    switch (spec_machine) {
-        case MACHINE_48K:      base = SPEC_TSTATES_PER_FRAME_48;   break;
-        case MACHINE_PENTAGON: base = SPEC_TSTATES_PER_FRAME_PENT; break;
-        default:               base = SPEC_TSTATES_PER_FRAME;      break;
-    }
+    if (spec_is_48k_class(spec_machine))        base = SPEC_TSTATES_PER_FRAME_48;
+    else if (spec_is_pentagon_class(spec_machine) || spec_machine == MACHINE_SCORPEVO)
+                                                base = SPEC_TSTATES_PER_FRAME_PENT;
+    else if (spec_machine == MACHINE_ZS1024)    base = 70784u;     // the Green board
+    else if (spec_kay_level(spec_machine))      base = 69888u;     // KAY: a 48K's raster
+    // ATM: the 48K frame, but BIOS 1.06.02 times its frame with a loop that
+    // only works with 316 lines.
+    else if (spec_machine == MACHINE_ATM2)      base = 316u * 224u;
+    else if (spec_is_atm(spec_machine))         base = 69888u;
+    else                                        base = SPEC_TSTATES_PER_FRAME;
     return base * turbo_num() / 2;
+}
+
+/*
+ * How long ~INT is held, in T-states at 3.5 MHz. The Sinclair ULA holds
+ * it 32; the 128K's 36; the Leningrad-1's home-made logic only 15, which
+ * is short enough that a few programs that sit in a long instruction
+ * miss it -- as they did on the real one.
+ */
+static uint32_t int_tstates(void) {
+    switch (spec_machine) {
+        case MACHINE_LENINGRAD1: return 15u;
+        case MACHINE_PENTAGON:
+        case MACHINE_PENT512:
+        case MACHINE_PENT1024:   return 32u;
+        default: return spec_is_48k_class(spec_machine) ? 32u : SPEC_INT_TSTATES;
+    }
 }
 
 // ============================================================================
@@ -260,6 +517,21 @@ void spec_bank_flush(void) {
  * with 512 KB, and the reason the early return below matters: the cost
  * is per actual change of the mapped high bank, not per paging write.
  */
+uint8_t *spec_ram_page(const unsigned page) {
+    if (page < SPEC_RAM_BANKS) return spec_ram[page];
+    if (page >= SPEC_MAX_BANKS) return spec_ram[page & 7u];
+    // A page that is staged has its newest bytes in the stage; put them back.
+    if (staged_bank == (int)page) spec_bank_flush();
+    return spec_ram_ext[page - SPEC_RAM_BANKS];
+}
+
+const uint8_t *spec_bank_host(const unsigned bank) {
+    if (bank < SPEC_RAM_BANKS) return spec_ram[bank];
+    if (bank >= SPEC_MAX_BANKS) return spec_ram[bank & 7u];
+    if (staged_bank == (int)bank) return bank_stage;
+    return spec_ram_ext[bank - SPEC_RAM_BANKS];
+}
+
 uint8_t *spec_bank_ptr(const unsigned bank) {
     if (bank < SPEC_RAM_BANKS) return spec_ram[bank];
     if (bank >= SPEC_MAX_BANKS) return spec_ram[bank & 7u];   /* nothing there */
@@ -281,7 +553,19 @@ uint8_t *spec_bank_ptr(const unsigned bank) {
 volatile uint8_t  spec_screen_bank = 5;
 volatile uint8_t  spec_port_1ffd   = 0;   /* the +3's and Scorpion's second latch */
 volatile uint8_t  spec_port_dffd   = 0;   /* the Profi's third */
+volatile uint8_t  spec_port_eff7   = 0;   /* the Pentagon 1024SL's */
+volatile bool     spec_pent16c;
+static bool       pent_cache_in;          /* IN #FB put the cache page at #0000 */
+
+/*
+ * The Pentagon's cache: 16 KB per ROM latch that can sit where the ROM
+ * does. In the PSRAM and mapped straight through the XIP cache -- it is
+ * used for a few drivers' workspace, rarely enough that the stall on a
+ * miss does not matter, and it is not worth 32 KB of SRAM.
+ */
+static uint8_t pent_cache[2][SPEC_BANK_SIZE] __attribute__((section(".psram")));
 volatile uint8_t  spec_timex_hsr   = 0;   /* the Timex's 8 KB chunk select */
+static uint8_t    timex_ff         = 0;   /* the whole byte last sent to the SCLD's #FF */
 volatile bool     spec_timex_exrom = false;
 volatile uint8_t  spec_border      = 7;
 volatile bool     spec_flash       = false;
@@ -320,6 +604,26 @@ enum { R_CSZXCV = 0, R_ASDFG, R_QWERT, R_12345, R_09876, R_POIUY, R_ENTER, R_SPA
 // Sound
 // ---------------------------------------------------------------------------
 volatile bool     spec_beeper;
+
+/*
+ * The Kempston mouse, as the USB driver leaves it: free-running 8-bit X
+ * and Y counters, the buttons (bit 0 left, 1 right, 2 middle, pressed =
+ * 1), and the wheel's counter, starting at 15 so an untouched wheel
+ * mouse reads exactly like a two-button one.
+ */
+volatile uint8_t spec_mouse_x, spec_mouse_y, spec_mouse_buttons;
+volatile uint8_t spec_mouse_wheel = 0x0F;
+volatile bool    spec_mouse_seen;
+
+/*
+ * Gigascreen "Auto": a program that flips the displayed bank on every
+ * frame is showing two pictures meant to be seen at once. Three frames
+ * in a row with a flip in them turn the blend on; a second without one
+ * turns it off -- pico-speccy's gigascreenAutoFlip(), by another route.
+ */
+static uint32_t   giga_flips;
+static uint32_t   giga_run, giga_quiet;
+volatile bool     spec_giga_auto;
 volatile uint32_t spec_ay_writes;
 
 /*
@@ -331,23 +635,58 @@ volatile uint32_t spec_ay_writes;
  * option rather than a fact about the machine.
  */
 static inline bool have_ay(void) {
-    return spec_machine != MACHINE_48K || settings.ay48;
+    return !spec_is_48k_class(spec_machine) || settings.ay48;
 }
 
-static ay_t    ay[2];
-static saa_t   saa;
-static uint8_t ay_sel;          // which chip the ports are talking to
+bool spec_have_ay(void) { return have_ay(); }
+
+/*
+ * Which AY the ports are talking to. The chips themselves are on core 0
+ * now (see sound.h); this side only decodes, mirrors and posts.
+ */
+static uint8_t ay_sel;
+
+/*
+ * TurboSound FM. The YM2203 behind each AY takes the registers above
+ * #0F through the same two ports; #F8-#FF written to #FFFD are the
+ * board's pseudo-registers, %11111frc -- c the chip, r "IN #FFFD reads
+ * the status" (0 = on), f the FM DAC (0 = on). After pico-speccy's
+ * Ports.cpp and NedoPC's tfm-prg manual.
+ */
+static uint8_t tsfm_reg[2];             // the full register number, per chip
+static bool    tsfm_status;
+
+/*
+ * The YMF262's timers, modelled here on core 1 because a driver finds
+ * the chip by starting timer 1 and reading the status back -- and the
+ * chip itself is on core 0, behind the queue, where a read cannot wait.
+ */
+static uint8_t  opl_addr;
+static uint8_t  opl_t1, opl_t2, opl_ctrl;
+static uint32_t opl_t1_start, opl_t2_start;   // absolute T-states
+static uint8_t  opl_status;
+
+static uint32_t abs_t(const uint32_t t) { return spec_frames * spec_frame_tstates() + t; }
+
+static void opl_ctrl_write(const uint8_t v, const uint32_t t) {
+    if (v & 0x80u) { opl_status = 0; return; }      // IRQ reset
+    if ((v & 0x01u) && !(opl_ctrl & 0x01u)) opl_t1_start = abs_t(t);
+    if ((v & 0x02u) && !(opl_ctrl & 0x02u)) opl_t2_start = abs_t(t);
+    opl_ctrl = v;
+}
+
+static uint8_t opl_status_read(const uint32_t t) {
+    const uint32_t now = abs_t(t);
+    // Timer 1 ticks every 80 us, timer 2 every 320; 3.5 T-states a us.
+    if ((opl_ctrl & 0x01u) && !(opl_ctrl & 0x40u)
+        && now - opl_t1_start >= (256u - opl_t1) * 280u) opl_status |= 0xC0u;
+    if ((opl_ctrl & 0x02u) && !(opl_ctrl & 0x20u)
+        && now - opl_t2_start >= (256u - opl_t2) * 1120u) opl_status |= 0xA0u;
+    return opl_status;
+}
 
 // The last byte written to the ULA's port, which the EAR bit reads back.
 static volatile uint8_t last_fe;
-/*
- * How far into the frame the machine has run, in T-states.
- *
- * Only the tape input needs it: their sampler is indexed by position
- * within the frame, so that the buffer is read across at the speed the
- * frame actually took rather than the speed it was supposed to take.
- */
-static uint32_t frame_pos;
 
 /*
  * Two ways of bolting a real DAC onto a machine that has none.
@@ -359,8 +698,6 @@ static uint32_t frame_pos;
  * a machine that never had one must not have writes to those ports turn
  * into noise.
  */
-static volatile uint8_t covox_level;
-static volatile uint8_t sd_level[4];
 
 // ============================================================================
 // Paging
@@ -398,6 +735,9 @@ static const uint8_t *basic_rom(void) {
 
 static void apply_machine_paging(void);
 static void apply_divmmc(void);
+static void contend_remask(void);
+static void contend_setup(void);
+static uint8_t floating_bus(uint32_t t);
 
 /*
  * The map, then what is laid over it.
@@ -411,6 +751,10 @@ static void apply_divmmc(void);
 static void __not_in_flash_func(apply_paging)(void) {
     apply_machine_paging();
     apply_divmmc();
+    // The screen may now be visible through different windows, and
+    // which of them the ULA contends may have changed.
+    if (unlikely(ula_beam)) ula_rewatch();
+    if (unlikely(z80_contend.on)) contend_remask();
 }
 
 void apply_paging_hook(void) { apply_paging(); }
@@ -430,8 +774,68 @@ static void __not_in_flash_func(apply_divmmc)(void) {
     z80_map_page8(1, hi, hi);
 }
 
+/*
+ * Which bank is at #C000, on every machine that pages it.
+ *
+ * In one place because the Beta Disk's arm needs it too: TR-DOS changes
+ * the bottom window and nothing else, and it used to put back only
+ * #7FFD's three bits -- so a Scorpion or a Profi in TR-DOS with a high
+ * bank selected was quietly looking at the wrong one.
+ */
+static unsigned c000_bank(void) {
+    const uint8_t v = spec_port_7ffd;
+    switch (spec_machine) {
+        case MACHINE_SCORPION: return (v & 0x07u) | ((spec_port_1ffd & 0x10u) >> 1);
+        case MACHINE_ZS1024:
+        case MACHINE_SCORPEVO:
+            // 1FFD D6,D7 are two more page bits above D4: 64 pages, 1 MB.
+            return (v & 0x07u) | ((spec_port_1ffd & 0x10u) >> 1) | ((spec_port_1ffd & 0xC0u) >> 2);
+        case MACHINE_KAY256:
+            return (v & 0x07u) | ((spec_port_1ffd & 0x10u) >> 1);
+        case MACHINE_KAY1024:
+        case MACHINE_KAY1024B:
+            return (v & 0x07u) | ((spec_port_1ffd & 0x10u) >> 1)
+                 | ((spec_port_1ffd & 0x80u) >> 3) | ((kay_7ffd_d7 & 0x80u) >> 2);
+        case MACHINE_PHOENIX: {
+            // Its own order, and D6 makes 2 MB of which 1 MB is fitted here.
+            const unsigned p = (v & 0x07u) | ((kay_7ffd_d7 & 0x80u) >> 4)
+                             | (spec_port_1ffd & 0x50u) | ((spec_port_1ffd & 0x80u) >> 2);
+            return p < SPEC_MAX_BANKS ? p : (v & 0x07u);
+        }
+        case MACHINE_PROFI:    return (v & 0x07u) | ((spec_port_dffd & 0x07u) << 3);
+        case MACHINE_PENT512:
+        case MACHINE_PENT1024: {
+            unsigned b = v & 0x07u;
+            if (spec_machine == MACHINE_PENT1024 && (spec_port_eff7 & 0x04u)) return b;
+            if (v & 0x40u) b += 8u;
+            if (v & 0x80u) b += 16u;
+            if (spec_machine == MACHINE_PENT1024 && (v & 0x20u)) b += 32u;
+            return b;
+        }
+        default:               return v & 0x07u;
+    }
+}
+
 static void __not_in_flash_func(apply_machine_paging)(void) {
     const uint8_t v = spec_port_7ffd;
+
+    // The Profi's CP/M mode opens the disk controller without TR-DOS.
+    beta_ports_open = (spec_machine == MACHINE_PROFI) && (spec_port_dffd & 0x20u);
+
+    // The ATM's memory manager owns every window. See atm.c.
+    if (spec_is_atm(spec_machine)) { atm_remap(); return; }
+
+    if (spec_machine == MACHINE_ALF) {
+        const unsigned b = (alf_sel & 0x7Fu) % 64u;
+        if (alf_sram)                                      z80_map_page(0, alf_ram, alf_ram);
+        else if (alf_sel & 0x80u)                          z80_map_page(0, rom_window[b < alf_banks ? ROMW_2 : ROMW_3], NULL);
+        else                                               z80_map_page(0, rom_window[b < 2u ? b : ROMW_3], NULL);
+        z80_map_page(1, spec_ram[5], spec_ram[5]);
+        z80_map_page(2, spec_ram[2], spec_ram[2]);
+        z80_map_page(3, spec_ram[v & 7u], spec_ram[v & 7u]);
+        spec_screen_bank = (v & 0x08) ? 7 : 5;
+        return;
+    }
 
     /*
      * The Beta Disk's ROM sits on top of everything.
@@ -442,9 +846,9 @@ static void __not_in_flash_func(apply_machine_paging)(void) {
      * otherwise hold, on every machine. So this runs first and the rest
      * of the function only decides what is underneath it.
      */
-    if (unlikely(beta_rom_paged())) {
+    if (unlikely(beta_rom_paged()) && !spec_is_scorpion_class(spec_machine)) {
         z80_map_page(0, rom_window[ROMW_TRDOS], NULL);
-        if (spec_machine == MACHINE_48K) {
+        if (spec_is_48k_class(spec_machine)) {
             z80_map_page(1, spec_ram[5], spec_ram[5]);
             z80_map_page(2, spec_ram[2], spec_ram[2]);
             z80_map_page(3, spec_ram[0], spec_ram[0]);
@@ -452,7 +856,8 @@ static void __not_in_flash_func(apply_machine_paging)(void) {
         } else {
             z80_map_page(1, spec_ram[5], spec_ram[5]);
             z80_map_page(2, spec_ram[2], spec_ram[2]);
-            z80_map_page(3, spec_ram[v & 7], spec_ram[v & 7]);
+            uint8_t *p = spec_bank_ptr(c000_bank());
+            z80_map_page(3, p, p);
             spec_screen_bank = (v & 0x08) ? 7 : 5;
         }
         return;
@@ -464,11 +869,17 @@ static void __not_in_flash_func(apply_machine_paging)(void) {
      * ignored" rather than as a separate code path keeps one function
      * responsible for the memory map.
      */
-    if (spec_machine == MACHINE_48K) {
+    if (spec_is_48k_class(spec_machine)) {
         z80_map_page(0, (uint8_t *)basic_rom(), NULL);
         z80_map_page(1, spec_ram[5], spec_ram[5]);
-        z80_map_page(2, spec_ram[2], spec_ram[2]);
-        z80_map_page(3, spec_ram[0], spec_ram[0]);
+        if (spec_machine == MACHINE_16K) {
+            // Nothing fitted above #8000: reads float high, writes vanish.
+            z80_map_page(2, rom_window[ROMW_2], NULL);
+            z80_map_page(3, rom_window[ROMW_2], NULL);
+        } else {
+            z80_map_page(2, spec_ram[2], spec_ram[2]);
+            z80_map_page(3, spec_ram[0], spec_ram[0]);
+        }
         spec_screen_bank = 5;
         return;
     }
@@ -517,7 +928,7 @@ static void __not_in_flash_func(apply_machine_paging)(void) {
         return;
     }
 
-    if (spec_machine == MACHINE_SCORPION) {
+    if (spec_is_scorpion_class(spec_machine)) {
         const uint8_t w = spec_port_1ffd;
 
         /*
@@ -531,8 +942,18 @@ static void __not_in_flash_func(apply_machine_paging)(void) {
          * is why nobody trips over it.
          */
         const bool dos = beta_rom_paged();
-        const unsigned rn = (w & 0x02u) ? 2u
-                          : ((dos ? 2u : 0u) | ((v & 0x10u) ? 1u : 0u));
+        const unsigned rom14 = (v & 0x10u) ? 1u : 0u;
+        const unsigned kay = spec_kay_level(spec_machine);
+        /*
+         * The KAY's ROM A15 is #1FFD D3 XOR the DOS line, its A14 #7FFD
+         * D4 -- the same four roles, but D3 swaps the pair rather than
+         * D1 overriding it. Phoenix adds the Scorpion's D1 on top.
+         * After pico-speccy's scorpionRomUpdate().
+         */
+        const unsigned rn = (kay == 4u && (w & 0x02u)) ? 2u
+                          : kay ? ((((w & 0x08u) ? 2u : 0u) ^ (dos ? 2u : 0u)) | rom14)
+                          : (w & 0x02u) ? 2u
+                          : ((dos ? 2u : 0u) | rom14);
 
         /* D0 puts RAM bank 0 at #0000 instead of any ROM. */
         if (w & 0x01u) z80_map_page(0, spec_ram[0], spec_ram[0]);
@@ -543,8 +964,7 @@ static void __not_in_flash_func(apply_machine_paging)(void) {
         z80_map_page(2, spec_ram[2], spec_ram[2]);
 
         /* 256 KB: #1FFD D4 is the fourth bit of the #C000 page. */
-        const unsigned bank = (v & 0x07u) | ((w & 0x10u) >> 1);
-        uint8_t *p = spec_bank_ptr(bank);
+        uint8_t *p = spec_bank_ptr(c000_bank());
         z80_map_page(3, p, p);
 
         spec_screen_bank = (v & 0x08) ? 7 : 5;
@@ -569,15 +989,39 @@ static void __not_in_flash_func(apply_machine_paging)(void) {
          * 1 MB: #7FFD's three bits are the page within a group and
          * #DFFD's three are the group, so eight groups of eight.
          */
-        const unsigned bank = (v & 0x07u) | ((d & 0x07u) << 3);
-        uint8_t *p = spec_bank_ptr(bank);
+        uint8_t *p = spec_bank_ptr(c000_bank());
         z80_map_page(3, p, p);
 
         spec_screen_bank = (v & 0x08) ? 7 : 5;
         return;
     }
 
-    if (spec_machine == MACHINE_PLUS3) {
+    if (spec_machine == MACHINE_PENT512 || spec_machine == MACHINE_PENT1024) {
+        /*
+         * After pico-speccy's Pentagon.cpp and Ports.cpp. #7FFD bits 6
+         * and 7 are page bits 3 and 4; on the 1024SL bit 5 is bit 5 --
+         * unless #EFF7 bit 2 has put it back to being the 128K lock.
+         */
+        const uint8_t e = spec_port_eff7;
+        const bool is1024 = spec_machine == MACHINE_PENT1024;
+        const unsigned bank = c000_bank();
+        const unsigned latch = (v & 0x10u) ? 1u : 0u;
+        if ((is1024 && (e & 0x08u)) || pent_cache_in) {
+            uint8_t *c = pent_cache[latch];
+            z80_map_page(0, c, c);
+        } else {
+            z80_map_page(0, (uint8_t *)(latch ? basic_rom() : rom_window[ROMW_0]), NULL);
+        }
+        z80_map_page(1, spec_ram[5], spec_ram[5]);
+        z80_map_page(2, spec_ram[2], spec_ram[2]);
+        uint8_t *p = spec_bank_ptr(bank);
+        z80_map_page(3, p, p);
+        spec_screen_bank = (v & 0x08) ? 7 : 5;
+        spec_pent16c = is1024 && (e & 0x01u);
+        return;
+    }
+
+    if (spec_is_plus3_class(spec_machine)) {
         const uint8_t w = spec_port_1ffd;
 
         if (w & 0x01u) {
@@ -665,8 +1109,32 @@ static void update_opfetch_hook(void);
  * times a second -- so it is not installed at all unless one of the two
  * actually wants it. That is what update_opfetch_hook() is for.
  */
-static void __not_in_flash_func(spec_opfetch)(const uint16_t addr) {
+/*
+ * ProfROM's plane switch: a jump into #0100-#010F from the service ROM
+ * picks the plane from the address and the plane it came from. MAME's
+ * prof_plane_map, applied over the whole sixteen bytes as ZXMAK2 and
+ * pico-speccy do, because ProfROM itself jumps to the in-between ones.
+ */
+static const uint8_t prof_plane_map[16] = { 0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0 };
+
+static bool prof_tap_armed(void) {
+    return (spec_machine == MACHINE_ZS1024 || spec_machine == MACHINE_SCORPEVO)
+        && (spec_port_1ffd & 0x02u) && !(spec_port_1ffd & 0x01u);
+}
+
+static void __not_in_flash_func(spec_opfetch)(const uint16_t addr, const uint32_t t) {
+    (void)t;
     if (settings.esxdos) divmmc_opfetch(addr);
+
+    if (spec_is_atm(spec_machine) && !tramp_active) { atm_opfetch(addr); return; }
+
+    if (unlikely((addr & 0xFFF0u) == 0x0100u) && prof_tap_armed()) {
+        const uint8_t plane = prof_plane_map[(addr & 0x0Cu) | (prof_plane & 0x03u)];
+        if (plane != prof_plane) {
+            prof_plane = plane;
+            load_plane(spec_machine, plane);    // the windows already point at the slots
+        }
+    }
 
     if (unlikely(tramp_active)) {
         /*
@@ -711,7 +1179,7 @@ static void __not_in_flash_func(spec_opfetch)(const uint16_t addr) {
 
     // On a 128K the rule only applies while ROM 1 is selected; the
     // editor ROM has its own use for that address.
-    const bool basic48 = spec_machine == MACHINE_48K || (spec_port_7ffd & 0x10);
+    const bool basic48 = spec_is_48k_class(spec_machine) || (spec_port_7ffd & 0x10);
     if ((addr & 0xFF00) == 0x3D00 && basic48) {
         beta_set_rom_paged(true);
         apply_paging();
@@ -726,7 +1194,8 @@ static void update_opfetch_hook(void) {
      * DivMMC -- the last two because both decide where they are paged
      * by watching where the CPU is fetching from.
      */
-    z80_opfetch_cb = (tramp_active || settings.betadisk || settings.esxdos)
+    z80_opfetch_cb = (tramp_active || settings.betadisk || settings.esxdos || prof_tap_armed()
+                      || spec_is_atm(spec_machine))
                          ? spec_opfetch : NULL;
 }
 
@@ -757,7 +1226,76 @@ bool spec_launch_pending(void) { return tramp_active; }
  * which of the five bits comes back clear, and the paging latch is
  * selected by A15/A1. Neither is visible in the low byte alone.
  */
-static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t value) {
+/*
+ * Which machines carry Mr Gluk's clock: the Pentagons, the Scorpions
+ * and KAYs, the Profi and the ATMs, as pico-speccy fits it.
+ */
+/*
+ * The Profi's CP/M mode (#DFFD bit 5) moves the WD1793 to #83, #A3, #C3
+ * and #E3 -- register = A6-A5, as UnrealSpeccy decodes it -- and its
+ * system register to #BF. Mapped back here onto the ports the Beta Disk
+ * already answers; anything else comes back unchanged.
+ */
+static uint16_t profi_cpm_port(const uint16_t port) {
+    if ((port & 0x9Fu) == 0x83u) return (uint16_t)((port & 0xFF00u) | ((port & 0x60u) | 0x1Fu));
+    if ((port & 0xFFu) == 0xBFu) return (uint16_t)((port & 0xFF00u) | 0xFFu);
+    return port;
+}
+
+
+static bool has_gluk(void) {
+    const machine_t m = spec_machine;
+    return settings.rtc && (spec_is_pentagon_class(m) || spec_is_scorpion_class(m)
+                            || m == MACHINE_PROFI || spec_is_atm(m));
+}
+
+/*
+ * Which even ports reach the ULA. A Spectrum looks at A0 alone; the
+ * TC2068 and the Byte decode the whole low byte, so only #FE (their #F4,
+ * #F6 and the Byte's OUT (0) markers must not repaint the border); the
+ * ATM1 also wants A2, the ATM2/2+/3 A2 and A1 (atmdscr.htm, #FA is the
+ * external bus). After pico-speccy's Ports.cpp.
+ */
+static inline bool ula_decodes(const uint16_t port) {
+    if (port & 1u) return false;
+    switch (spec_machine) {
+        case MACHINE_TIMEX:
+        case MACHINE_BYTE: return (port & 0xFFu) == 0xFEu;
+        case MACHINE_ATM1: return (port & 0x04u) != 0;
+        default:
+            return !spec_is_atm(spec_machine) || (port & 0x06u) == 0x06u;
+    }
+}
+
+static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t value,
+                                             const uint32_t t) {
+    (void)t;
+    // The ATM's ports come before everything: its #7FFD and #FF families
+    // are decoded its own way. See atm.c.
+    if (unlikely(spec_is_atm(spec_machine))) {
+        if (ula_decodes(port)) atm_fe_write(port, value);
+        if (atm_port_write(port, value)) return;
+    }
+    // The hard disk, ahead of the ULA: NEMO's registers are even ports.
+    if (unlikely(settings.ide) && ide_port_out(port, value)) return;
+
+    // The ALF's ROM-bank select: any OUT with A7 low and A0 high.
+    if (unlikely(spec_machine == MACHINE_ALF) && !(port & 0x80u) && (port & 1u)) {
+        alf_select(value);
+        apply_paging();
+        return;
+    }
+
+    // The Byte's 8253: #8E, #AE, #CE the counters, #EE the control word.
+    if (unlikely(spec_machine == MACHINE_BYTE) && ((port & 0x9Fu) == 0x8Eu)) {
+        snd_put(t, SD_PIT0 + ((port >> 5) & 3u), value);
+        return;
+    }
+
+    if (unlikely(port == 0xDFF7u || port == 0xBFF7u) && has_gluk()) {
+        if (port == 0xDFF7u) rtc_select(value); else rtc_write(value);
+        return;
+    }
     /*
      * ULA+ first: both its ports are odd, so an ordinary ULA write would
      * claim them before anything else got a look. Theirs decodes the
@@ -795,17 +1333,36 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
      *
      * Nothing in the family answers while the TR-DOS ROM is paged.
      */
-    if (unlikely(settings.saa) && spec_machine != MACHINE_TIMEX
+    /*
+     * The Creative Music System: two SAA1099s on the same #FF family, A9
+     * picking the chip, A8 select or data. Ahead of the single SAA, which
+     * it replaces when it is fitted.
+     */
+    if (unlikely(settings.cms) && spec_machine != MACHINE_TIMEX
         && (port & 0xFFu) == 0xFFu && !beta_rom_paged()) {
-        if (port & 0x0100u) saa_select(&saa, value);
-        else                saa_write(&saa, value);
+        const unsigned c = (port >> 9) & 1u;
+        snd_put(t, (port & 0x0100u) ? (c ? SD_CMS1_SEL : SD_CMS0_SEL)
+                                    : (c ? SD_CMS1_DAT : SD_CMS0_DAT), value);
         return;
     }
 
-    if ((settings.timex || spec_machine == MACHINE_TIMEX)
+    if (unlikely(settings.saa) && spec_machine != MACHINE_TIMEX
+        && (port & 0xFFu) == 0xFFu && !beta_rom_paged()) {
+        if (port & 0x0100u) {
+            snd_mirror.saa_sel = value;
+            snd_put(t, SD_SAA_SEL, value);
+        } else {
+            snd_mirror.saa_reg[snd_mirror.saa_sel & 0x1Fu] = value;
+            snd_put(t, SD_SAA_DAT, value);
+        }
+        return;
+    }
+
+    if ((settings.timex || spec_has_scld(spec_machine))
         && (port & 0xFFu) == 0xFFu
         && (spec_machine == MACHINE_TIMEX || !(port & 0x0100u))
         && !beta_rom_paged()) {
+        timex_ff = value;
         spec_timex_mode = (uint8_t)(value & 0x07u);
         spec_timex_ink  = (uint8_t)((value >> 3) & 0x07u);
         /*
@@ -858,9 +1415,26 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
      * letting them through on a 128K would take writes the AY wanted.
      */
     if (fdc_port_out(port, value)) return;
+    if (unlikely(beta_ports_open)) {
+        const uint16_t p = profi_cpm_port(port);
+        if (p != port && beta_port_out(p, value)) return;
+    }
     if (divmmc_port_out(port, value)) return;
+    if (divmmc_zc_out(port, value)) return;
 
-    if ((port & 0x0001) == 0) {                 // the ULA
+    /*
+     * The Timex's horizontal select register, #F4: one bit per 8 KB
+     * chunk. Ahead of the ULA -- #F4 is even, and only its full decode
+     * keeps it off the border.
+     */
+    if (spec_machine == MACHINE_TIMEX && (port & 0xFFu) == 0xF4u) {
+        spec_timex_hsr = value;
+        apply_paging();
+        return;
+    }
+
+    if (ula_decodes(port)) {                    // the ULA
+        if (unlikely(ula_beam) && (value & 0x07) != spec_border) ula_border(t, value & 0x07);
         spec_border = value & 0x07;
 
         /*
@@ -880,6 +1454,8 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
          * sub-sample detail, which for a beeper mostly means the very
          * top of its range.
          */
+        // Only a change is news: border-only writes are most of them.
+        if ((value ^ last_fe) & 0x18u) snd_put(t, SD_FE, value);
         spec_beeper = (value & 0x10) != 0;
         last_fe     = value;
     }
@@ -891,13 +1467,42 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
      * did it. #1F is also where a Kempston joystick answers -- but that
      * is a read and this is a write, so the two never meet.
      */
-    if (settings.covox && (port & 0xFF) == 0xFB) covox_level = value;
+    /*
+     * The VGM card's chips (pico-speccy's decode): OPL3 on #C4-#C7, OPLL
+     * on #C0/#C1, the SN pair on #C3 (#C9) and #C2. All write-only but
+     * the OPL3's status.
+     */
+    {
+        const uint8_t lo = (uint8_t)port;
+        if (settings.opl3 && (lo & 0xFCu) == 0xC4u) {
+            if (!(lo & 1u)) opl_addr = value;
+            else if (!(lo & 2u)) {
+                if (opl_addr == 2) opl_t1 = value;
+                else if (opl_addr == 3) opl_t2 = value;
+                else if (opl_addr == 4) opl_ctrl_write(value, t);
+            }
+            snd_put(t, SD_OPL0 + (lo & 3u), value);
+            return;
+        }
+        if (settings.opll && (lo == 0xC0u || lo == 0xC1u)) {
+            snd_put(t, lo == 0xC1u ? SD_OPLL_D : SD_OPLL_A, value);
+            return;
+        }
+        if (settings.sn76489 && (lo == 0xC3u || lo == 0xC9u || lo == 0xC2u)) {
+            snd_put(t, lo == 0xC2u ? SD_SN1 : SD_SN0, value);
+            return;
+        }
+    }
+
+    if (settings.covox && (port & 0xFF) == (settings.covox == COVOX_DD ? 0xDDu : 0xFBu))
+        snd_put(t, SD_COVOX, value);
+    if (settings.specdrum && (port & 0xFF) == 0xDF) snd_put(t, SD_SPECDRUM, value);
     if (settings.soundrive) {
         switch (port & 0xFF) {
-            case 0x0F: sd_level[0] = value; break;
-            case 0x1F: sd_level[1] = value; break;
-            case 0x4F: sd_level[2] = value; break;
-            case 0x5F: sd_level[3] = value; break;
+            case 0x0F: snd_put(t, SD_SD0, value); break;
+            case 0x1F: snd_put(t, SD_SD1, value); break;
+            case 0x4F: snd_put(t, SD_SD2, value); break;
+            case 0x5F: snd_put(t, SD_SD3, value); break;
             default: break;
         }
     }
@@ -938,15 +1543,33 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
          * does not exist, which is why this only acts when the second
          * chip has been turned on.
          */
-        if (settings.turbosound && (value & 0xFE) == 0xFE) {
+        if ((settings.turbosound || settings.tsfm) && (value & 0xF8u) == 0xF8u
+            && (value >= 0xFEu || settings.tsfm)) {
             ay_sel = (uint8_t)(value & 1 ? 0 : 1);   // 0xFF = first, 0xFE = second
+            if (settings.tsfm) {
+                tsfm_status = !(value & 0x02u);
+                snd_put(t, SD_FM_ON, (value & 0x04u) ? 0 : 1);
+            }
+        } else if (settings.tsfm && (value & 0xFEu) == 0xF0u) {
+            // AlexZor's VGM plugin: #F0/#F1 select a chip and the FM.
+            ay_sel = value & 1u;
+            tsfm_status = false;
+            snd_put(t, SD_FM_ON, 1);
         } else {
-            ay_select(&ay[ay_sel], value);
+            snd_mirror.latched[ay_sel] = value & 0x0Fu;
+            tsfm_reg[ay_sel] = value;
+            snd_put(t, ay_sel ? SD_AY_SEL1 : SD_AY_SEL0, value);
+            if (settings.tsfm && value >= 0x10u) snd_put(t, ay_sel ? SD_OPN1_A : SD_OPN0_A, value);
         }
         return;
     }
     if (have_ay() && (port & 0xC002) == 0x8000) {   // data
-        ay_write(&ay[ay_sel], value);
+        if (settings.tsfm && tsfm_reg[ay_sel] >= 0x10u) {
+            snd_put(t, ay_sel ? SD_OPN1_D : SD_OPN0_D, value);
+            return;
+        }
+        snd_mirror.reg[ay_sel][snd_mirror.latched[ay_sel]] = value;
+        snd_put(t, ay_sel ? SD_AY_DAT1 : SD_AY_DAT0, value);
         spec_ay_writes++;
         return;
     }
@@ -959,20 +1582,18 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
      * Never gated by the paging lock either -- #7FFD D5 freezes only
      * #7FFD on real hardware, and #1FFD stays live until reset.
      */
-    if (spec_machine == MACHINE_SCORPION && (port & 0xC002u) == 0
-        && (port & 0x0020u)) {
+    if ((spec_machine == MACHINE_SCORPION || spec_machine == MACHINE_ZS1024
+         || spec_machine == MACHINE_SCORPEVO)
+        && (port & 0xC002u) == 0 && (port & 0x0020u)) {
         spec_port_1ffd = value;
         apply_paging();
+        update_opfetch_hook();          // ProfROM's plane switch arms on D1
         return;
     }
 
-    /*
-     * The Timex's horizontal select register, #F4: one bit per 8 KB
-     * chunk. Decoded on the low byte, like everything else in that
-     * machine's port map.
-     */
-    if (spec_machine == MACHINE_TIMEX && (port & 0xFFu) == 0xF4u) {
-        spec_timex_hsr = value;
+    /* The KAY's #1FFD: A15=A14=0, A1=0, A0=1. */
+    if (spec_kay_level(spec_machine) && (port & 0xC003u) == 0x0001u) {
+        spec_port_1ffd = value;
         apply_paging();
         return;
     }
@@ -985,7 +1606,7 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
      * one bit narrower. The paging lock covers it too: once #7FFD bit 5
      * is set the machine cannot page again by any route.
      */
-    if (spec_machine == MACHINE_PLUS3 && (port & 0xF002u) == 0x1000u
+    if (spec_is_plus3_class(spec_machine) && (port & 0xF002u) == 0x1000u
         && !paging_locked) {
         spec_port_1ffd = value;
         apply_paging();
@@ -1002,9 +1623,25 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
      * their ports, and whatever is left over and looks like #7FFD is
      * #7FFD.
      */
-    if (spec_machine != MACHINE_48K && (port & 0x8002) == 0 && !paging_locked) {
+    /*
+     * The 1024SL's #EFF7, decoded on A15-A12 and A3 as Ports.cpp has it
+     * -- ahead of #7FFD, whose looser decode would otherwise take it.
+     */
+    if (spec_machine == MACHINE_PENT1024 && (port & 0xF008u) == 0xE000u) {
+        if (!paging_locked) {
+            spec_port_eff7 = value;
+            apply_paging();
+        }
+        return;
+    }
+
+    if (!spec_is_48k_class(spec_machine) && (port & 0x8002) == 0 && !paging_locked) {
+        if ((value ^ spec_port_7ffd) & 0x08u) giga_flips++;
+        kay_7ffd_d7 = value & 0x80u;        // the KAY 1024's +32
         spec_port_7ffd = value;
-        if (value & 0x20) paging_locked = true;
+        // On a 1024SL bit 5 is a page bit, and only locks in 128K mode.
+        if ((value & 0x20) && (spec_machine != MACHINE_PENT1024 || (spec_port_eff7 & 0x04u)))
+            paging_locked = true;
         apply_paging();
         return;
     }
@@ -1110,7 +1747,22 @@ static uint8_t fuller_byte(void) {
 
 // ---------------------------------------------------------------------------
 
-static uint8_t __not_in_flash_func(spec_io_in)(const uint16_t port) {
+static uint8_t __not_in_flash_func(spec_io_in)(const uint16_t port, const uint32_t t) {
+    if (unlikely(spec_is_atm(spec_machine))) {
+        uint8_t a;
+        if (atm_port_read(port, &a)) return a;
+    }
+    if (unlikely(port == 0xBFF7u) && has_gluk()) return rtc_read();
+    if (unlikely(spec_machine == MACHINE_ALF) && ((port & 0xFDu) == 0x1Du)) {
+        const bool on = !(port & 0x02u);
+        if (on != alf_sram) { alf_sram = on; apply_paging(); }
+        if (on) return 0xFF;                // #1F carries on to the joystick
+    }
+    if (unlikely(settings.ide)) {
+        uint8_t d;
+        if (ide_port_in(port, &d)) return d;
+    }
+    if (settings.opl3 && (port & 0xFFu) == 0xC4u) return opl_status_read(t);
     if (settings.ulaplus && port == 0xFF3Bu) {
         const uint8_t reg = spec_ulaplus_reg;
         if ((reg & 0xC0u) == 0x00u) return spec_ulaplus_pal[reg & 0x3Fu];
@@ -1118,20 +1770,74 @@ static uint8_t __not_in_flash_func(spec_io_in)(const uint16_t port) {
         return 0xFFu;
     }
 
+    /*
+     * The SCLD reads back the whole byte last written to #FF, and #F4 the
+     * chunk select. The TC2068 ROM flips the dock/EX-ROM bit with IN, SET 7,
+     * OUT -- answered with the floating bus's 0xFF, that also set hi-res,
+     * the second screen and the interrupt inhibit. After pico-speccy.
+     */
+    if ((settings.timex || spec_has_scld(spec_machine))
+        && (port & 0xFFu) == 0xFFu
+        && (spec_machine == MACHINE_TIMEX || !(port & 0x0100u))
+        && !beta_rom_paged())
+        return timex_ff;
+    if (spec_machine == MACHINE_TIMEX && (port & 0xFFu) == 0xF4u) return spec_timex_hsr;
+
     uint8_t v;
     if (tape_port_in(port, &v)) return v;
     if (beta_port_in(port, &v)) return v;
+    if (unlikely(beta_ports_open)) {
+        const uint16_t p = profi_cpm_port(port);
+        if (p != port && beta_port_in(p, &v)) return v;
+    }
     if (fdc_port_in(port, &v)) return v;
     if (divmmc_port_in(port, &v)) return v;
+    if (divmmc_zc_in(port, &v)) return v;
+
+    /*
+     * The Pentagon 512/1024's cache switch: an IN from #FB puts the cache
+     * page where the ROM was, an IN from #7B takes it away. Only on those
+     * two -- a plain Pentagon 128 reads #FB as the printer port, and some
+     * loaders probe it.
+     */
+    if ((spec_machine == MACHINE_PENT512 || spec_machine == MACHINE_PENT1024)
+        && ((port & 0xFFu) == 0xFBu || (port & 0xFFu) == 0x7Bu)) {
+        const bool in = (port & 0xFFu) == 0xFBu;
+        if (in != pent_cache_in) { pent_cache_in = in; apply_paging(); }
+        return 0xFF;
+    }
+
+    /*
+     * The Kempston mouse, ahead of the joystick that can share #DF.
+     *
+     * Decoded as the original interface was on the high byte -- X at A10-A8
+     * 011, Y at 111, the buttons at A9=1 A8=0 -- with the low byte held to
+     * the full #DF so it does not steal the joystick's or the Beta's reads.
+     * The buttons answer 0xFF until a mouse has ever been seen, which is
+     * how software decides there is none. After pico-speccy's Ports.cpp.
+     */
+    if (settings.mouse && (port & 0xFFu) == 0xDFu) {
+        const uint16_t hi = port & 0x0700u;
+        if (hi == 0x0300u) return spec_mouse_x;
+        if (hi == 0x0700u) return spec_mouse_y;
+        if ((hi & 0x0300u) == 0x0200u) {
+            if (!spec_mouse_seen) return 0xFF;
+            const uint8_t b = spec_mouse_buttons;
+            return (uint8_t)(((spec_mouse_wheel & 0x0Fu) << 4) | 0x08u |
+                             ((b & 4u) ? 0 : 0x04u) | ((b & 1u) ? 0 : 0x02u) | ((b & 2u) ? 0 : 0x01u));
+        }
+    }
 
     if (settings.joystick == JOY_KEMPSTON &&
-        (port & 0xFF) == (settings.kempston_port ? 0xDF : 0x1F))
+        ((port & 0xFF) == (settings.kempston_port == 1 ? 0xDF : 0x1F)
+         || (settings.kempston_port == 2 && (port & 0xFF) == 0x37)
+         || (settings.kempston_port == 3 && (port & 0xFF) == 0x5F)))
         return kempston_byte();
 
     if (settings.joystick == JOY_FULLER && (port & 0xFF) == 0x7F)
         return fuller_byte();
 
-    if ((port & 0x0001) == 0) {                 // the ULA: keyboard
+    if (ula_decodes(port)) {                    // the ULA: keyboard
         uint8_t result = 0x1F;                  // five keys, all up
 
         // A half-row is selected by its address line being LOW, and more
@@ -1163,8 +1869,10 @@ static uint8_t __not_in_flash_func(spec_io_in)(const uint16_t port) {
          * what a Spectrum with nothing plugged in reads back.
          */
         uint8_t ear;
-        if (unlikely(tapein_running()) && !tape_mounted())
-            ear = tapein_level(frame_pos) ? 0x40 : 0;
+        if (unlikely(tapeplay_active))
+            ear = tapeplay_ear(t) ? 0x40 : 0;
+        else if (unlikely(tapein_running()) && !tape_mounted())
+            ear = tapein_level(t) ? 0x40 : 0;
         else
             ear = settings.issue2 ? ((last_fe & 0x18) ? 0x40 : 0)
                                   : ((last_fe & 0x10) ? 0x40 : 0);
@@ -1173,69 +1881,28 @@ static uint8_t __not_in_flash_func(spec_io_in)(const uint16_t port) {
 
     // The AY's read-back port is the select port, not the data one.
     if (have_ay() && (port & 0xC002) == 0xC000)
-        return ay_read(&ay[ay_sel]);
+        // TurboSound FM in ready-poll mode: the YM2203's status, never busy.
+        return (settings.tsfm && tsfm_status) ? 0x00u
+                                              : snd_mirror.reg[ay_sel][snd_mirror.latched[ay_sel]];
 
     /*
-     * Everything else is the floating bus, and 0xFF is the honest answer
-     * for it here. On real hardware an unclaimed IN returns whatever the
-     * ULA happened to be fetching, which a handful of effects depend on;
-     * reproducing that needs the video and the CPU to share a clock, and
-     * they do not on this board.
+     * Everything else is the floating bus: whatever the ULA was fetching
+     * at that moment, because nothing else is driving the data lines.
+     *
+     * It used to be 0xFF here, because the picture ran on its own clock
+     * and nothing knew where the beam was. Every handler is told its
+     * T-state now, and the beam is a function of the T-state -- so a
+     * 48K or a 128K answers with the bitmap or attribute byte under the
+     * beam, in the order the ULA reads them, and 0xFF in the border and
+     * the gaps. Arkanoid and Sidewize time themselves off this. The
+     * Pentagon, the +2A/+3 and the clones answer 0xFF, as theirs did.
      */
-    return 0xFF;
+    return floating_bus(t);
 }
 
-/*
- * A known tone, for measuring the sound path rather than listening to it.
- *
- * Generated here and not by the AY, which matters: the 128K ROM's
- * interrupt routine writes the chip's registers fifty times a second
- * whether anything is playing or not, so a tone programmed into the AY
- * from outside survives about twenty milliseconds. What came out was a
- * dense inharmonic mess that looked like terrible distortion and was
- * nothing of the kind.
- *
- * 441 Hz because 44100 divides by it exactly: a hundred samples to the
- * cycle, so the square wave is the same every cycle and anything in the
- * spectrum that is not 441 Hz and its odd harmonics was put there by
- * this firmware or by the board.
- */
-#define TEST_TONE_HZ      441u
-#define TEST_TONE_SAMPLES (AUDIO_RATE_HZ / TEST_TONE_HZ)   /* exactly 100 */
-
-/*
- * A sine and not a square, because this is a measuring instrument.
- *
- * A square wave's harmonics run past Nyquist and fold back, so a
- * spectrum of one is dense whatever the DAC does and there is no way to
- * tell the folding from the distortion. A sine puts everything in one
- * bin and makes every other bin evidence.
- *
- * Amplitude 8000 of 32767, which is -12 dBFS: loud enough to measure,
- * quiet enough that nothing downstream clips.
- */
-static const int16_t test_tone_wave[TEST_TONE_SAMPLES] = {
-         0,    502,   1003,   1499,   1990,   2472,   2945,   3406,   3854,   4287,
-      4702,   5099,   5476,   5832,   6164,   6472,   6755,   7010,   7239,   7438,
-      7608,   7749,   7858,   7937,   7984,   8000,   7984,   7937,   7858,   7749,
-      7608,   7438,   7239,   7010,   6755,   6472,   6164,   5832,   5476,   5099,
-      4702,   4287,   3854,   3406,   2945,   2472,   1990,   1499,   1003,    502,
-         0,   -502,  -1003,  -1499,  -1990,  -2472,  -2945,  -3406,  -3854,  -4287,
-     -4702,  -5099,  -5476,  -5832,  -6164,  -6472,  -6755,  -7010,  -7239,  -7438,
-     -7608,  -7749,  -7858,  -7937,  -7984,  -8000,  -7984,  -7937,  -7858,  -7749,
-     -7608,  -7438,  -7239,  -7010,  -6755,  -6472,  -6164,  -5832,  -5476,  -5099,
-     -4702,  -4287,  -3854,  -3406,  -2945,  -2472,  -1990,  -1499,  -1003,   -502,
-};
-
-static volatile bool test_tone_on;
-static uint32_t      test_tone_phase;
-
-void spec_test_tone(const bool on) {
-    test_tone_on    = on;
-    test_tone_phase = 0;
-}
-
-bool spec_test_tone_is_on(void) { return test_tone_on; }
+/* The test tone lives with the rest of the sound now. See sound.c. */
+void spec_test_tone(const bool on) { sound_test_tone(on); }
+bool spec_test_tone_is_on(void) { return sound_test_tone_is_on(); }
 
 // ============================================================================
 // Keyboard
@@ -1309,22 +1976,20 @@ void spec_key_ascii(char c) {
         if (held_count || held_joy) return;
 
         /*
-         * An arrow is the joystick when there is one to be.
-         *
-         * Otherwise it is CAPS SHIFT plus a digit, which is what the
-         * Spectrum's own cursor keys are and what the 128K menu reads.
+         * An arrow is CAPS SHIFT plus a digit, which is what the
+         * Spectrum's own cursor keys are and what the 128K menu reads --
+         * and the joystick as well when there is one to be, the way the
+         * USB keyboard does it.
          */
         if (settings.joystick != JOY_NONE && settings.cursor_as_joy) {
-            held_frames = KEY_HOLD_FRAMES;
             switch (c) {
                 case 'A': held_joy = 1u << JOY_BIT_UP;    break;
                 case 'B': held_joy = 1u << JOY_BIT_DOWN;  break;
                 case 'C': held_joy = 1u << JOY_BIT_RIGHT; break;
                 case 'D': held_joy = 1u << JOY_BIT_LEFT;  break;
-                default:  held_frames = 0; return;
+                default:  break;
             }
             joy_state |= held_joy;
-            return;
         }
 
         held_frames = KEY_HOLD_FRAMES;
@@ -1451,6 +2116,8 @@ void spec_key_tick(void) {
 // ============================================================================
 
 void spec_init(void) {
+    ula_set_enabled(settings.beam != 0);
+    contend_setup();
     /*
      * Fill the ROM window before anything can page out of it.
      *
@@ -1473,15 +2140,11 @@ void spec_init(void) {
     memset((void *)kbd, 0x1F, sizeof kbd);      // every key up
     held_count = 0;
 
-    ay_reset(&ay[0]);
-    ay_reset(&ay[1]);
-    saa_reset(&saa);
-    saa_set_clock(&saa, SAA_CLOCK_HZ, AUDIO_RATE_HZ);
+    memset(&snd_mirror, 0, sizeof snd_mirror);
+    snd_put(0, SD_RESET, 0);
     ay_sel         = 0;
     spec_beeper    = false;
     last_fe        = 0;
-    covox_level    = 0x80;
-    memset((void *)sd_level, 0x80, sizeof sd_level);
     joy_state      = 0;
     spec_ay_writes = 0;
 
@@ -1493,7 +2156,13 @@ void spec_init(void) {
     spec_port_7ffd = 0;
     spec_port_1ffd = 0;
     spec_port_dffd = 0;
+    spec_port_eff7 = 0;
+    spec_pent16c   = false;
+    pent_cache_in  = false;
+    if (spec_is_atm(spec_machine)) atm_reset();
+    ide_reset();
     spec_timex_hsr = 0;
+    timex_ff = 0;
     spec_timex_exrom = false;
     spec_bank_flush();
     spec_border    = 7;
@@ -1518,7 +2187,7 @@ void spec_init(void) {
     fdc_reset();
     divmmc_reset();
     const bool beta_boot = settings.betadisk && beta_take_boot_request();
-    if (beta_boot && spec_machine != MACHINE_48K) spec_port_7ffd = 0x10;
+    if (beta_boot && !spec_is_48k_class(spec_machine)) spec_port_7ffd = 0x10;
     beta_set_rom_paged(beta_boot);
 
     apply_paging();
@@ -1532,17 +2201,8 @@ void spec_init(void) {
     z80_edge_watch_stop();
 
     z80_reset();
+    z80_park();         // it may sit a while before it runs: see z80_park()
 }
-
-/*
- * One audio sample's worth of Z80, then one audio sample.
- *
- * A frame is 70908 T-states and 882 samples, which is 80.394 T-states
- * each — so the slice length alternates between 80 and 81 under a
- * fractional accumulator rather than being rounded, because rounding
- * 0.394 away 882 times a frame is 347 T-states of drift every 20 ms.
- */
-static uint32_t slice_acc;
 
 static void run_frame(void);
 
@@ -1570,249 +2230,196 @@ static uint32_t samples_per_frame = AUDIO_SAMPLES_PER_FRAME;
 uint32_t spec_samples_per_frame(void) { return samples_per_frame; }
 
 /*
- * AY cycles per sample, in 16.16 fixed point.
+ * Run the machine to t_end.
  *
- * 1773400 / 44100 is 40.213, and the fraction is the point. The first
- * version took the slice's T-states and halved them -- which truncates,
- * because a slice is 80 or 81 T-states and 81/2 is 40 -- so the chip lost
- * half a cycle on two slices in five and played half a per cent flat,
- * for ever, in a way no amount of listening would explain.
- *
- * It is also deliberately not derived from T-states at all any more. A
- * sample is a fixed slice of *time*, and what the chip does in that time
- * does not depend on how fast the CPU beside it is being clocked -- so
- * this survives the turbo settings, and a machine running slightly slow
- * still plays in tune.
+ * The frame used to be cut into one slice per audio sample, with core 1
+ * mixing a sample between slices. The mixing is core 0's now, so a slice
+ * is just a place to stop: often enough that core 0 can render a frame
+ * as it goes rather than all of it at the end.
  */
-#define AY_TICKS_Q16 ((uint32_t)(((uint64_t)AY_CLOCK_HZ << 16) / AUDIO_RATE_HZ))
+#define FRAME_STOPS 16u
 
-static uint32_t ay_tick_frac;
+__force_inline static void run_slice(const uint32_t t_end) {
+    z80_run_until(t_end);
+    snd_put(t_end, SD_MARK, 0);
+}
 
 /*
- * How far into the frame the machine has run, in T-states.
+ * The machine's own clock, which is not the same on every machine.
  *
- * Only the tape input needs it: their sampler is indexed by position
- * within the frame, so that the buffer is read across at the speed the
- * frame actually took rather than the speed it was supposed to take.
+ * A 128K's crystal makes 3.5469 MHz, a 48K's 3.5 MHz, a Pentagon's and
+ * a Scorpion's 3.5 MHz, a Timex's 3.528 MHz -- and each frame is however
+ * many T-states long at that clock. Pacing every machine to the 128K's
+ * 50.01 Hz made a 48K run 1.3 % fast and a Pentagon 2.4 %.
  */
-static uint32_t frame_pos;
-
-__force_inline static uint32_t ay_ticks_for_one_sample(void) {
-    ay_tick_frac += AY_TICKS_Q16;
-    const uint32_t t = ay_tick_frac >> 16;
-    ay_tick_frac &= 0xFFFFu;
-    return t;
+uint32_t spec_cpu_hz(void) {
+    uint32_t base;
+    switch (spec_machine) {
+        case MACHINE_128K:
+        case MACHINE_PLUS2:
+        case MACHINE_PLUS3:
+        case MACHINE_PLUS2A: base = SPEC_CPU_HZ; break;
+        case MACHINE_TIMEX: base = 3528000u;     break;
+        default:            base = 3500000u;     break;
+    }
+    return base * turbo_num() / 2u;
 }
 
-__force_inline static void run_slice(const uint32_t tstates, const uint32_t num) {
-    (void)num;
-    z80_run(tstates);
-    frame_pos += tstates;
+/*
+ * Pacing by the wall clock.
+ *
+ * This used to be a tuner: it adjusted the pace -- how long the engine
+ * waits after each clock edge -- until five frames took a hundred
+ * milliseconds. That made the machine's speed a function of what it was
+ * doing, because an I/O cycle costs the engine more than a memory cycle,
+ * and it hid how much room was left.
+ *
+ * Now the engine runs at the measured floor, as fast as it is safe to
+ * run, and each frame ends by waiting for a deadline that advances by
+ * exactly one frame's length of real time. The wait *is* the headroom,
+ * and it is measured rather than guessed. A frame that overruns its
+ * deadline is late; a run of them means the machine cannot keep up, and
+ * the deadline is dragged forward rather than chased.
+ *
+ * The frame's length is kept in microseconds with a 16-bit fraction,
+ * because 70908 / 3546900 s is 19991.5 us and dropping the half every
+ * frame would be 25 us a second of drift.
+ */
+static uint64_t pace_deadline;          // us, absolute
+static uint32_t frame_us_q16;           // one frame, us << 16
+static uint32_t frame_us_frac;
+static uint32_t spf_q16;                // samples per frame << 16
+static uint32_t spf_frac;
+static uint64_t frame_started;
 
-    /*
-     * The mix, once per sample, a side at a time.
-     *
-     * The beeper is read here rather than pushed by the port handler, so
-     * its level is whatever it was at the end of the slice — which is
-     * the sample it belongs in. The AYs are advanced by exactly the
-     * cycles this slice covered, so nothing drifts against anything.
-     */
-    int32_t l = 0, r = 0;
+spec_timing_t spec_timing;
 
-    if (likely(have_ay())) {
-        const uint32_t ticks = ay_ticks_for_one_sample();
-        const ay_stereo_t pan = (ay_stereo_t)settings.ay_stereo;
-        int32_t al, ar;
-        ay_render_stereo(&ay[0], ticks, pan, &al, &ar);
-        if (settings.turbosound) {
-            int32_t bl, br;
-            ay_render_stereo(&ay[1], ticks, pan, &bl, &br);
-            al += bl; ar += br;
-        }
-        l += al * settings.ay_vol / 10;
-        r += ar * settings.ay_vol / 10;
-    }
-
-    /* The SAA sits at the AY's scale, so it shares its volume. It is a
-     * stereo chip in its own right and pans itself. */
-    if (unlikely(settings.saa)) {
-        int32_t sl, sr;
-        saa_render_stereo(&saa, &sl, &sr);
-        l += sl * settings.ay_vol / 10;
-        r += sr * settings.ay_vol / 10;
-    }
-
-    /*
-     * The beeper at about a quarter of full scale, in the middle.
-     *
-     * On a real Spectrum the beeper is considerably louder than the AY,
-     * and reproducing that faithfully makes every 128K game's music sit
-     * under its own sound effects. This is the compromise every emulator
-     * makes; it is a mix decision, not a measurement.
-     */
-    const int32_t beep = (spec_beeper ? 6000 : -6000) * settings.beeper_vol / 10;
-    l += beep;
-    r += beep;
-
-    // The extra DACs, if the machine has been told it has them. Each is a
-    // byte centred on 0x80 at a quarter of full scale. Covox is one DAC
-    // and goes in the middle; SounDrive is two a side -- #0F and #1F
-    // left, #4F and #5F right, which is how the card was wired -- so a
-    // side of it peaks where all four did when this was mono.
-    if (unlikely(settings.covox)) {
-        const int32_t c = ((int32_t)covox_level - 128) * 64;
-        l += c;
-        r += c;
-    }
-    if (unlikely(settings.soundrive)) {
-        l += (((int32_t)sd_level[0] - 128) + ((int32_t)sd_level[1] - 128)) * 64;
-        r += (((int32_t)sd_level[2] - 128) + ((int32_t)sd_level[3] - 128)) * 64;
-    }
-
-    /*
-     * The test tone replaces the mix rather than joining it, so what is
-     * measured is the path and not the path plus whatever the machine
-     * happened to be doing. Both sides, in phase.
-     */
-    if (unlikely(test_tone_on)) {
-        if (++test_tone_phase >= TEST_TONE_SAMPLES) test_tone_phase = 0;
-        l = r = test_tone_wave[test_tone_phase];
-    }
-
-    /*
-     * Master volume and the output's own headroom, in one step.
-     *
-     * The second divisor is what the board does not have: there is no
-     * attenuator between the LM358 followers and the MS9288A, so a
-     * full-scale mix arrives at its line input about three times too big
-     * and everything sounds distorted. Headphones and the speaker want
-     * it full scale. Which of the two is listening is a switch nothing
-     * can read -- see output_t in settings.h.
-     */
-    static const uint8_t out_scale[OUTPUT_COUNT] = { 10, 3 };   // over ten
-    const int32_t scale = (int32_t)(settings.volume *
-                          out_scale[settings.output < OUTPUT_COUNT ? settings.output : 0]);
-    audio_push(l * scale / 100, r * scale / 100);
+static void pace_recompute(void) {
+    contend_setup();            // turbo and the machine both decide it
+    const uint32_t hz = spec_cpu_hz();
+    const uint32_t len = spec_frame_tstates();
+    frame_us_q16 = (uint32_t)(((uint64_t)len * 1000000u << 16) / hz);
+    // Samples per frame at the DAC's real rate. See audio_rate_millihz().
+    spf_q16 = (uint32_t)(((uint64_t)len * audio_rate_millihz() << 16) / ((uint64_t)hz * 1000u));
+    samples_per_frame = spf_q16 >> 16;
 }
 
-static uint32_t tune_once(void) {
-    // Muted, because the machine is being run at deliberately wrong
-    // speeds and nobody needs to hear that.
-    audio_set_enabled(false);
+/*
+ * How many samples this frame is cut into: the whole part, plus one
+ * whenever the fraction carries.
+ */
+static uint32_t next_frame_samples(void) {
+    spf_frac += spf_q16 & 0xFFFFu;
+    uint32_t n = spf_q16 >> 16;
+    if (spf_frac >= 0x10000u) { spf_frac -= 0x10000u; n++; }
+    return n;
+}
+
+/*
+ * Wait for this frame's deadline, and account for it.
+ *
+ * Busy, because this is core 1 and there is nothing else for it to do:
+ * a sleep would hand the time to nobody and come back late.
+ */
+static void pace_frame(void) {
+    frame_us_frac += frame_us_q16 & 0xFFFFu;
+    uint32_t step = frame_us_q16 >> 16;
+    if (frame_us_frac >= 0x10000u) { frame_us_frac -= 0x10000u; step++; }
 
     /*
-     * Let the machine get on with something typical first.
-     *
-     * How long a frame takes depends on what the CPU is doing in it: an
-     * I/O cycle costs more engine time than a memory one, and the ROM's
-     * power-on RAM test is almost nothing but memory. Tuning against
-     * that -- which is exactly what happens when this is called straight
-     * after a reset -- picks a pace that is six per cent too fast for
-     * the machine the user then sits in front of, and six per cent is a
-     * semitone on everything it plays.
-     *
-     * A second and a half is enough for a 128K to finish testing its
-     * memory and reach its menu.
+     * The ring is the backstop. The DAC and this deadline run off one
+     * crystal, so they do not drift -- but a burst of late frames drains
+     * it, and a deadline that has been dragged forward has lost the time
+     * for good. A tenth of a millisecond a frame either way puts it back
+     * without anyone hearing the difference.
      */
-    for (int f = 0; f < 75; f++) run_frame();
+    const uint32_t level = audio_ring_level();
+    if (level < AUDIO_RING_SIZE / 4u)          step -= 100u;
+    else if (level > AUDIO_RING_SIZE * 3u / 4u) step += 100u;
 
-    // What five frames should take, in microseconds.
-    const int64_t want = 5ll * 1000000ll * SPEC_TSTATES_PER_FRAME / SPEC_CPU_HZ;
-    const int64_t tol  = want / 400;        // a quarter of a per cent
+    pace_deadline += step;
+    const uint64_t now = time_us_64();
+    spec_timing.run_us = (uint32_t)(now - frame_started);
 
-    int32_t pace = (int32_t)z80_get_pace();
-    int64_t us   = want;
-
-    /*
-     * Proportional, then fine.
-     *
-     * Stepping by one and measuring five frames each time is 100 ms an
-     * iteration, and the starting point comes from z80_calibrate(), which
-     * timed the bus engine on its own and therefore lands a long way off
-     * once two AY chips are in the loop. The first version walked ±1 and
-     * ran out of its iteration budget mid-descent, leaving the machine
-     * 1.9 % fast with the tuner reporting success.
-     *
-     * One pace unit is about two per cent of a frame, so the error in per
-     * mille divided by twenty is roughly how many units to move. That
-     * converges in three or four measurements; the ±1 fallback at the end
-     * takes care of the last step, where the estimate rounds to nothing.
-     */
-    for (int iter = 0; iter < 16; iter++) {
-        const uint64_t t0 = time_us_64();
-        for (int f = 0; f < 5; f++) run_frame();
-        us = (int64_t)(time_us_64() - t0);
-
-        const int64_t err = us - want;                  // >0 means too slow
-        if (err > -tol && err < tol) break;
-
-        int32_t step = (int32_t)((err * 1000 / want) / 20);
-        if (step == 0) step = err > 0 ? 1 : -1;
-
-        /*
-         * Down to the floor and no further.
-         *
-         * Padding is the only thing this can trade, and below
-         * Z80_PACE_MIN the engine samples the CPU's pins before they are
-         * valid -- so a frame that is still too long at the floor means
-         * the machine cannot run at 50 Hz, not that it should be driven
-         * harder. The alternative is a Spectrum that keeps perfect time
-         * and computes nonsense, which is what happened.
-         */
-        pace -= step;                                   // slower -> less padding
-        if (pace < (int32_t)Z80_PACE_MIN) pace = (int32_t)Z80_PACE_MIN;
-        z80_set_pace((uint32_t)pace);
-        if (pace == (int32_t)Z80_PACE_MIN && err > 0) break;
+    if (now > pace_deadline) {
+        spec_timing.late++;
+        spec_timing.idle_us = 0;
+        // More than a frame behind: stop owing it. Chasing a deadline the
+        // machine cannot meet only makes every later frame late as well.
+        if (now - pace_deadline > step) pace_deadline = now;
+    } else {
+        spec_timing.idle_us = (uint32_t)(pace_deadline - now);
+        z80_park();
+        while (time_us_64() < pace_deadline) tight_loop_contents();
     }
+    if (spec_timing.idle_us < spec_timing.idle_min_us) spec_timing.idle_min_us = spec_timing.idle_us;
+    frame_started = time_us_64();
+}
 
-    /*
-     * One more measurement, so the number returned is the one that is
-     * true now.
-     *
-     * The loop's last `us` was taken *before* its last adjustment, which
-     * made the report disagree with the machine — it announced 51.5 Hz
-     * while the board was actually running 49.75. A figure that is wrong
-     * in the direction of looking worse is still wrong, and this one is
-     * printed on the boot screen where it will be believed.
-     */
+/*
+ * Put the engine at its floor and say how fast the machine could go.
+ *
+ * Kept under its old name because everything that changes the machine's
+ * cost -- the turbo setting, the Beta Disk's fetch inspection -- already
+ * calls it. It no longer tunes anything: it runs a second of unpaced
+ * frames to measure what the engine can do, then resets the pacer. The
+ * return is the rate the machine will actually run at, in frames per
+ * second x1000: its own rate, or the measured one if it cannot reach it.
+ */
+/* What the engine manages unpaced at the current pace, in fps x1000. */
+static uint32_t measure_capacity(void) {
+    for (int f = 0; f < 10; f++) run_frame();           // settle into something typical
     const uint64_t t0 = time_us_64();
-    for (int f = 0; f < 5; f++) run_frame();
-    us = (int64_t)(time_us_64() - t0);
-
-    const uint32_t fps = (uint32_t)((5ll * 1000000000ll) / (us ? us : 1));   // x1000
-
-    /*
-     * And cut the frame into however many samples it is long.
-     *
-     * The DAC runs at 44100 Hz whatever the machine does, so a frame has
-     * to hand it 44100/fps samples or the ring runs dry and audio_task()
-     * starts repeating the last one. Getting this wrong is not silence,
-     * it is a tone a per cent or two flat with a roughness on it.
-     *
-     * Bounded because a wild measurement here would be a wild number of
-     * slices, and the loop that runs them is the machine.
-     */
-    uint32_t slices = fps ? AUDIO_RATE_HZ * 1000u / fps : AUDIO_SAMPLES_PER_FRAME;
-    if (slices < 600u)  slices = 600u;
-    if (slices > 1400u) slices = 1400u;
-    samples_per_frame = slices;
-
-    audio_set_enabled(true);
-    return fps;
+    for (int f = 0; f < 25; f++) run_frame();
+    const uint64_t us = time_us_64() - t0;
+    return (uint32_t)(25000000000ull / (us ? us : 1));
 }
 
-/*
- * Twice, because the two answers depend on each other.
- *
- * Cutting a frame into more slices makes the frame a little longer --
- * each slice costs a mix and a push -- and a longer frame wants more
- * slices again. One pass leaves the pace tuned for a frame that no
- * longer exists; two lands inside the granularity of the pace itself,
- * and a third would be measuring noise.
- */
 uint32_t spec_tune_clock(void) {
-    tune_once();
-    return tune_once();
+    pace_recompute();
+    spec_timing.target_mfps = (uint32_t)(((uint64_t)spec_cpu_hz() * 1000u) / spec_frame_tstates());
+
+    /*
+     * Twice the floor, and down towards it only as far as the frame rate
+     * needs.
+     *
+     * The first version of the pacer ran the engine AT the floor, on the
+     * reasoning that the wait at the end of the frame made speed free.
+     * But the floor is the last pace that passed one short program at
+     * boot plus four -- a boundary, not a place to live -- and the bus
+     * sampled at it was right most of the time and wrong some of it:
+     * after a menu, a 128K came back with a black screen and the engine
+     * answering reads of #FFFF that the CPU never made. Doubling it is
+     * the margin the old frame-rate tuner had always left by accident.
+     */
+    const uint32_t floor = z80_get_pace_floor();
+    const uint32_t want = spec_timing.target_mfps + spec_timing.target_mfps / 12u;   // +8 %
+    uint32_t pace = floor * 2u;
+    uint32_t cap;
+
+    audio_set_enabled(false);
+    for (;;) {
+        z80_set_pace(pace);
+        cap = measure_capacity();
+        if (cap >= want || pace <= floor) break;
+        const uint32_t step = (pace - floor + 1u) / 2u;
+        pace -= step ? step : 1u;
+    }
+    audio_set_enabled(true);
+    z80_park();
+
+    spec_timing.capacity_mfps = cap;
+    spec_timing.late = 0;
+    spec_timing.idle_min_us = UINT32_MAX;
+
+    // Run from the settings page, these frames were made on core 0 with
+    // nobody consuming them; nobody is meant to hear them either.
+    if (get_core_num() == 0) sound_flush();
+
+    pace_deadline = time_us_64();
+    frame_started = pace_deadline;
+    return spec_timing.capacity_mfps < spec_timing.target_mfps ? spec_timing.capacity_mfps
+                                                              : spec_timing.target_mfps;
 }
 
 static volatile bool pause_req, paused;
@@ -1838,15 +2445,265 @@ void spec_resume(void) {
 }
 bool spec_is_paused(void) { return paused; }
 
+// ---------------------------------------------------------------------------
+// Contention and the floating bus
+// ---------------------------------------------------------------------------
+/*
+ * The ULA's pattern: how long it holds an access at each of the eight
+ * T-states of its fetch cycle. The +2A/+3 gate array's is the same
+ * shape, started two T-states later. Both as Fuse documents them.
+ */
+static const uint8_t contend_48[8]  = { 6, 5, 4, 3, 2, 1, 0, 0 };
+static const uint8_t contend_p3[8]  = { 1, 0, 7, 6, 5, 4, 3, 2 };
+
+/*
+ * Which banks the ULA shares with the CPU: bank 5 on every Sinclair
+ * machine, the odd banks on a 128K and +2, banks 4-7 on a +2A/+3.
+ */
+static bool bank_contended(const unsigned b) {
+    switch (spec_machine) {
+        case MACHINE_48K:
+        case MACHINE_16K:
+        case MACHINE_TC2048:
+        case MACHINE_GAMA:  return b == 5u;
+        case MACHINE_128K:
+        case MACHINE_PLUS2: return (b & 1u) != 0;
+        case MACHINE_PLUS3:
+        case MACHINE_PLUS2A: return b >= 4u && b <= 7u;
+        default:            return false;
+    }
+}
+
+/* After every paging change: which windows are contended now. */
+static void contend_remask(void) {
+    if (!z80_contend.on) return;
+    uint8_t m = 0;
+    for (unsigned w = 0; w < 4; w++)
+        for (unsigned b = 0; b < SPEC_RAM_BANKS; b++)
+            if (z80_rpage[w * 2u] == spec_ram[b] && bank_contended(b)) m |= (uint8_t)(1u << w);
+    z80_contend.mask = m;
+}
+
+static void contend_setup(void) {
+    z80_contend_t c = { 0 };
+    const bool turbo = settings.turbo != 0;
+    switch (spec_machine) {
+        case MACHINE_48K:
+        case MACHINE_16K:
+        case MACHINE_TC2048:
+        case MACHINE_GAMA:
+            c = (z80_contend_t){ true, true, 0, 14335u, 224u, 0, contend_48 };
+            break;
+        case MACHINE_128K:
+        case MACHINE_PLUS2:
+            c = (z80_contend_t){ true, true, 0, 14361u, 228u, 0, contend_48 };
+            break;
+        case MACHINE_PLUS3:
+        case MACHINE_PLUS2A:
+            c = (z80_contend_t){ true, false, 0, 14361u, 228u, 0, contend_p3 };
+            break;
+        default:
+            break;
+    }
+    c.span = c.line * 192u;
+    // A machine in turbo has no ULA keeping time with it; nor does one
+    // with the setting off.
+    if (turbo || !settings.contention) c.on = false;
+    z80_contend = c;
+    contend_remask();
+}
+
+static uint8_t __not_in_flash_func(floating_bus)(const uint32_t t) {
+    if (!z80_contend.on || spec_is_plus3_class(spec_machine)) return 0xFF;
+    const uint32_t d = t - z80_contend.t0;
+    if (d >= z80_contend.span) return 0xFF;
+    const uint32_t y = d / z80_contend.line, x = d % z80_contend.line;
+    if (x >= 128u) return 0xFF;
+    const uint32_t ph = x & 7u;
+    if (ph >= 4u) return 0xFF;
+    const uint32_t col = (x >> 3) * 2u + (ph >> 1);
+    const uint8_t *const scr = spec_ram[spec_screen_bank];
+    if (ph & 1u) return scr[0x1800u + ((y >> 3) << 5) + col];
+    return scr[(((y & 0xC0u) << 5) | ((y & 0x38u) << 2) | ((y & 0x07u) << 8)) + col];
+}
+
+// ---------------------------------------------------------------------------
+// Reading the CPU's registers: the NMI dump
+// ---------------------------------------------------------------------------
+/*
+ * There is no reading a Z84C00's registers from outside it, so the CPU is
+ * asked to write them down.
+ *
+ * An NMI makes it push PC and fetch from 0x0066. At that fetch a stub is
+ * put over the bottom 8 KB, the way the snapshot trampoline is, and the
+ * stub PUSHes every register -- each push is a memory write, and the
+ * write-watch hook sees the address and the byte on its way past. Then
+ * it POPs them all back, which reads the same bytes, and leaves with
+ * RETN, which puts the interrupt flip-flop back too. The first fetch
+ * after that is the instruction the NMI interrupted; the real page goes
+ * back under it there.
+ *
+ * What it costs the guest: thirty bytes of stack below SP, which are
+ * put back afterwards byte for byte from what the watch saw them hold,
+ * and R, which counts the stub's fetches and cannot be wound back.
+ *
+ * What it cannot see: the interrupt mode. Nothing in a Z80 reads IM back.
+ * It is inferred from I -- the ROM leaves 0x3F there in IM 1, and a
+ * program that has moved I somewhere else is almost always about to use
+ * it for IM 2.
+ */
+static const uint8_t nmi_stub[] = {
+    0xF5, 0xC5, 0xD5, 0xE5,             // PUSH AF/BC/DE/HL
+    0xD9, 0x08,                         // EXX ; EX AF,AF'
+    0xF5, 0xC5, 0xD5, 0xE5,             // PUSH AF'/BC'/DE'/HL'
+    0xDD, 0xE5, 0xFD, 0xE5,             // PUSH IX ; PUSH IY
+    0xED, 0x57, 0xF5,                   // LD A,I ; PUSH AF   (P/V = IFF2)
+    0xED, 0x5F, 0xF5,                   // LD A,R ; PUSH AF
+    0xF1, 0xF1,                         // POP AF ; POP AF    (dropped)
+    0xFD, 0xE1, 0xDD, 0xE1,             // POP IY ; POP IX
+    0xE1, 0xD1, 0xC1, 0xF1,             // POP HL'/DE'/BC'/AF'
+    0x08, 0xD9,                         // EX AF,AF' ; EXX
+    0xE1, 0xD1, 0xC1, 0xF1,             // POP HL/DE/BC/AF
+    0xED, 0x45,                         // RETN
+};
+#define NMI_AT        0x0066u
+#define NMI_RETN_AT   (NMI_AT + sizeof nmi_stub - 2u)
+#define NMI_PUSHES    13u               // pairs the stub writes, PC's included
+/* M1 cycles from the NMI's dummy fetch up to and including LD A,R. */
+#define NMI_R_FETCHES 21u
+
+typedef struct { uint16_t addr; uint8_t old, val; } nmi_write_t;
+static nmi_write_t nmi_w[64];
+static uint32_t    nmi_nw, nmi_k;
+static volatile uint8_t nmi_ds;         // 0 idle, 1 armed, 2 in the stub, 3 leaving, 4 done
+static uint8_t *nmi_saved_r[2], *nmi_saved_w[2];
+
+static void __not_in_flash_func(nmi_wwatch)(const uint16_t a, const uint8_t v, const uint32_t t) {
+    (void)t;
+    if (nmi_nw < count_of(nmi_w)) nmi_w[nmi_nw++] = (nmi_write_t){ a, z80_peek(a), v };
+}
+
+static void __not_in_flash_func(nmi_opfetch)(const uint16_t addr, const uint32_t t) {
+    (void)t;
+    switch (nmi_ds) {
+        case 1:
+            if (addr != NMI_AT) return;
+            nmi_k = nmi_nw;                 // the last two writes were PC
+            for (int i = 0; i < 2; i++) { nmi_saved_r[i] = z80_rpage[i]; nmi_saved_w[i] = z80_wpage[i]; }
+            z80_map_page8(0, spec_launch_page(), NULL);
+            z80_map_page8(1, spec_launch_page() + 8192, NULL);
+            nmi_ds = 2;
+            return;
+        case 2:
+            if (addr == NMI_RETN_AT + 1u) nmi_ds = 3;
+            return;
+        case 3:
+            for (int i = 0; i < 2; i++) { z80_rpage[i] = nmi_saved_r[i]; z80_wpage[i] = nmi_saved_w[i]; }
+            nmi_ds = 4;
+            return;
+        default:
+            return;
+    }
+}
+
+/* Core 1 only: it clocks the CPU. */
+static bool nmi_dump(z80_state_t *st) {
+    uint8_t *const page = spec_launch_page();
+    memset(page, 0xFF, 0x100);
+    memcpy(page + NMI_AT, nmi_stub, sizeof nmi_stub);
+
+    const z80_opfetch_fn saved_fetch = z80_opfetch_cb;
+    const z80_wwatch_fn  saved_watch = z80_wwatch_cb;
+    const uint8_t        saved_mask  = z80_wwatch_mask;
+
+    nmi_nw = nmi_k = 0;
+    nmi_ds = 1;
+    z80_wwatch_cb   = nmi_wwatch;
+    z80_wwatch_mask = 0xFF;
+    z80_opfetch_cb  = nmi_opfetch;
+
+    const uint32_t t_saved = z80_t;
+    z80_pulse_nmi();
+    for (int i = 0; i < 60 && nmi_ds != 4; i++) z80_run(50);
+    z80_t = t_saved;
+
+    z80_opfetch_cb  = saved_fetch;
+    z80_wwatch_cb   = saved_watch;
+    z80_wwatch_mask = saved_mask;
+
+    if (nmi_ds != 4) {
+        if (nmi_ds >= 2)
+            for (int i = 0; i < 2; i++) { z80_rpage[i] = nmi_saved_r[i]; z80_wpage[i] = nmi_saved_w[i]; }
+        nmi_ds = 0;
+        return false;
+    }
+    nmi_ds = 0;
+    if (nmi_k < 2 || nmi_nw < nmi_k - 2 + NMI_PUSHES * 2) return false;
+
+    // Put the stack back as it was: oldest first wins, so in reverse.
+    const nmi_write_t *const w = &nmi_w[nmi_k - 2];
+    const uint32_t n = nmi_nw - (nmi_k - 2);
+    for (uint32_t i = n; i--; ) z80_poke(w[i].addr, w[i].old);
+
+    // Each push is high byte, then low.
+    uint16_t v[NMI_PUSHES];
+    for (uint32_t i = 0; i < NMI_PUSHES; i++)
+        v[i] = (uint16_t)((w[2 * i].val << 8) | w[2 * i + 1].val);
+
+    memset(st, 0, sizeof *st);
+    st->pc  = v[0];
+    st->sp  = (uint16_t)(w[0].addr + 1u);
+    st->af  = v[1];  st->bc  = v[2];  st->de  = v[3];  st->hl  = v[4];
+    st->af_ = v[5];  st->bc_ = v[6];  st->de_ = v[7];  st->hl_ = v[8];
+    st->ix  = v[9];  st->iy  = v[10];
+    st->i   = (uint8_t)(v[11] >> 8);
+    st->iff = (v[11] & 0x04u) != 0;
+    const uint8_t r = (uint8_t)(v[12] >> 8);
+    st->r   = (uint8_t)((r & 0x80u) | ((r - NMI_R_FETCHES) & 0x7Fu));
+    st->im  = (st->i == 0x3F || st->i < 0x40) ? 1 : 2;
+    st->border   = spec_border;
+    st->port7ffd = spec_port_7ffd;
+    st->port1ffd = spec_port_1ffd;
+    st->portdffd = spec_port_dffd;
+    return true;
+}
+
+static volatile bool        dump_req, dump_ok;
+static z80_state_t *volatile dump_into;
+
+bool spec_capture_state(z80_state_t *st) {
+    if (!paused) return false;
+    dump_into = st;
+    dump_ok   = false;
+    dump_req  = true;
+    const absolute_time_t deadline = make_timeout_time_ms(200);
+    while (dump_req && absolute_time_diff_us(get_absolute_time(), deadline) > 0)
+        tight_loop_contents();
+    return !dump_req && dump_ok;
+}
+
 static void pause_point(void) {
     if (!pause_req) return;
+    z80_park();
     paused = true;
-    while (pause_req) tight_loop_contents();
+    while (pause_req) {
+        if (dump_req) {
+            dump_ok  = nmi_dump(dump_into);
+            z80_park();
+            dump_req = false;
+        }
+        tight_loop_contents();
+    }
     paused = false;
+    // The time spent stopped is not a debt.
+    pace_deadline = time_us_64();
+    frame_started = pace_deadline;
 }
 
 void spec_set_machine(const machine_t m) {
     if (m >= MACHINE_COUNT) return;
+    // A cartridge only fits a 48K; any other machine pulls it out.
+    if (m != MACHINE_48K) if2_in = false;
     /*
      * Leaving the Timex ejects whatever is in its dock.
      *
@@ -1859,6 +2716,8 @@ void spec_set_machine(const machine_t m) {
     /* ...and arriving at one with no cartridge fills the dock with 0xFF. */
     if (m == MACHINE_TIMEX && !dck_mounted()) dck_eject();
     spec_machine = m;
+    pace_recompute();
+    pulse_set_is_48k(spec_is_48k_class(m));
     // A 48K's BASIC ROM and a 128K's ROM 1 are different images, so a
     // patched copy of one is not a patched copy of the other. Anything
     // mounted has to be re-patched before the new machine is started.
@@ -1879,42 +2738,10 @@ void spec_next_machine(void) {
  * deadlock and was one: changing the Z80 speed from the settings page
  * hung the firmware with the page still on the screen.
  */
-/*
- * Keep the ring half full, one sample per frame at a time.
- *
- * How many samples a frame is worth depends on how long the frame takes,
- * and that depends on what the CPU is doing in it: an I/O cycle costs
- * the bus engine more than a memory cycle, so a program hammering the AY
- * runs slower than the ROM sitting at its menu. spec_tune_clock()
- * measures one workload once, and a fixed count from it was out by three
- * per cent on a music player -- twelve hundred samples a second that the
- * DAC asked for and the machine did not have, each one a repeat of the
- * last. That is not a gap; it is a waveform stretched in little steps,
- * and it smears the pitch and sounds like distortion.
- *
- * So it is a feedback loop instead. The ring is the error signal: if it
- * is draining the frame gets cut finer, if it is filling the frame gets
- * cut coarser. One sample of correction per frame is fifty a second,
- * which catches any drift a workload change can produce and is far too
- * slow to hear.
- */
-static void track_ring(void) {
-    const uint32_t level  = audio_ring_level();
-    const uint32_t target = AUDIO_RING_SIZE / 2u;
-
-    if (level < target - target / 4u) {
-        if (samples_per_frame < 1400u) samples_per_frame++;
-    } else if (level > target + target / 4u) {
-        if (samples_per_frame > 600u) samples_per_frame--;
-    }
-}
-
 static void run_frame(void) {
-    track_ring();
 
     /* Swap the tape input's buffers before the machine runs into the
      * frame they describe. */
-    frame_pos = 0;
     if (unlikely(tapein_running())) tapein_frame_started(spec_frame_tstates());
 
     /*
@@ -1925,39 +2752,48 @@ static void run_frame(void) {
      * to take one. The only thing the ULA owes the CPU is an interrupt
      * every 70908 T-states, and the only thing that has to be right is
      * the count.
+     *
+     * T-state 0 is where ~INT goes down, as it is on the ULA, so every
+     * position in the frame a handler is told is the position a real
+     * machine's timing tables are written against.
      */
     const uint32_t num    = turbo_num();
     const uint32_t total  = spec_frame_tstates();
-    const uint32_t slices = samples_per_frame;
-    const uint32_t per    = total / slices;
-    const uint32_t rem    = total % slices;
+
+    // Tell core 0 how long this frame is and how many samples to cut it
+    // into, before anything in it happens.
+    snd_put(total, SD_BEGIN, 0);
+    snd_put(next_frame_samples(), SD_SPF, 0);
 
     // The ULA holds ~INT low for about ten microseconds, which is 36
     // T-states at 3.5 MHz and proportionally more at any other speed --
     // it is a length of time, not a number of instructions.
-    const uint32_t held = SPEC_INT_TSTATES * num / 2;
+    const uint32_t held = int_tstates() * num / 2;
 
-    uint32_t budget = total - held;
-
-    for (uint32_t i = 0; i < slices; i++) {
-        uint32_t slice = per;
-        slice_acc += rem;
-        if (slice_acc >= slices) {
-            slice_acc -= slices;
-            slice++;
-        }
-
-        if (slice > budget) slice = budget;
-        budget -= slice;
-        run_slice(slice, num);
-        if (!budget) break;
-    }
-
-    if (budget) run_slice(budget, num);
-
-    z80_set_int(true);
-    run_slice(held, num);
+    ula_frame_begin();
+    z80_t = 0;
+    // The ATM 2+ and 3 gate the frame interrupt with #77 D5.
+    const bool int_on = !spec_is_atm(spec_machine) || atm_int_enabled();
+    z80_set_int(int_on);
+    z80_run_until(held);
     z80_set_int(false);
+
+    /*
+     * Sixteen stops a frame, each one a mark core 0 can render up to:
+     * about 1.25 ms of sound at a time. Nothing else needs the machine
+     * to stop -- every handler is told its own T-state.
+     */
+    for (uint32_t i = 1; i <= FRAME_STOPS; i++) {
+        const uint32_t end = (uint32_t)((uint64_t)total * i / FRAME_STOPS);
+        if (end > held) run_slice(end);
+    }
+    snd_put(total, SD_END, 0);
+    ula_frame_end();
+    if (unlikely(tapeplay_active)) tapeplay_frame_end(total, num);
+
+    if (giga_flips) { giga_quiet = 0; if (++giga_run >= 3) spec_giga_auto = true; }
+    else            { giga_run = 0;   if (++giga_quiet >= 50) spec_giga_auto = false; }
+    giga_flips = 0;
 
     const uint32_t f = spec_frames + 1;
     spec_frames = f;
@@ -1972,4 +2808,5 @@ static void run_frame(void) {
 void spec_run_frame(void) {
     pause_point();
     run_frame();
+    pace_frame();
 }

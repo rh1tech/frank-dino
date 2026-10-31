@@ -26,6 +26,8 @@ uint32_t spec_launch_opfetches;
  */
 static uint8_t tramp[SPEC_BANK_SIZE] __attribute__((aligned(4)));
 
+uint8_t *spec_launch_page(void) { return tramp; }
+
 // Where the two flag/accumulator pairs are parked for POP AF to reach.
 // Well clear of the code, and inside the window so the CPU can read them.
 #define TRAMP_AF  0x3F00
@@ -119,6 +121,8 @@ bool spec_launch(const z80_state_t *st) {
      * difference between the latch being written a microsecond earlier
      * and it always having been that way.
      */
+    spec_port_1ffd = st->port1ffd;
+    spec_port_dffd = st->portdffd;
     spec_set_paging(st->port7ffd);
     spec_border = st->border & 7;
 
@@ -136,6 +140,7 @@ bool spec_launch(const z80_state_t *st) {
     const uint32_t before = z80_stats.opfetch;
     z80_run(2000);
     spec_launch_opfetches = z80_stats.opfetch - before;
+    z80_park();                     // a menu may stay open a while yet
 
     return !spec_launch_pending();
 }

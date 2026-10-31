@@ -42,26 +42,43 @@ static const field_t fields[] = {
     { "ay_stereo",      &settings.ay_stereo,      AY_STEREO_COUNT - 1 },
     { "ay48",           &settings.ay48,           1  },
     { "turbosound",     &settings.turbosound,     1  },
-    { "covox",          &settings.covox,          1  },
+    { "covox",          &settings.covox,          COVOX_COUNT - 1 },
+    { "specdrum",       &settings.specdrum,       1  },
+    { "tsfm",           &settings.tsfm,           1  },
+    { "opl3",           &settings.opl3,           1  },
+    { "opll",           &settings.opll,           1  },
+    { "sn76489",        &settings.sn76489,        1  },
+    { "cms",            &settings.cms,            1  },
     { "soundrive",      &settings.soundrive,      1  },
     { "saa",            &settings.saa,            1  },
     { "real_player",    &settings.real_player,    1  },
 
+    { "beam",           &settings.beam,           1  },
+    { "contention",     &settings.contention,     1  },
+    { "rom_spanish",    &settings.rom_spanish,    1  },
     { "scanlines",      &settings.scanlines,      1  },
     { "ulaplus",        &settings.ulaplus,        1  },
     { "disk_wrprot",    &settings.disk_wrprot,    1  },
     { "esxdos",         &settings.esxdos,         1  },
-    { "gigascreen",     &settings.gigascreen,     1  },
+    { "gigascreen",     &settings.gigascreen,     2  },
     { "timex",          &settings.timex,          1  },
     { "ui_theme",       &settings.ui_theme,       UI_THEME_COUNT - 1 },
 
     { "joystick",       &settings.joystick,       JOY_COUNT - 1 },
-    { "kempston_port",  &settings.kempston_port,  1  },
+    { "kempston_port",  &settings.kempston_port,  3  },
+    { "mouse",          &settings.mouse,          1  },
+    { "rtc",            &settings.rtc,            1  },
+    { "trdos_rom",      &settings.trdos_rom,      4  },
+    { "zcontroller",    &settings.zcontroller,    1  },
+    { "ide",            &settings.ide,            3  },
+    { "mouse_sens",     &settings.mouse_sens,     8  },
     { "cursor_as_joy",  &settings.cursor_as_joy,  1  },
 
     { "bus_trace",      &settings.bus_trace,      1  },
     { "betadisk",       &settings.betadisk,       1  },
     { "tape_autostart", &settings.tape_autostart, 1  },
+    { "tape_realtime",  &settings.tape_realtime,  1  },
+    { "tape_rg",        &settings.tape_rg,        1  },
 };
 
 #define FIELD_COUNT (sizeof fields / sizeof fields[0])
@@ -107,6 +124,18 @@ void settings_defaults(void) {
         .saa            = 0,
         .real_player    = 0,
 
+        /*
+         * On: the picture is the one the ULA would have drawn, which is
+         * the only way multicolour and border effects come out at all.
+         * Off reads the screen memory live, as it used to.
+         */
+        .beam           = 1,
+        /*
+         * On: a 48K, 128K or +3 loses time to its ULA the way the real
+         * ones did, which is what demo-scene timing and some loaders
+         * count on. Turbo turns it off by itself.
+         */
+        .contention     = 1,
         .scanlines      = 0,
         .ulaplus        = 0,
         .disk_wrprot    = 0,
@@ -117,6 +146,15 @@ void settings_defaults(void) {
 
         .joystick       = JOY_KEMPSTON,
         .kempston_port  = 0,
+        .mouse          = 1,
+        .rtc            = 1,
+        .mouse_sens     = 2,
+        /*
+         * The arrows are always the Spectrum's own cursor keys, CAPS
+         * SHIFT and 5-8; this only adds the joystick on top, as
+         * pico-speccy's CursorAsJoy does. So it can default to on
+         * without the 128K menu or BASIC losing them.
+         */
         .cursor_as_joy  = 1,
 
         /*

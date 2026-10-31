@@ -24,6 +24,18 @@ target_sources(spectrum INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/spectrum.c
         ${CMAKE_CURRENT_LIST_DIR}/saa.c
         ${CMAKE_CURRENT_LIST_DIR}/ay.c
+        ${CMAKE_CURRENT_LIST_DIR}/sound.c
+        ${CMAKE_CURRENT_LIST_DIR}/pulse.c
+        ${CMAKE_CURRENT_LIST_DIR}/tapeplay.c
+        ${CMAKE_CURRENT_LIST_DIR}/taperec.c
+        ${CMAKE_CURRENT_LIST_DIR}/snapshot.c
+        ${CMAKE_CURRENT_LIST_DIR}/ula_frame.c
+        ${CMAKE_CURRENT_LIST_DIR}/atm.c
+        ${CMAKE_CURRENT_LIST_DIR}/rtc.c
+        ${CMAKE_CURRENT_LIST_DIR}/diskconv.c
+        ${CMAKE_CURRENT_LIST_DIR}/ide.c
+        ${CMAKE_CURRENT_LIST_DIR}/diskconv_td0.cpp
+        ${CMAKE_CURRENT_LIST_DIR}/td0.cpp
         ${CMAKE_CURRENT_LIST_DIR}/launch.c
         ${CMAKE_CURRENT_LIST_DIR}/storage.c
         ${CMAKE_CURRENT_LIST_DIR}/loader.c
@@ -37,4 +49,4 @@ target_sources(spectrum INTERFACE
 
 target_include_directories(spectrum INTERFACE ${CMAKE_CURRENT_LIST_DIR})
 
-target_link_libraries(spectrum INTERFACE dino_core audio fatfs miniz psram hardware_gpio)
+target_link_libraries(spectrum INTERFACE dino_core audio fatfs miniz psram chips hardware_gpio)

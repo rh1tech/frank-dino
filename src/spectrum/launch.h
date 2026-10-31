@@ -46,7 +46,7 @@
  * Laid out as the snapshot formats think of it rather than as the Z80
  * does, so a loader can fill it in without reordering.
  */
-typedef struct {
+typedef struct z80_state_s {
     uint16_t af, bc, de, hl;
     uint16_t af_, bc_, de_, hl_;        // the shadow set
     uint16_t ix, iy, sp, pc;
@@ -55,7 +55,18 @@ typedef struct {
     bool     iff;                       // interrupts enabled on entry
     uint8_t  border;                    // 0-7
     uint8_t  port7ffd;                  // paging latch, 128K snapshots
+    uint8_t  port1ffd;                  // the +3's and Scorpion's second latch
+    uint8_t  portdffd;                  // the Profi's third
 } z80_state_t;
+
+/*
+ * The trampoline's page, lent out.
+ *
+ * The register dump in spectrum.c maps a stub over the ROM the same way
+ * the trampoline does, and never at the same time -- so it borrows this
+ * page rather than keeping sixteen kilobytes of its own.
+ */
+uint8_t *spec_launch_page(void);
 
 /*
  * Start the machine in that state.

@@ -10,6 +10,6 @@ CFLAGS="-std=gnu2x -O1 -g -Wall -Wno-unused-function -Wno-unknown-attributes
         -Itests/stub -Isrc/spectrum -Isrc/core -Isrc/app -Isrc/ui
         -Isrc/drivers/audio -Isrc/drivers -Isrc/test
         -Isrc/drivers/fatfs -Isrc/drivers/psram -Isrc/drivers/vga
-        -Isrc/drivers/miniz -Isrc/drivers/sdcard -Isrc/drivers/usbdisk
+        -Isrc/drivers/miniz -Isrc/drivers/sdcard -Isrc/drivers/usbdisk -Isrc/drivers/chips
         -Isrc/drivers/tapein"
 exec cc $CFLAGS "$@"

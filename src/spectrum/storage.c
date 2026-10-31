@@ -40,6 +40,13 @@ file_kind_t storage_kind(const char *name) {
     if (ext_is(name, "tap")) return FILE_TAP;
     if (ext_is(name, "tzx")) return FILE_TZX;
     if (ext_is(name, "pzx")) return FILE_PZX;
+    if (ext_is(name, "csw")) return FILE_CSW;
+    if (ext_is(name, "wav")) return FILE_WAV;
+    if (ext_is(name, "gz"))  return FILE_GZ;
+    if (ext_is(name, "rom")) return FILE_ROM;
+    if (ext_is(name, "fdi")) return FILE_FDI;
+    if (ext_is(name, "udi")) return FILE_UDI;
+    if (ext_is(name, "td0")) return FILE_TD0;
     if (ext_is(name, "sna")) return FILE_SNA;
     if (ext_is(name, "z80")) return FILE_Z80;
     if (ext_is(name, "trd")) return FILE_TRD;

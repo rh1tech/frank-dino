@@ -20,6 +20,7 @@
 #include "ui_nav.h"
 
 #include <ctype.h>
+#include <stddef.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -29,6 +30,13 @@
 #include "vga.h"
 
 ui_state_t ui_S;
+
+/*
+ * Whether the settings tree is up. Read over SWD by tools/dino.py, which
+ * has no other way to know where a key it is about to send will land.
+ */
+volatile bool ui_settings_active;
+
 
 /* The dynamic-row pool. ~5 KB, and the only thing in this UI that is big. */
 static ui_dynrows_t dyn_pool __attribute__((section(".psram")));
@@ -567,12 +575,14 @@ void ui_menu_run(void) {
     const vga_mode_t was = vga_get_mode();
     vga_set_mode(VGA_MODE_UI);
 
+    ui_settings_active = true;
     while (!ui_S.quit) {
         char ch = 0;
         const ui_key_t k = next_key(&ch);
         handle_key(k, ch);
         ui_flush_dirty();
     }
+    ui_settings_active = false;
 
     vga_set_mode(was);
 }

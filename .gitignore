@@ -36,3 +36,6 @@ tests/fixtures/
 tests/out/
 out/machines/
 out/*.bin
+
+# Python bytecode from tools/.
+__pycache__/

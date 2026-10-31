@@ -13,10 +13,13 @@
 #include <hardware/dma.h>
 #include <hardware/irq.h>
 #include <hardware/pio.h>
+#include <hardware/structs/timer.h>
 
 #include "dino.h"       // likely()/unlikely(), and VGA_BASE_PIN
 #include "settings.h"
 #include "spectrum.h"
+#include "ula_frame.h"
+#include "atm.h"
 
 #ifndef VGA_BASE_PIN
 #define VGA_BASE_PIN 30
@@ -237,6 +240,10 @@ void vga_build_ui_palette(void) {
 
 uint8_t vga_ui_fb[VGA_UI_W * VGA_UI_H] __attribute__((section(".psram")));
 volatile uint32_t vga_frames;
+/* Lines whose interrupt came more than a line late (the frame they were
+ * in went out a line short), and the longest a line took to render, in
+ * microseconds. Read by tools/dino.py. */
+volatile uint32_t vga_late_lines, vga_line_max_us;
 
 static volatile vga_mode_t vga_mode = VGA_MODE_UI;
 
@@ -451,7 +458,165 @@ static void build_dmask2(void) {
  * Bits 6-5 of y pick the third, bits 2-0 pick the line within a
  * character cell, and bits 5-3 pick the row of cells.
  */
+/*
+ * The frame the ULA saw, and where in its border changes this HDMI frame
+ * has got to. Taken at the first visible line and held for the whole
+ * HDMI frame, so a picture never mixes two guest frames.
+ */
+static const ula_frame_t *beam_frame;
+static uint32_t beam_i, beam_col;           // the cursor at the current guest line...
+static uint32_t beam_i0, beam_col0;         // ...and where that line started
+
+/* Eight guest pixels of border at T-state t: four words. */
+__force_inline static uint32_t *beam_border(uint32_t *__restrict out, const ula_frame_t *f,
+                                            const uint16_t *__restrict pal, const uint32_t t) {
+    while (beam_i < f->nev && ULA_EV_T(f->ev[beam_i]) <= t) beam_col = ULA_EV_COL(f->ev[beam_i++]);
+    const uint32_t w = (uint32_t)pal[beam_col & 7u] * 0x00010001u;
+    out[0] = w; out[1] = w; out[2] = w; out[3] = w;
+    return out + 4;
+}
+
+/*
+ * One line of the beam-accurate picture.
+ *
+ * The paper comes from the frame core 1 built, cell by cell as the ULA
+ * fetched it; the border is walked through its list of changes, eight
+ * guest pixels -- four T-states -- at a time, which is the finest the
+ * real ULA's border latch resolves on a Sinclair machine.
+ */
+__force_inline static void render_beam_line(uint32_t *__restrict out, const uint32_t line,
+                                            const ula_frame_t *f, const uint16_t *__restrict pal) {
+    // Both output lines of a guest line start from the same place.
+    if (!(line & 1)) { beam_i0 = beam_i; beam_col0 = beam_col; }
+    else             { beam_i = beam_i0; beam_col = beam_col0; }
+
+    const int32_t row = (int32_t)(line >> 1) - (int32_t)(SPEC_Y0 / 2);   // paper row, -24..215
+    const uint32_t tline = (uint32_t)((int32_t)f->paper_t0 + row * (int32_t)f->line_t);
+    const uint32_t tleft = tline - 16u;          // 32 guest pixels of left border
+
+    if (row < 0 || row >= 192) {
+        for (uint32_t k = 0; k < VISIBLE_BYTES / 16u; k++) out = beam_border(out, f, pal, tleft + k * 4u);
+        return;
+    }
+
+    for (uint32_t k = 0; k < SPEC_X0 / 16u; k++) out = beam_border(out, f, pal, tleft + k * 4u);
+
+    const uint8_t *__restrict bmp = f->bmp[row];
+    const uint8_t *__restrict att = f->att[row];
+    const bool flash = spec_flash;
+    for (int col = 0; col < 32; col++) {
+        const uint8_t bits = bmp[col];
+        const uint8_t a    = att[col];
+        const uint8_t bright = (a & 0x40) >> 3;
+        uint32_t ink   = (uint32_t)pal[(a & 0x07) | bright] * 0x00010001u;
+        uint32_t paper = (uint32_t)pal[((a >> 3) & 0x07) | bright] * 0x00010001u;
+        if (unlikely(flash && (a & 0x80))) { const uint32_t t = ink; ink = paper; paper = t; }
+        const uint32_t *hi = dmask2[bits >> 4];
+        const uint32_t *lo = dmask2[bits & 15];
+        *out++ = (ink & hi[0]) | (paper & ~hi[0]);
+        *out++ = (ink & hi[1]) | (paper & ~hi[1]);
+        *out++ = (ink & lo[0]) | (paper & ~lo[0]);
+        *out++ = (ink & lo[1]) | (paper & ~lo[1]);
+    }
+
+    for (uint32_t k = 0; k < SPEC_X0 / 16u; k++) out = beam_border(out, f, pal, tline + 128u + k * 4u);
+}
+
+/*
+ * The ATM's palette in place of the Spectrum's, while an ATM is running.
+ *
+ * Sixteen entries, each two bits a channel, so it maps onto this board's
+ * ladder exactly. Rebuilt in the blanking when the guest writes one, the
+ * same way ULA+ is; put back to the Spectrum's when the machine changes.
+ */
+static bool pal_is_atm;
+
+static void build_atm_palette(void) {
+    uint8_t rgb[16][3];
+    atm_palette_rgb2(rgb);
+    for (int i = 0; i < 16; i++) {
+        spec_palette[i] = PX(rgb[i][0], rgb[i][1], rgb[i][2]);
+        spec_palette_dim[i] = PX(rgb[i][0] ? rgb[i][0] - 1 : 0, rgb[i][1] ? rgb[i][1] - 1 : 0,
+                                 rgb[i][2] ? rgb[i][2] - 1 : 0);
+        spec_pal16[i]     = (uint16_t)(spec_palette[i]     * 0x0101u);
+        spec_pal16_dim[i] = (uint16_t)(spec_palette_dim[i] * 0x0101u);
+    }
+}
+
+/* Eight hires pixels, one output byte each: ink is attr 6,2-0, paper 7,5-3. */
+__force_inline static uint8_t *atm_bits8(uint8_t *__restrict px, const uint8_t bits, const uint8_t a,
+                                         const uint8_t *__restrict pal) {
+    const uint8_t ink   = pal[((a & 0x40u) >> 3) | (a & 7u)];
+    const uint8_t paper = pal[((a & 0x80u) >> 4) | ((a >> 3) & 7u)];
+    for (int k = 0; k < 8; k++) *px++ = (bits & (0x80u >> k)) ? ink : paper;
+    return px;
+}
+
+/*
+ * The ATM's own modes, after pico-speccy's VIDEO::atmRenderLine: 200
+ * lines doubled into the middle 400 of the 480, from the screen page (5
+ * or 7) and the page four below it.
+ */
+static void render_atm_line(uint32_t *__restrict out, const uint32_t line, const atm_vmode_t vm,
+                            const bool dim) {
+    const uint8_t  *__restrict pal   = dim ? spec_palette_dim : spec_palette;
+    const uint16_t *__restrict pal16 = dim ? spec_pal16_dim : spec_pal16;
+    const uint32_t border32 = (uint32_t)pal16[atm_border_index() & 15u] * 0x00010001u;
+    if (line < 40u || line >= 440u) {
+        for (int i = 0; i < VISIBLE_BYTES / 4; i++) out[i] = border32;
+        return;
+    }
+    const uint32_t y = (line - 40u) >> 1;               // 0..199
+    const uint8_t *__restrict scr = spec_ram[spec_screen_bank];
+    const uint8_t *__restrict alt = spec_ram[spec_screen_bank - 4u];
+    const uint32_t o = y * 40u;
+
+    if (vm == ATM_VM_EGA) {
+        uint16_t *__restrict px = (uint16_t *)out;
+        for (uint32_t c = 0; c < 40u; c++) {
+            const uint8_t b[4] = { alt[o + c], scr[o + c], alt[0x2000u + o + c], scr[0x2000u + o + c] };
+            for (int k = 0; k < 4; k++) {
+                const uint8_t v = b[k];
+                *px++ = pal16[((v & 0x40u) >> 3) | (v & 0x07u)];
+                *px++ = pal16[((v & 0x80u) >> 4) | ((v >> 3) & 0x07u)];
+            }
+        }
+        return;
+    }
+
+    uint8_t *__restrict px = (uint8_t *)out;
+    if (vm == ATM_VM_HIRES) {
+        for (uint32_t x = 0; x < 40u; x++) {
+            px = atm_bits8(px, scr[o + x], alt[o + x], pal);
+            px = atm_bits8(px, scr[0x2000u + o + x], alt[0x2000u + o + x], pal);
+        }
+        return;
+    }
+
+    // 80x25 text: 64-byte rows from #01C0; even columns' symbols at +0 and
+    // attributes at alt+#2000, odd columns' at +#2000 and alt+1.
+    const uint8_t *__restrict fnt = atm_font_ptr() + (y & 7u);
+    const uint32_t base = 0x01C0u + (y >> 3) * 64u;
+    for (uint32_t x = 0; x < 40u; x++) {
+        px = atm_bits8(px, fnt[scr[base + x] * 8u], alt[0x2000u + base + x], pal);
+        px = atm_bits8(px, fnt[scr[0x2000u + base + x] * 8u], alt[base + 1u + x], pal);
+    }
+}
+
 __force_inline static void render_spectrum_line(uint32_t *__restrict out, const uint32_t line) {
+    if (unlikely(spec_is_atm(spec_machine))) {
+        const atm_vmode_t vm = atm_video_mode();
+        if (vm != ATM_VM_ZX) {
+            render_atm_line(out, line, vm, settings.scanlines && (line & 1));
+            return;
+        }
+    }
+    if (unlikely(line == 0)) {
+        beam_frame = ula_frame_latest();
+        beam_i = 0;
+        beam_col = beam_frame ? beam_frame->border_at_start : 0u;
+    }
+
     /*
      * Which of the two palettes this output line uses.
      *
@@ -473,7 +638,7 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
      * selected, and a stale 6 would go on drawing hi-res out of a
      * machine that no longer has a SCLD in it.
      */
-    const uint8_t tmode = settings.timex ? spec_timex_mode : 0u;
+    const uint8_t tmode = (settings.timex || spec_has_scld(spec_machine)) ? spec_timex_mode : 0u;
 
     if (unlikely(spec_ulaplus_on)) {
         const uint16_t (*__restrict p16)[2] = dim ? ulaplus_pal16_dim : ulaplus_pal16;
@@ -518,7 +683,81 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
         return;
     }
 
-    if (unlikely(tmode == 6u)) {
+    if (unlikely(spec_pent16c)) {
+        /*
+         * The Pentagon 1024SL's 16-colour mode, after pico-speccy's
+         * col16RenderLine: four planes -- banks 4 and 5 (or 6 and 7,
+         * with the shadow screen) at +0 and +#2000 -- at the bitmap's
+         * line address, each byte two pixels of four bits, IGRB: the
+         * low pixel bits 6 and 2-0, the high bits 7 and 5-3.
+         */
+        const uint16_t *__restrict pal = dim ? spec_pal16_dim : spec_pal16;
+        const uint32_t border32 = (uint32_t)pal[spec_border & 7] * 0x00010001u;
+        if (line < SPEC_Y0 || line >= SPEC_Y0 + SPEC_H) {
+            for (int i = 0; i < VISIBLE_BYTES / 4; i++) out[i] = border32;
+            return;
+        }
+        const uint32_t y = (line - SPEC_Y0) >> 1;
+        const uint32_t off = ((y & 0xC0) << 5) | ((y & 0x38) << 2) | ((y & 0x07) << 8);
+        const bool alt = spec_screen_bank == 7;
+        const uint8_t *__restrict pa = spec_ram[alt ? 6 : 4] + off;
+        const uint8_t *__restrict pb = spec_ram[alt ? 7 : 5] + off;
+        const uint8_t *__restrict pc = pa + 0x2000u;
+        const uint8_t *__restrict pd = pb + 0x2000u;
+        for (int i = 0; i < SPEC_X0 / 4; i++) *out++ = border32;
+        uint16_t *__restrict px = (uint16_t *)out;
+        for (int j = 0; j < 32; j++) {
+            const uint8_t bytes[4] = { pa[j], pb[j], pc[j], pd[j] };
+            for (int k = 0; k < 4; k++) {
+                const uint8_t x = bytes[k];
+                *px++ = pal[((x >> 3) & 0x08u) | (x & 0x07u)];          // left
+                *px++ = pal[((x >> 4) & 0x08u) | ((x >> 3) & 0x07u)];   // right
+            }
+        }
+        out = (uint32_t *)px;
+        for (int i = 0; i < SPEC_X0 / 4; i++) *out++ = border32;
+        return;
+    }
+
+    if (unlikely(spec_machine == MACHINE_PROFI && (spec_port_dffd & 0x80u))) {
+        /*
+         * The Profi's DS80: 512x240, a bitmap byte and an attribute byte
+         * for every eight pixels, the bitmap in page 4 (6 with #7FFD bit
+         * 3) and the colours in page 56 (58). After pico-speccy's DS80
+         * branch of MainScreen. Exactly 480 lines doubled, so no top or
+         * bottom border; 512 pixels one to a byte, as Timex hi-res.
+         */
+        const uint8_t *__restrict pal = dim ? spec_palette_dim : spec_palette;
+        const uint32_t border32 = (uint32_t)pal[spec_border & 7] * 0x01010101u;
+        const uint32_t y = line >> 1;                       // 0..239
+        const bool alt = spec_screen_bank == 7;
+        const uint8_t *__restrict g = spec_bank_host(alt ? 6u : 4u);
+        const uint8_t *__restrict c = spec_bank_host(alt ? 58u : 56u);
+        const uint32_t off = 2048u * (y >> 6) + 256u * (y & 7u) + ((y & 0x38u) << 2);
+        for (int i = 0; i < SPEC_X0 / 4; i++) *out++ = border32;
+        uint8_t *__restrict px = (uint8_t *)out;
+        for (uint32_t j = 0; j < 32u; j++) {
+            for (int half = 0; half < 2; half++) {
+                const uint32_t at = off + j + (half ? 0u : 8192u);   // even from +#2000
+                const uint8_t bits = g[at], a = c[at];
+                const uint8_t ink   = pal[(a & 0x07u) | ((a & 0x40u) >> 3)];
+                const uint8_t paper = pal[((a & 0x38u) >> 3) | ((a & 0x80u) >> 4)];
+                for (int k = 0; k < 8; k++) *px++ = (bits & (0x80u >> k)) ? ink : paper;
+            }
+        }
+        out = (uint32_t *)px;
+        for (int i = 0; i < SPEC_X0 / 4; i++) *out++ = border32;
+        return;
+    }
+
+    /*
+     * The SCLD's mode bits are three switches, not a number -- bit 2
+     * hi-res, bit 1 hi-colour, bit 0 the second screen -- as Fuse decodes
+     * them. The TC2068's own ROM boots in mode 7, which is hi-res with the
+     * second-screen bit set and ignored; treating only 6 as hi-res showed
+     * it as an empty first screen.
+     */
+    if (unlikely(tmode & 4u)) {
         /*
          * Timex hi-res: 512 monochrome pixels, and the picture area is
          * already 512 output pixels wide. So this is the one mode that
@@ -559,7 +798,7 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
         return;
     }
 
-    if (unlikely(settings.gigascreen)) {
+    if (unlikely(settings.gigascreen == 1 || (settings.gigascreen == 2 && spec_giga_auto))) {
         /*
          * Both screens at once, blended in the 2x2 block.
          *
@@ -614,6 +853,11 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
 
     const uint16_t *__restrict pal = dim ? spec_pal16_dim : spec_pal16;
 
+    if (likely(beam_frame) && tmode == 0u) {
+        render_beam_line(out, line, beam_frame, pal);
+        return;
+    }
+
     const uint32_t border32 = (uint32_t)pal[spec_border & 7] * 0x00010001u;
 
     if (line < SPEC_Y0 || line >= SPEC_Y0 + SPEC_H) {
@@ -636,19 +880,15 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
      */
     const uint8_t *__restrict bmp;
     const uint8_t *__restrict att;
-    switch (tmode) {
-        case 1:
-            bmp = scr + 0x2000u + boff;
-            att = scr + 0x2000u + 0x1800u + ((y >> 3) << 5);
-            break;
-        case 2:
-            bmp = scr + boff;
-            att = scr + 0x2000u + boff;
-            break;
-        default:
-            bmp = scr + boff;
-            att = scr + 0x1800u + ((y >> 3) << 5);
-            break;
+    if (tmode & 2u) {                   // hi-colour (bit 0 does not apply)
+        bmp = scr + boff;
+        att = scr + 0x2000u + boff;
+    } else if (tmode & 1u) {            // the second screen
+        bmp = scr + 0x2000u + boff;
+        att = scr + 0x2000u + 0x1800u + ((y >> 3) << 5);
+    } else {
+        bmp = scr + boff;
+        att = scr + 0x1800u + ((y >> 3) << 5);
     }
 
     const bool flash = spec_flash;
@@ -694,8 +934,44 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
  * Two source bytes make one output word, so the inner loop runs 160
  * times and never touches a byte pointer on the output side.
  */
+/*
+ * The menu's rows, fetched ahead into SRAM.
+ *
+ * The surface is in the PSRAM, and reading a row of it from inside the
+ * line interrupt cost up to 28 us of a 31.8 us line while the menu was
+ * redrawing on the same core -- every so often a line interrupt came too
+ * late, the frame went out a line short, and the whole menu jumped a
+ * line on the screen. So the interrupt asks for the NEXT row, and a
+ * software interrupt one priority below copies it into one of two SRAM
+ * rows while the current one is going out; it has two lines to do it
+ * in, and the line interrupt preempts it whenever it needs to.
+ */
+static uint8_t           ui_row[2][VGA_UI_W] __attribute__((aligned(4)));
+static volatile int      ui_row_tag[2] = { -1, -1 };   // which surface row each holds
+static volatile int      ui_row_want = -1;
+static uint              ui_row_irq;
+
+static void __time_critical_func(ui_row_fetch)(void) {
+    const int r = ui_row_want;
+    if (r < 0) return;
+    ui_row_tag[r & 1] = -1;
+    const uint32_t *src = (const uint32_t *)&vga_ui_fb[r * VGA_UI_W];
+    uint32_t *dst = (uint32_t *)ui_row[r & 1];
+    for (int i = 0; i < VGA_UI_W / 4; i++) dst[i] = src[i];
+    ui_row_tag[r & 1] = r;
+}
+
+static inline void ui_row_request(const int r) {
+    ui_row_want = r;
+    irq_set_pending(ui_row_irq);
+}
+
 __force_inline static void render_ui_line(uint32_t *__restrict out, const uint32_t line) {
-    const uint8_t *__restrict src = &vga_ui_fb[(line >> 1) * VGA_UI_W];
+    const int r = (int)(line >> 1);
+    if (!(line & 1u) && r + 1 < VGA_UI_H) ui_row_request(r + 1);
+    // The fetched row if it made it in time; the PSRAM itself if not.
+    const uint8_t *__restrict src = ui_row_tag[r & 1] == r ? ui_row[r & 1]
+                                                          : &vga_ui_fb[r * VGA_UI_W];
     const int yb = (line & 1) ? 2 : 0;      // which row of the 2x2 dither block
 
     for (int i = 0; i < VGA_UI_W; i += 2) {
@@ -746,6 +1022,11 @@ void __time_critical_func(vga_scanline)(void) {
 
     dma_hw->ints0 = 1u << dma_ctrl_channel;
 
+    static uint32_t last_us;
+    const uint32_t now_us = timer0_hw->timerawl;
+    if (unlikely(now_us - last_us > 48u) && last_us) vga_late_lines++;   // a line is 31.8 us
+    last_us = now_us;
+
     if (unlikely(++line == TOTAL_LINES)) {
         line = 0;
         vga_frames++;
@@ -758,6 +1039,17 @@ void __time_critical_func(vga_scanline)(void) {
          * flag and the rebuild happens here, in the blanking, where there
          * is nothing else to do with the time.
          */
+        if (line == VISIBLE_LINES) {
+            const bool atm = spec_is_atm(spec_machine);
+            if (atm && (atm_pal_dirty || !pal_is_atm)) {
+                atm_pal_dirty = false;
+                build_atm_palette();
+                pal_is_atm = true;
+            } else if (!atm && pal_is_atm) {
+                build_spec_palette();
+                pal_is_atm = false;
+            }
+        }
         if (unlikely(spec_ulaplus_on) && line == VISIBLE_LINES) {
             if (spec_ulaplus_dirty) {
                 spec_ulaplus_dirty = false;
@@ -767,6 +1059,7 @@ void __time_critical_func(vga_scanline)(void) {
                 vga_refresh_ulaplus_border();   // OUT (#FE) raises no flag
             }
         }
+        if (line == VISIBLE_LINES && vga_mode == VGA_MODE_UI) ui_row_request(0);
         const int which = (line >= VSYNC_START_LINE && line <= VSYNC_END_LINE) ? VSYNC : VBLANK;
         dma_channel_set_read_addr(dma_ctrl_channel, &scanline_buffers[which], false);
         return;
@@ -781,18 +1074,17 @@ void __time_critical_func(vga_scanline)(void) {
 
     if (vga_mode == VGA_MODE_SPECTRUM) {
         render_spectrum_line(out, line);
-        return;
-    }
-    if (likely(vga_mode == VGA_MODE_UI)) {
+    } else if (likely(vga_mode == VGA_MODE_UI)) {
         render_ui_line(out, line);
-        return;
+    } else {
+        /*
+         * Nothing else. Every picture this board draws is one of the two
+         * above: the machine's, or the menus' own surface.
+         */
+        for (int i = 0; i < VISIBLE_BYTES / 4; i++) out[i] = 0xC0C0C0C0u;
     }
-
-    /*
-     * Nothing else. Every picture this board draws is one of the two
-     * above: the machine's, or the menus' own surface.
-     */
-    for (int i = 0; i < VISIBLE_BYTES / 4; i++) out[i] = 0xC0C0C0C0u;
+    const uint32_t took = timer0_hw->timerawl - now_us;
+    if (unlikely(took > vga_line_max_us)) vga_line_max_us = took;
 }
 
 // ============================================================================
@@ -902,7 +1194,15 @@ void vga_init(void) {
     configure_dma();
     build_sync_templates();
 
+    // The line interrupt above everything; the menu's row fetch just
+    // below it, and above the USB and the rest at the default priority.
+    ui_row_irq = (uint)user_irq_claim_unused(true);
+    irq_set_exclusive_handler(ui_row_irq, ui_row_fetch);
+    irq_set_priority(ui_row_irq, 0x40);
+    irq_set_enabled(ui_row_irq, true);
+
     irq_set_exclusive_handler(VGA_DMA_IRQ, vga_scanline);
+    irq_set_priority(VGA_DMA_IRQ, 0x00);
     dma_channel_set_irq0_enabled(dma_ctrl_channel, true);
     irq_set_enabled(VGA_DMA_IRQ, true);
 

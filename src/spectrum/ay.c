@@ -184,6 +184,8 @@ static const uint8_t pan[AY_STEREO_COUNT][2][3] = {
     [AY_STEREO_MONO] = { { 1, 1, 1 }, { 1, 1, 1 } },
     [AY_STEREO_ABC]  = { { 2, 1, 0 }, { 0, 1, 2 } },
     [AY_STEREO_ACB]  = { { 2, 0, 1 }, { 0, 2, 1 } },
+    [AY_STEREO_BAC]  = { { 1, 2, 0 }, { 1, 0, 2 } },
+    [AY_STEREO_CBA]  = { { 0, 1, 2 }, { 2, 1, 0 } },
 };
 
 void __not_in_flash_func(ay_render_stereo)(ay_t *ay, const uint32_t ticks,
