@@ -1,89 +1,190 @@
 # frank-dino
 
-Firmware for the **dino_z80** board: an RP2350B acting as the entire
-machine — clock, memory, I/O, video — for a real Zilog Z84C00 sitting next
-to it in a socket.
+Firmware for the **dino_z80** board. An RP2350B plays the whole machine
+(clock, memory, I/O and video) around a real Zilog Z84C00 sitting in a
+socket next to it.
 
-The Z80 is not emulated. It fetches, it drives ~MREQ and ~RD and ~WR, and
-everything on the other side of those pins is software on the RP2350B.
+The Z80 is not emulated. It fetches opcodes and drives ~MREQ, ~RD and
+~WR, and everything on the other side of those pins is software on the
+RP2350B.
 
-Ported from [frank-xt8086](https://github.com/rh1tech/frank-xt8086), which
-does the same thing for a real 8086. The toolchain, the bench scripts, the
-video timing and the structure are that firmware's; the bus engine is not,
-because the two CPUs share none of the signals that matter.
+Written by Mikhail Matveev, <xtreme@rh1.tech>, https://rh1.tech.
+Copyright (c) 2026.
+
+It started as a port of [frank-xt8086](https://github.com/rh1tech/frank-xt8086),
+which does the same job for a real Intel 8086. The toolchain, the bench
+scripts, the video timing and the overall structure come from there. The
+bus engine does not, because the two CPUs have none of the important
+signals in common.
 
 ![ZX Spectrum 128K, booted on a real Z84C00](docs/screenshots/spectrum128.png)
 
-## What it is now
+## What it is
 
-A **ZX Spectrum** and some forty of its relatives, with sound, storage
-and a settings page — all of it executed by a Z84C00 in a socket, with
-the RP2350B being everything else the CPU can see.
+A **ZX Spectrum** and about thirty of its relatives, with sound, storage
+and a settings menu. The Z84C00 in the socket runs every instruction; the
+RP2350B is everything else the CPU can see.
 
 | | |
 |---|---|
-| Machines | 16K, 48K, 128K, +2, +2A, +3; Pentagon 128, 512 and 1024SL; Scorpion ZS-256 and ZS-1024 (ProfROM), ScorpEvo; Nemo KAY-256, KAY-1024 (two ROMs), ZXM-Phoenix; Profi 1024 with DS80 and CP/M; ATM-Turbo 1, 2, 2+ (two BIOSes) and 3 (all 4 MB); ZX Evolution BaseConf (EVO Reset Service, its Magic NMI menu, EVO ProfROM, NEO-DOS; 4 MB); Timex TC2048 and TC2068; Didaktik Gama 89; Leningrad-1 and -2; Byte; ALF TV Game. Spanish ROMs for the 48K, 128K and +2 |
+| Machines | 16K, 48K, 128K, +2, +2A, +3; Pentagon 128, 512 and 1024SL; Scorpion ZS-256 and ZS-1024 (ProfROM), ScorpEvo; Nemo KAY-256, KAY-1024 (two ROMs), ZXM-Phoenix; Profi 1024 with DS80 and CP/M; ATM-Turbo 1, 2, 2+ (two BIOSes) and 3 (all 4 MB); ZX Evolution BaseConf (EVO Reset Service, the Magic NMI menu, EVO ProfROM, NEO-DOS, 4 MB); Timex TC2048 and TC2068; Didaktik Gama 89; Leningrad-1 and -2; Byte; ALF TV Game. Spanish ROMs for the 48K, 128K and +2 |
 | CPU | A real Z84C00 at each machine's own clock (3.5, 3.5469 or 3.528 MHz), paced by the wall clock; 5.3 and 7 MHz on request |
-| Timing | Every handler is told its T-state: the ULA's contention and floating bus on the Sinclair machines, a picture built as the ULA fetched it (multicolour, border effects), Gigascreen with an Auto mode |
-| RAM | 128 KB in SRAM; up to 1 MB more in the 8 MB PSRAM (4 MB on the ATM-Turbo 3 and the Evo), at #C000 through a staging page or anywhere at all through the XIP cache (the ATM) |
-| Video | 256x192 and border doubled into 640x480 over HDMI; ULA+, Gigascreen, the Timex modes, Pentagon 16 colours, Profi 512x240, ATM EGA/hires/80x25 text with its palette; palettes (Sinclair, Pulsar, Alone, Grayscale, Mars, Ocean), four scanline strengths and a CRT filter with an aperture grille, all dithered onto the ladder at no cost per pixel |
-| Sound | Beeper, two AYs (TurboSound and TurboSound FM's YM2203s), SAA1099 and the CMS pair, OPL3, YM2413, two SN76489s, Covox (#FB or #DD), SounDrive, SpecDrum, the Byte's 8253 -- synthesised on core 0 from timestamped writes, stereo to two PWM DACs |
-| Tape | `.tap`, `.tzx` (every block type, GDB included), `.pzx`, `.csw`, `.wav` in real time onto the EAR bit, or instantly by ROM trap when a tape is all standard blocks; a real cassette on J8; a worn-tape model (wow, lurches, dropouts); a tape browser; SAVE recorded back to `.tap`; Rodolfo Guerra timings |
-| Snapshots | `.sna` and `.z80` in; `.z80` v3 out, ten quick-save slots, a register page -- the registers read from the real CPU by NMI |
-| Disks | Beta Disk with TR-DOS 5.03, 5.04T, 5.04TM, 5.05D or 6.11e: `.trd`, `.scl`, `.fdi`, `.udi`, `.td0` in drive A, three more `.trd` drives read straight from the card; the +3's uPD765 with weak sectors and the Speedlock trick; DivMMC/esxDOS and a Z-Controller on its card image; an IDE hard disk behind NEMO, DivIDE, ATM or the Scorpion's SMUC (with its 24LC16 NVRAM and clock, so ProfROM keeps its setup) |
-| Input | The full matrix over USB or the console, mapped the way pico-speccy and SpeccyP map it; USB gamepads -- generic, DualShock 4, DualSense and XInput -- with every button mappable to a fire bit or a key, and named maps on the card; mice as a Kempston mouse with wheel, and as the Profi's serial mouse; Kempston (three fire buttons), Sinclair 1 and 2, Cursor and Fuller joysticks; Pause |
-| Other | Mr Gluk's clock with its NVRAM on the card, Interface 2 and ALF cartridges, a machine's ROM from `/roms` on the card, settings profiles, POKE, `.gz` and `.zip` |
-| Menus | pico-speccy's layout in the 128K's own style -- the Spectrum's ROM font, the rainbow title bar, the cyan bar -- on their own 320x240 surface |
+| Timing | Every port and memory handler knows its T-state: ULA contention and the floating bus on the Sinclair machines, a picture built the way the ULA fetched it (multicolour, border effects), Gigascreen with an Auto mode |
+| RAM | 128 KB in SRAM, plus up to 1 MB in the 8 MB PSRAM (4 MB on the ATM-Turbo 3 and the Evo) |
+| Video | 640x480 over HDMI; ULA+, Gigascreen, the Timex modes, Pentagon 16 colours, Profi 512x240, the ATM's EGA, hires and 80x25 text, the Evo's one-page text mode; six palettes, four scanline strengths and a CRT filter |
+| Sound | Beeper, two AYs (TurboSound), TurboSound FM, SAA1099 and the CMS pair, OPL3, YM2413, two SN76489s, Covox, SounDrive, SpecDrum and the Byte's 8253, mixed to stereo PWM |
+| Tape | `.tap`, `.tzx`, `.pzx`, `.csw` and `.wav`, played in real time or loaded instantly through a ROM trap; a real cassette player on J8; a worn-tape model; a tape browser; SAVE recorded back to `.tap` |
+| Snapshots | `.sna` and `.z80` in, `.z80` out, ten quick-save slots, POKEs, and a page of the CPU's registers, read from the real Z80 by NMI |
+| Disks | Beta Disk with five TR-DOS versions: `.trd`, `.scl`, `.fdi`, `.udi`, `.td0` in drive A and three more `.trd` drives read straight from the card; the +3's uPD765 with weak sectors and Speedlock; DivMMC with esxDOS; a Z-Controller; IDE behind NEMO, DivIDE, ATM or SMUC |
+| Input | USB keyboard, the serial console, USB gamepads (generic, DualShock 4, DualSense, XInput) with every button mappable, USB mice as a Kempston mouse or the Profi's serial mouse; Kempston, Sinclair, Cursor and Fuller joysticks |
+| Other | Mr Gluk's clock with its NVRAM on the card, Interface 2 and ALF cartridges, custom ROMs from `/roms` on the card, settings profiles, `.gz` and `.zip` |
 
-Five of those are worth a sentence each, because they are not what an
+`docs/spectrum.md` covers every machine, every setting and every file
+format in detail, including what is deliberately left out.
+
+## Using the board
+
+### Connecting it
+
+| Connector | What goes there |
+|---|---|
+| J9 | HDMI to a monitor or TV. The picture is 640x480 at 60 Hz; the sound can go over HDMI too |
+| J2 | 3.5 mm audio jack, for headphones or an amplifier. S2 routes sound to the HDMI audio and to the on-board speaker |
+| J3 | microSD card, FAT32. Games, disk images, ROMs and the settings file live here |
+| J5 (USB-C) | Power, and the serial console when S1 points at it |
+| J6 (2 x USB-A) | Keyboard, mouse, gamepad or USB stick, through the hub, when S1 points at the hub (USB keyboard build) |
+| J8 | A cassette player's earphone output, for loading real tapes |
+| J4 | The Raspberry Pi Debug Probe, for flashing and debugging |
+
+There are two builds of the firmware, and S1 must match the one flashed:
+
+- **USB keyboard build** (`USB_KEYBOARD=ON`, the release `.uf2`): S1 points
+  the RP2350's USB at the hub, so the keyboard, mouse, pads and USB stick
+  on J6 all work. There is no serial console.
+- **Console build** (the default for development): S1 points at the USB-C
+  socket, and a terminal on the computer is the keyboard. This is the
+  build the bench scripts drive.
+
+### First start
+
+Copy your games and disk images onto the microSD card, put it in J3,
+connect HDMI and power. The board starts the machine named in
+`/frank-dino.cfg` on the card, or a 128K the first time. The ROMs are
+built into the firmware, so nothing else has to be on the card.
+
+### Keys
+
+| Key (USB keyboard) | Key (console) | What it does |
+|---|---|---|
+| F11 | Tab | Opens the file browser; in the browser or menu, goes back to the machine |
+| F12 | `\` | Opens the settings menu |
+| Pause | | Pauses and resumes the machine |
+| Shift | | CAPS SHIFT |
+| Ctrl | | SYMBOL SHIFT |
+| Cursor keys | Cursor keys | CAPS SHIFT + 5/6/7/8, or the joystick when "Cursor keys as joy" is on |
+| Alt | | Fire, when the cursor keys are the joystick |
+| Gamepad Start | | Opens the file browser |
+
+Every other key goes to the Spectrum's keyboard matrix. Punctuation is
+mapped the way it is printed on a PC keyboard, so typing `"` presses
+SYMBOL SHIFT + P.
+
+### The file browser
+
+The browser lists the card (and a USB stick, if one is plugged in).
+Up and Down move, Enter opens a folder or loads a file, Backspace goes up
+a level, a letter or digit jumps to the next name starting with it, and
+F3 searches.
+
+Enter does whatever suits the file:
+
+- `.tap`, `.tzx`, `.pzx`, `.csw`, `.wav`: mounts the tape and, with
+  auto-start on, resets the machine and types `LOAD ""`.
+- `.trd`, `.scl`, `.fdi`, `.udi`, `.td0`: turns the Beta Disk on, puts the
+  disk in drive A and boots it. "Next .trd into" in Storage sends the next
+  one to drive B, C or D instead.
+- `.dsk`: the +3's drive.
+- `.sna`, `.z80`: restores the snapshot.
+- `.hdf`, `.mmc`, `.img`: a hard disk (with an IDE interface chosen) or the
+  DivMMC card; on the ZX Evolution, its SD card.
+- `.rom`, `.dck`, `.scr`: an Interface 2 or ALF cartridge, a Timex dock
+  cartridge, a screen.
+- `.zip`, `.gz`: opened, and the file inside is loaded.
+
+### The settings menu
+
+F12 (or `\`) opens it. Up and Down move, Enter or Right goes into a
+submenu or opens a list of choices, Enter picks, Left goes back, Esc
+closes. Changes take effect at once. **Save settings to the card** writes
+them to `/frank-dino.cfg`; anything not saved is gone at the next power-on.
+
+- **Machine.** Which machine to be (it restarts), Issue 2 keyboard, the
+  Z80's speed, ULA contention, Spanish ROMs, Reset, and which ROM is in
+  use. On the ZX Evolution, also the Magic button (NMI) and its raster.
+- **Snapshots.** Save a snapshot, ten quick-save slots, and POKE.
+- **Audio.** Where the sound goes (jack, HDMI, or the speaker loud),
+  master, beeper and AY volume, AY stereo mode, and each extra sound
+  device on or off. A test tone checks the outputs.
+- **Video.** Beam-accurate picture, palette, scanlines, CRT filter, ULA+,
+  Gigascreen and the Timex video modes.
+- **Input.** Joystick type and Kempston port, cursor keys as the joystick,
+  every gamepad button's mapping (saved and loaded as named pad maps),
+  Kempston mouse and its speed, the Gluk clock.
+- **Storage.** Tapes (auto-start, real-time play, play/stop/rewind,
+  tape wear, a real cassette on J8, saving what the machine SAVEs), the
+  Beta Disk (TR-DOS version, drives A to D, eject, save), the +3 drive,
+  cartridges, DivMMC/esxDOS, the Z-Controller, the IDE interface, a
+  screenshot to the card, and re-reading the card.
+- **System.** Settings profiles (save, load, delete), the PSRAM and its
+  test, and diagnostics: the Z80's clock, frame timing, headroom, the USB
+  keyboard, and a bus recorder.
+- **Emulator info.** What is running and how.
+- **Restore defaults.**
+
+### Gamepads
+
+A USB gamepad is a joystick by default: the D-pad or left stick moves, A
+and B fire. Every button can be mapped to a fire button or to any
+Spectrum key under Input > Pad buttons. Start always opens the file
+browser, and in the menus A and B choose and Select goes back.
+
+## How it works
+
+Five things here are worth a sentence each, because they are not what an
 emulator does.
 
-**Snapshots.** You cannot write a Z84C00's registers from outside it, so
-a `.sna` or a `.z80` is restored by *generating a program that loads
-them* and mapping it over the ROM window: the CPU loads itself and jumps
-into the snapshot, and the real ROM comes back on the first fetch after
-the jump. See `src/spectrum/launch.c`.
+**Snapshots.** You cannot write a Z84C00's registers from outside it. A
+`.sna` or `.z80` is restored by *generating a program that loads them*,
+mapping it over the ROM window and letting the CPU run it: the CPU loads
+itself and jumps into the snapshot, and the real ROM comes back on the
+first fetch after the jump. See `src/spectrum/launch.c`.
 
-**The PSRAM is not optional.** U9 is soldered down and the firmware
-treats it that way: the disk and tape images, the menus' framebuffer,
-the machines above 128 KB and the inflate window all live there, and
-`main()` stops with a message on the console rather than coming up in
-some reduced form. There is no useful subset to fall back to, and
-pretending there is only hides a board fault.
+**The PSRAM is required.** U9 is soldered down and the firmware relies on
+it: disk and tape images, the menus' framebuffer, machines above 128 KB
+and the inflate window all live there. Without it, `main()` stops with a
+message on the console instead of starting in some reduced form.
 
-**A megabyte of guest RAM on a part with half of one.** The bus engine
-reads guest memory on every cycle, so what is *mapped* has to be in
-SRAM — a PSRAM miss there stretches a clock phase. But a Profi's 1 MB is
-mostly not mapped: the first eight banks are the 128K machine it also
-is, and the rest only ever appear in the window at #C000, one at a time.
-So banks 0-7 live in SRAM and the rest in PSRAM, with one 16 KB staging
-page holding whichever high bank is current. A switch costs two 16 KB
-transfers, on a path that happens hundreds of times a second and not
-hundreds of thousands. See `spec_bank_ptr()`.
+**A megabyte of guest RAM on a chip with half of one.** The bus engine
+reads guest memory on every cycle, so whatever is *mapped* has to be in
+SRAM; a PSRAM miss would stretch a clock phase. A Profi's 1 MB is mostly
+not mapped, though. Banks 0-7 stay in SRAM and the rest live in PSRAM,
+with one 16 KB staging page in SRAM for whichever high bank is current.
+See `spec_bank_ptr()`.
 
-**Sixty-four colours out of four levels.** The video is a two-resistor
-ladder: two bits a channel, sixty-four colours, and that is the ceiling.
-ULA+ asks for sixty-four *arbitrary* ones. It works because every
-Spectrum pixel is already doubled into a 2x2 block of output pixels,
-which is exactly one Bayer cell -- so each colour is dithered inside its
-own pixel and the averaging is the eye's. Gigascreen uses the same block
-to show banks 5 and 7 at once, blended in space instead of flickering in
-time. See `src/drivers/vga/vga.c`.
+**Sixty-four colours from four levels.** The video is a two-resistor
+ladder: two bits per channel. ULA+ asks for sixty-four arbitrary colours.
+That works because every Spectrum pixel is doubled into a 2x2 block on
+screen, which is exactly one Bayer dither cell, so each colour is
+dithered inside its own pixel. Gigascreen uses the same block to show two
+screens at once. See `src/drivers/vga/vga.c`.
 
-**Tape.** The same problem, once more: a `.tap` is served by trapping the
-ROM's `LD-BYTES`, and the trap needs IX, DE and A — which it gets by
-patching a stub into the ROM that pushes each of them out through a port
-this firmware is listening on. See `src/spectrum/tape.c`.
-
-**Disks.** The Beta Disk's ROM paging has no port at all: TR-DOS replaces
-the BASIC ROM when the CPU fetches an opcode from 0x3Dxx and disappears
-on the first fetch at 0x4000 or above. The bus engine's opcode-fetch hook
-sees exactly what the interface's address comparator saw. See
-`src/spectrum/beta.c`.
-
-`docs/spectrum.md` has the whole of the machine: what each setting does,
-which parts of each file format are supported, and what is deliberately
-out of scope.
+**Tape and disk paging.** The tape trap needs IX, DE and A from inside
+`LD-BYTES`, so it patches a stub into the ROM that pushes them out
+through a port. The Beta Disk has no paging port at all: TR-DOS appears
+when the CPU fetches an opcode from 0x3Dxx and disappears on the first
+fetch above 0x3FFF, and the bus engine's opcode-fetch hook sees exactly
+what the interface's address comparator saw. See `src/spectrum/tape.c`
+and `src/spectrum/beta.c`.
 
 ## Stage 0: proving the bus first
 
@@ -150,13 +251,10 @@ console *is* the keyboard, so the whole machine can be driven from a
 script over the same cable that flashes it. "Does it still boot, load a
 game and run it" is a question a test can answer with a screenshot.
 
-Inside the browser: the arrows move, Enter opens, Backspace goes up, any
-letter or digit jumps to the next entry beginning with it, backslash
-opens the settings page, and Tab goes back to the machine.
-
-With a real keyboard (a `USB_KEYBOARD=ON` build) the browser is on **F1**
-rather than Tab, because every key a Spectrum has belongs to the matrix
-— and that build has no console to press Tab at.
+The browser and menu keys are under [Using the board](#using-the-board).
+With a real keyboard (a `USB_KEYBOARD=ON` build) the browser is on **F11**
+and the settings on **F12** instead of Tab and backslash, because every
+key the Spectrum has belongs to its matrix.
 
 ## What the board gives the Z80
 
@@ -332,11 +430,12 @@ survives the round trip and an 80x30 report is legible in a still.
 
 This makes "did stage 0 pass" a question a script can answer.
 
-## What comes next
+## What is not here
 
-The machine runs, loads and plays, and every machine on the list is in.
-What it will not do is run the 7 and 14 MHz turbo clocks of the ATM and
-the Evo, which a real Z84C00 on this bus does not reach.
+The 7 and 14 MHz turbo modes of the ATM and the Evo: a real Z84C00 on
+this bus does not reach them, so the turbo bits are accepted and ignored.
+Machines that need a second CPU or a faster one (Spectrum Next, SAM
+Coupé, TS-Conf, Scorpion GMX, MB-02+, General Sound) are out of scope.
 
 ## Toolchain
 
@@ -364,34 +463,55 @@ make hooks               # once per clone; also runs the self-test
 make check-attribution   # scan what this branch adds over the remote
 ```
 
+## Author
+
+frank-dino, the dino_z80 firmware, is written by **Mikhail Matveev**,
+<xtreme@rh1.tech>, https://rh1.tech. Copyright (c) 2026.
+
 ## Credits
 
 Much of the machine above the bus is ported from other people's work, all
-of it GPL-3.0 or compatible, and each ported file says so at its top:
+of it GPL-3.0 or compatible. Each ported file says so at its top.
 
-- **pico-speccy** (https://github.com/drewpo28/pico-speccy) by drew.po28 —
-  the machine models (Pentagon 512/1024, Scorpion/ProfROM/KAY/Phoenix,
-  ATM-Turbo, the ZX Evolution's BaseConf and its tools/evo_sim.c, Byte, ALF, Profi DS80), the FM and PSG cores, the tape timings,
-  the TD0 decoder, the Kempston mouse decode, SMUC, the tape wear model, the
-  pad decoders and button map, the palettes and CRT filter, and the menus.
-- **ESPectrum** by Víctor Iborra [Eremus] and David Crespo [dcrespo3d], from
-  which pico-speccy grew, and ZX-ESPectrum-Wiimote, Ramón Martinez and
-  Jorge Fuertes, and Pete Todd's paseVGA before it.
-- **MAME** — fm.cpp, ymf262.cpp and ym2413.cpp by Jarek Burczynski and
-  Tatsuyuki Satoh, under the FM cores; the Scorpion and ATM hardware
-  derivations.
-- **UnrealSpeccy** — the ATM memory manager and the Teledisk loader.
-- **Fuse** — the contention patterns and the first contended T-states, and the +3's Speedlock trick.
-- **SpeccyP** — the keyboard's extra keys.
-- **usb64** by Ryan Wendland — the XInput class driver (MIT).
-- **ZXMAK2 / UnrealSpeccy** — the 24LC16 model behind SMUC's NVRAM.
-- **Sinclair Research** — the menus' font is the 48K ROM's own.
+- [pico-speccy](https://github.com/drewpo28/pico-speccy) by drew.po28: the
+  machine models (Pentagon 512/1024, Scorpion, ProfROM, KAY, Phoenix,
+  ATM-Turbo, the ZX Evolution's BaseConf and its AVR, Byte, ALF, Profi
+  DS80), the FM and PSG cores, the tape timings, the TD0 decoder, the
+  Kempston mouse, SMUC, the tape wear model, the gamepad decoders, the
+  palettes and CRT filter, and the menus.
+- [ESPectrum](https://github.com/EremusOne/ESPectrum) by Víctor Iborra
+  (Eremus) and David Crespo (dcrespo3d), which pico-speccy grew from; and
+  before it [ZX-ESPectrum](https://github.com/rampa069/ZX-ESPectrum) by
+  Ramón Martinez and Jorge Fuertes, and Pete Todd's
+  [paseVGA](https://github.com/retrogubbins/paseVGA).
+- [SpeccyP](https://github.com/billgilbert7000/SpeccyP) by billgilbert7000:
+  the keyboard's extra keys.
+- [MAME](https://github.com/mamedev/mame): fm.cpp, ymf262.cpp and
+  ym2413.cpp by Jarek Burczynski and Tatsuyuki Satoh under the FM cores,
+  and the Scorpion and ATM hardware.
+- [UnrealSpeccy](https://github.com/mkoloberdin/unrealspeccy) by SMT,
+  Alone Coder and Deathsoft: the ATM memory manager and the Teledisk loader.
+- [Fuse](https://fuse-emulator.sourceforge.net/): the contention patterns
+  and the +3's Speedlock trick.
+- [ZXMAK2](https://github.com/zxmak/ZXMAK2): the 24LC16 model behind
+  SMUC's NVRAM.
+- [ZX Evolution](https://github.com/tslabs/zx-evo) by NedoPC: the
+  BaseConf FPGA sources the Evo is modelled on, and its ROM.
+- [usb64](https://github.com/Ryzee119/usb64) by Ryan Wendland: the XInput
+  class driver (MIT).
+- [FatFs](http://elm-chan.org/fsw/ff/) by ChaN,
+  [pico_fatfs_test](https://github.com/elehobica/pico_fatfs_test) by
+  Elehobica (the SD card driver), and [miniz](https://github.com/richgel999/miniz)
+  by Rich Geldreich.
+- [Pico SDK](https://github.com/raspberrypi/pico-sdk) and
+  [TinyUSB](https://github.com/hathach/tinyusb).
+- Sinclair Research: the menus' font is the 48K ROM's own.
 
-The ROM images are their owners'; `roms/README.md` says where each came
-from.
+The ROM images belong to their owners; `roms/README.md` says where each
+came from.
 
 ## Licence
 
-GPL-3.0-or-later.
+GPL-3.0-or-later. Copyright (c) 2026 Mikhail Matveev.
 
 The 8x16 font is carried over from frank-xt8086.

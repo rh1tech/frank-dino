@@ -14,7 +14,7 @@
 // descriptor bytes the driver consumed (uint16_t, 0 = not our interface) instead
 // of bool. Adapt at compile time so this driver builds against both the
 // SDK-bundled TinyUSB (0.17/0.18) and an external 0.21+ checkout
-// (-DPICO_TINYUSB_PATH — the USB host throughput experiment, see CLAUDE.md).
+// (-DPICO_TINYUSB_PATH, the USB host throughput experiment).
 #if defined(TUSB_VERSION_NUMBER) && (TUSB_VERSION_NUMBER >= 2100)
 typedef uint16_t xinputh_open_ret_t;
 #define XINPUTH_OPEN_OK(consumed_len) (consumed_len)

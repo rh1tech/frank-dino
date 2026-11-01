@@ -39,3 +39,7 @@ out/*.bin
 
 # Python bytecode from tools/.
 __pycache__/
+
+# Local assistant settings: never part of the project.
+.claude/
+CLAUDE.md
