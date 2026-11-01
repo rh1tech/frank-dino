@@ -197,6 +197,8 @@ typedef struct {
     uint8_t ide;            // ide_scheme_t: a hard disk behind NEMO, DivIDE or ATM ports
     uint8_t zcontroller;    // a Z-Controller on #57/#77, on the DivMMC's card image
     uint8_t trdos_rom;      // 0 5.04T, 1 5.03, 2 5.04TM, 3 5.05D, 4 6.11e
+    uint8_t beta_target;    // the drive the next .trd goes into: 0 A ... 3 D
+    uint8_t p3_speedlock;   // the +3 FDC's Speedlock trick (fdc.c)
     uint8_t mouse_sens;     // 1-8, in halves: 2 is one count per USB count
     uint8_t cursor_as_joy;  // the cursor keys drive the selected joystick too
     uint8_t joymap[14];     // per pad control (joymap.h PAD_*): a JT_* target, 0 its default

@@ -73,6 +73,7 @@ bool     divmmc_zc_out(uint16_t p, uint8_t v)    { (void)p; (void)v; return fals
 void fdc_reset(void) { }
 bool fdc_port_in(uint16_t p, uint8_t *v)  { (void)p; (void)v; return false; }
 bool fdc_port_out(uint16_t p, uint8_t v)  { (void)p; (void)v; return false; }
+void fdc_eject(void) { }
 
 #endif
 

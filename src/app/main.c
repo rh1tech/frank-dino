@@ -37,6 +37,7 @@
 #include "sound.h"
 #include "tapeplay.h"
 #include "rtc.h"
+#include "beta.h"
 #include "smuc.h"
 #if USB_KEYBOARD
 #include "usbkbd.h"
@@ -400,6 +401,7 @@ int main(void) {
         tapeplay_task();
         rtc_task();
         smuc_task();
+        beta_task();
         audio_task();
         /*
          * The tape input follows its setting, wherever the setting was

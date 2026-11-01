@@ -25,13 +25,13 @@ this is built around answering a real one. Where a sequence *is* theirs
 | Pentagon | 128, 512, 1024SL | up to 1 MB | 71680 T-states, no contention, TR-DOS native; the 1024SL's #EFF7, cache page and 16 colours |
 | Scorpion | ZS-256, ZS-1024 (ProfROM 4.44), ScorpEvo, Nemo KAY-256 / KAY-1024 / KAY-1024 (2010), ZXM-Phoenix | up to 1 MB | #1FFD in each one's own shape; ProfROM's four planes |
 | Profi | Profi 1024 | 1 MB | #DFFD; DS80 512x240 and CP/M mode |
-| ATM-Turbo | 1, 2, 2+ (BIOS 1.07.13 or xBIOS 1.37), 3 | 1 MB | The memory manager in every window; EGA, hires and text modes; the 3 has 4 MB on the real board, 1 MB here |
+| ATM-Turbo | 1, 2, 2+ (BIOS 1.07.13 or xBIOS 1.37), 3 | 1 MB | The memory manager in every window; EGA, hires and text modes; the 3 has all 4 MB |
 | Timex | TC2068 | 48 KB | The SCLD, the dock and the EX-ROM |
 | ALF | ALF TV Game | 128 KB | Banked cartridges |
 
-Every machine runs at its own clock and frame length -- a 128's ULA runs
+Every machine runs at its own clock and frame length — a 128's ULA runs
 311 lines to the 48's 312 and the line is a T-state longer; a Pentagon's
-is longer again -- and is paced against the wall clock, so it plays in
+is longer again — and is paced against the wall clock, so it plays in
 tune whatever it is doing.
 
 Turbo bits (the Pentagon 1024SL's #EFF7, the KAY's #1FFD, the ATM's #77)
@@ -51,8 +51,8 @@ no clock edges, which is exactly what the ULA's stopped clock looks like
 to a static CPU. The Fuse patterns, at the Fuse T-states.
 
 **The floating bus.** An unclaimed `IN` on a 48K or 128K returns the
-byte the ULA is fetching at that T-state, in its order -- bitmap,
-attribute, bitmap, attribute, then four idle -- and 0xFF in the border.
+byte the ULA is fetching at that T-state, in its order — bitmap,
+attribute, bitmap, attribute, then four idle — and 0xFF in the border.
 
 **The picture.** With *Beam-accurate picture* on, core 1 builds each
 frame as the ULA fetched it, so multicolour and border effects come out
@@ -177,6 +177,9 @@ so a real key and a direction cannot cancel each other out.
 | **Auto-start tapes** | After mounting a `.tap`, cold-start the machine and type `LOAD ""` into it. Also types a disk's start-up command. |
 | **Eject tape / disk** | Enter on the row. |
 | **Beta Disk (TR-DOS)** | The interface and its ROM. Turned on automatically by mounting a disk. |
+| **Next .trd into** | Which drive the browser's next `.trd` goes into. A is the whole image in PSRAM and boots; B, C and D are mounted without a reset and read from the card. |
+| **Drive B / C / D** | What is in each; Enter ejects. |
+| **Speedlock trick** | +3 only. Fuse's heuristic: a 512-byte sector read again and again (R = N = 2) comes back with bytes changed from the second read on, the way Speedlock's weak sector does on a real disk. |
 
 The Beta Disk is off by default because it is not free: its ROM replaces
 the BASIC ROM whenever the CPU fetches from 0x3Dxx, which means every
@@ -308,6 +311,24 @@ on flux, weak sectors or non-standard formats will not work.
 
 Writes go to the image in PSRAM and are not written back to the card.
 
+#### Drives B, C and D
+
+Drive A is the whole image in PSRAM. The other three are `.trd` files
+left on the card and read a cylinder (both sides, 8 KB) at a time: when
+TR-DOS asks for a sector on a cylinder that is not in the drive's cache,
+the controller holds the command BUSY until core 0 has read it in — a
+real drive is slower than that. Writes land in the cache and go back to
+the card when the head moves on, or a second and a half after the last
+one. Select one in TR-DOS with `*"B"`.
+
+#### The +3's protection
+
+An extended `.dsk` can record a sector more than once: a stored length of
+two or three times its size is that many copies of a sector that reads
+differently each time. Each read here returns the next copy; a write puts
+the data into all of them. A sector stored shorter than its size reads
+the track's filler byte past what was stored.
+
 #### The index pulse
 
 Worth recording, because it looked exactly like failing memory.
@@ -340,6 +361,12 @@ there is not much left. So anything large that is *not* on the Z80's
 critical path lives in the 8 MB of PSRAM on XIP CS1 instead: the tape
 image and the disk image, both read with the CPU stopped inside a bus
 cycle.
+
+Four users that never run together share one 3968 KB arena
+(`src/spectrum/arena.h`): the extra RAM pages, the tape capture, the +3's
+disk image and the ALF cartridge. The ATM-Turbo 3 takes all of it as RAM
+— 4 MB with the 128 KB in SRAM — and, while it runs, there is no +3
+disk, no cartridge and no tape capture.
 
 Nothing the bus engine touches while the clock is running may go there. A
 PSRAM read is a cache miss away from a microsecond, and a microsecond is

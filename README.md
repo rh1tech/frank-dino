@@ -22,15 +22,15 @@ the RP2350B being everything else the CPU can see.
 
 | | |
 |---|---|
-| Machines | 16K, 48K, 128K, +2, +2A, +3; Pentagon 128, 512 and 1024SL; Scorpion ZS-256 and ZS-1024 (ProfROM), ScorpEvo; Nemo KAY-256, KAY-1024 (two ROMs), ZXM-Phoenix; Profi 1024 with DS80 and CP/M; ATM-Turbo 1, 2, 2+ (two BIOSes) and 3; Timex TC2048 and TC2068; Didaktik Gama 89; Leningrad-1 and -2; Byte; ALF TV Game. Spanish ROMs for the 48K, 128K and +2 |
+| Machines | 16K, 48K, 128K, +2, +2A, +3; Pentagon 128, 512 and 1024SL; Scorpion ZS-256 and ZS-1024 (ProfROM), ScorpEvo; Nemo KAY-256, KAY-1024 (two ROMs), ZXM-Phoenix; Profi 1024 with DS80 and CP/M; ATM-Turbo 1, 2, 2+ (two BIOSes) and 3 (all 4 MB); Timex TC2048 and TC2068; Didaktik Gama 89; Leningrad-1 and -2; Byte; ALF TV Game. Spanish ROMs for the 48K, 128K and +2 |
 | CPU | A real Z84C00 at each machine's own clock (3.5, 3.5469 or 3.528 MHz), paced by the wall clock; 5.3 and 7 MHz on request |
 | Timing | Every handler is told its T-state: the ULA's contention and floating bus on the Sinclair machines, a picture built as the ULA fetched it (multicolour, border effects), Gigascreen with an Auto mode |
-| RAM | 128 KB in SRAM; up to 1 MB more in the 8 MB PSRAM, at #C000 through a staging page or anywhere at all through the XIP cache (the ATM) |
+| RAM | 128 KB in SRAM; up to 1 MB more in the 8 MB PSRAM (4 MB on the ATM-Turbo 3), at #C000 through a staging page or anywhere at all through the XIP cache (the ATM) |
 | Video | 256x192 and border doubled into 640x480 over HDMI; ULA+, Gigascreen, the Timex modes, Pentagon 16 colours, Profi 512x240, ATM EGA/hires/80x25 text with its palette; palettes (Sinclair, Pulsar, Alone, Grayscale, Mars, Ocean), four scanline strengths and a CRT filter with an aperture grille, all dithered onto the ladder at no cost per pixel |
 | Sound | Beeper, two AYs (TurboSound and TurboSound FM's YM2203s), SAA1099 and the CMS pair, OPL3, YM2413, two SN76489s, Covox (#FB or #DD), SounDrive, SpecDrum, the Byte's 8253 -- synthesised on core 0 from timestamped writes, stereo to two PWM DACs |
 | Tape | `.tap`, `.tzx` (every block type, GDB included), `.pzx`, `.csw`, `.wav` in real time onto the EAR bit, or instantly by ROM trap when a tape is all standard blocks; a real cassette on J8; a worn-tape model (wow, lurches, dropouts); a tape browser; SAVE recorded back to `.tap`; Rodolfo Guerra timings |
 | Snapshots | `.sna` and `.z80` in; `.z80` v3 out, ten quick-save slots, a register page -- the registers read from the real CPU by NMI |
-| Disks | Beta Disk with TR-DOS 5.03, 5.04T, 5.04TM, 5.05D or 6.11e: `.trd`, `.scl`, `.fdi`, `.udi`, `.td0`; the +3's uPD765; DivMMC/esxDOS and a Z-Controller on its card image; an IDE hard disk behind NEMO, DivIDE, ATM or the Scorpion's SMUC (with its 24LC16 NVRAM and clock, so ProfROM keeps its setup) |
+| Disks | Beta Disk with TR-DOS 5.03, 5.04T, 5.04TM, 5.05D or 6.11e: `.trd`, `.scl`, `.fdi`, `.udi`, `.td0` in drive A, three more `.trd` drives read straight from the card; the +3's uPD765 with weak sectors and the Speedlock trick; DivMMC/esxDOS and a Z-Controller on its card image; an IDE hard disk behind NEMO, DivIDE, ATM or the Scorpion's SMUC (with its 24LC16 NVRAM and clock, so ProfROM keeps its setup) |
 | Input | The full matrix over USB or the console, mapped the way pico-speccy and SpeccyP map it; USB gamepads -- generic, DualShock 4, DualSense and XInput -- with every button mappable to a fire bit or a key, and named maps on the card; mice as a Kempston mouse with wheel, and as the Profi's serial mouse; Kempston (three fire buttons), Sinclair 1 and 2, Cursor and Fuller joysticks; Pause |
 | Other | Mr Gluk's clock with its NVRAM on the card, Interface 2 and ALF cartridges, a machine's ROM from `/roms` on the card, settings profiles, POKE, `.gz` and `.zip` |
 | Menus | pico-speccy's layout in the 128K's own style -- the Spectrum's ROM font, the rainbow title bar, the cyan bar -- on their own 320x240 surface |
@@ -338,9 +338,6 @@ The machine runs, loads and plays. What it has not got yet:
 
 - **ZX Evolution BaseConf.** The ATM-Turbo 2+ memory manager with the
   Evo's own ports, its keyboard controller, font RAM and rasters.
-- **Four Beta drives.** One is all TR-DOS sees today.
-- **+3 copy protection.** Weak sectors and Speedlock.
-- **The ATM-Turbo 3's full 4 MB.** It has 1 MB here.
 
 ## Toolchain
 
@@ -385,7 +382,7 @@ of it GPL-3.0 or compatible, and each ported file says so at its top:
   Tatsuyuki Satoh, under the FM cores; the Scorpion and ATM hardware
   derivations.
 - **UnrealSpeccy** — the ATM memory manager and the Teledisk loader.
-- **Fuse** — the contention patterns and the first contended T-states.
+- **Fuse** — the contention patterns and the first contended T-states, and the +3's Speedlock trick.
 - **SpeccyP** — the keyboard's extra keys.
 - **usb64** by Ryan Wendland — the XInput class driver (MIT).
 - **ZXMAK2 / UnrealSpeccy** — the 24LC16 model behind SMUC's NVRAM.

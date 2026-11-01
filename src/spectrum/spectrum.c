@@ -33,6 +33,7 @@
 #include "rtc.h"
 #include "smuc.h"
 #include "customrom.h"
+#include "arena.h"
 #include "ide.h"
 
 // ============================================================================
@@ -278,7 +279,7 @@ uint8_t *spec_rom_page(const uint8_t *src) {
  * PSRAM and the selected bank is copied into ROM slot 2.
  */
 #define ALF_MAX (512u * 1024u)
-static uint8_t  alf_cart[ALF_MAX] __attribute__((section(".psram")));
+#define alf_cart (psram_arena + ARENA_ALF_OFF)   // see arena.h
 static uint8_t  alf_ram[SPEC_BANK_SIZE] __attribute__((section(".psram")));
 static uint32_t alf_banks;
 static uint8_t  alf_sel;
@@ -519,9 +520,12 @@ static uint32_t int_tstates(void) {
 // ============================================================================
 uint8_t spec_ram[SPEC_RAM_BANKS][SPEC_BANK_SIZE] __attribute__((aligned(4)));
 
-/* The banks above the first eight, and the one of them that is mapped. */
-static uint8_t spec_ram_ext[SPEC_MAX_BANKS - SPEC_RAM_BANKS][SPEC_BANK_SIZE]
-    __attribute__((section(".psram")));
+/* The banks above the first eight, in the PSRAM arena (arena.h), and the
+ * one of them that is mapped. */
+#define spec_ram_ext ((uint8_t (*)[SPEC_BANK_SIZE])(psram_arena + ARENA_RAM_OFF))
+
+/* How many banks this machine has: 4 MB on the ATM-Turbo 3, 1 MB on the rest. */
+unsigned spec_ram_banks(void) { return spec_machine == MACHINE_ATM3 ? SPEC_MAX_BANKS_BIG : SPEC_MAX_BANKS; }
 static uint8_t bank_stage[SPEC_BANK_SIZE] __attribute__((aligned(4)));
 static int     staged_bank = -1;
 
@@ -543,7 +547,7 @@ void spec_bank_flush(void) {
  */
 uint8_t *spec_ram_page(const unsigned page) {
     if (page < SPEC_RAM_BANKS) return spec_ram[page];
-    if (page >= SPEC_MAX_BANKS) return spec_ram[page & 7u];
+    if (page >= spec_ram_banks()) return spec_ram[page & 7u];
     // A page that is staged has its newest bytes in the stage; put them back.
     if (staged_bank == (int)page) spec_bank_flush();
     return spec_ram_ext[page - SPEC_RAM_BANKS];
@@ -551,14 +555,14 @@ uint8_t *spec_ram_page(const unsigned page) {
 
 const uint8_t *spec_bank_host(const unsigned bank) {
     if (bank < SPEC_RAM_BANKS) return spec_ram[bank];
-    if (bank >= SPEC_MAX_BANKS) return spec_ram[bank & 7u];
+    if (bank >= spec_ram_banks()) return spec_ram[bank & 7u];
     if (staged_bank == (int)bank) return bank_stage;
     return spec_ram_ext[bank - SPEC_RAM_BANKS];
 }
 
 uint8_t *spec_bank_ptr(const unsigned bank) {
     if (bank < SPEC_RAM_BANKS) return spec_ram[bank];
-    if (bank >= SPEC_MAX_BANKS) return spec_ram[bank & 7u];   /* nothing there */
+    if (bank >= spec_ram_banks()) return spec_ram[bank & 7u];   /* nothing there */
     if (staged_bank == (int)bank) return bank_stage;
 
     /*
@@ -2237,6 +2241,7 @@ void spec_key_tick(void) {
 // ============================================================================
 
 void spec_init(void) {
+    arena_big_ram = spec_ram_banks() > SPEC_MAX_BANKS;
     ula_set_enabled(settings.beam != 0);
     contend_setup();
     /*
@@ -2842,6 +2847,17 @@ void spec_set_machine(const machine_t m) {
     if (spec_machine == MACHINE_TIMEX && m != MACHINE_TIMEX) dck_eject();
     /* ...and arriving at one with no cartridge fills the dock with 0xFF. */
     if (m == MACHINE_TIMEX && !dck_mounted()) dck_eject();
+    /*
+     * The ATM-Turbo 3's upper 3 MB are the +3 disk's, the ALF cartridge's
+     * and the tape capture's space on every other machine (arena.h): take
+     * the disk out and forget the cartridge before the RAM lands on them.
+     */
+    const bool big = (m == MACHINE_ATM3);
+    if (big && !arena_big_ram) {
+        fdc_eject();
+        alf_banks = 0;
+    }
+    arena_big_ram = big;
     spec_machine = m;
     pace_recompute();
     pulse_set_is_48k(spec_is_48k_class(m));

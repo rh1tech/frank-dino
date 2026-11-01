@@ -197,6 +197,31 @@ static const ui_option_t opt_wear[] = {
 
 static void wear_changed(void) { pulse_set_wear(settings.tape_wear); }
 
+static const ui_option_t opt_drive[] = {
+    { "Drive A (in memory)",  0, "A" },
+    { "Drive B (from card)",  1, "B" },
+    { "Drive C (from card)",  2, "C" },
+    { "Drive D (from card)",  3, "D" },
+};
+
+/* Drives B-D: the disk's name, and Enter takes it out. */
+static const char *drive_info(const unsigned d) {
+    if (!beta_drive_mounted(d)) return "empty";
+    const char *p = beta_drive_path(d), *b = strrchr(p, '/');
+    return b ? b + 1 : p;
+}
+static void drive_eject(const unsigned d) {
+    if (!beta_drive_mounted(d)) { say("Drive %c is empty.", 'A' + d); return; }
+    beta_eject_drive(d);
+    say("Drive %c out.", 'A' + d);
+}
+static const char *drive_b_info(void) { return drive_info(1); }
+static const char *drive_c_info(void) { return drive_info(2); }
+static const char *drive_d_info(void) { return drive_info(3); }
+static void drive_b_action(void) { drive_eject(1); }
+static void drive_c_action(void) { drive_eject(2); }
+static void drive_d_action(void) { drive_eject(3); }
+
 static const ui_option_t opt_covox[] = {
     { "Off",  COVOX_OFF, NULL },
     { "#FB",  COVOX_FB,  NULL },
@@ -1182,8 +1207,13 @@ static const ui_node_t storage_kids[] = {
     UI_ACTIONV_EN("  Eject disk",     disk_action, disk_info, betadisk_on),
     UI_ACTIONV_EN("  Save disk",      disk_save_action, disk_state, betadisk_on),
     UI_ACTIONV_EN("  Last FDC command", NULL,      fdc_info,  betadisk_on),
+    UI_RADIO_EN("  Next .trd into",  &settings.beta_target, opt_drive, NULL, betadisk_on),
+    UI_ACTIONV_EN("  Drive B",        drive_b_action, drive_b_info, betadisk_on),
+    UI_ACTIONV_EN("  Drive C",        drive_c_action, drive_c_info, betadisk_on),
+    UI_ACTIONV_EN("  Drive D",        drive_d_action, drive_d_info, betadisk_on),
     UI_ACTIONV_EN("+3 drive",        dsk_action, dsk_info, is_plus3),
     UI_ACTIONV_EN("  Save +3 disk",  dsk_save_action, dsk_state, is_plus3),
+    UI_BOOL_EN("  Speedlock trick", &settings.p3_speedlock, NULL, is_plus3),
     UI_ACTIONV_EN("Timex dock",     dck_action, dck_info, is_timex),
     UI_ACTIONV_EN("IF2 cartridge",  if2_action, NULL, if2_in),
     UI_ACTIONV_EN("  uPD765",        NULL,       upd_info, is_plus3),

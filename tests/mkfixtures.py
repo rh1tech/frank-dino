@@ -68,6 +68,33 @@ write("std.dsk", dsk(False))
 write("ext.dsk", dsk(True, unformatted={3}))
 
 # ---------------------------------------------------------------------
+# Copy protection, one track: C1 a plain sector, C2 a WEAK one recorded
+# as three copies (0x11, 0x22, 0x33), C3 a short one -- N=2 but only 256
+# bytes recorded, the rest reads as the filler -- and R=2 all 0xE5, the
+# sector Speedlock reads twice.
+# ---------------------------------------------------------------------
+def weak_dsk():
+    secs = [(0xC1, b"\x55" * 512), (0xC2, b"\x11" * 512 + b"\x22" * 512 + b"\x33" * 512),
+            (0xC3, b"\x44" * 256), (0x02, b"\xE5" * 512)]
+    hdr = bytearray(256)
+    hdr[0:12] = b"Track-Info\r\n"
+    hdr[0x14], hdr[0x15], hdr[0x16], hdr[0x17] = 2, len(secs), 0x4E, 0xE5
+    for i, (r, data) in enumerate(secs):
+        o = 0x18 + i * 8
+        hdr[o+0], hdr[o+1], hdr[o+2], hdr[o+3] = 0, 0, r, 2
+        hdr[o+6], hdr[o+7] = len(data) & 0xFF, len(data) >> 8
+    body = bytes(hdr) + b"".join(d for _, d in secs)
+    body += b"\0" * ((-len(body)) % 256)
+    disk = bytearray(256)
+    sig = b"EXTENDED CPC DSK File\r\nDisk-Info\r\n"
+    disk[0:len(sig)] = sig
+    disk[0x30], disk[0x31] = 1, 1
+    disk[0x34] = len(body) // 256
+    return bytes(disk) + body
+
+write("weak.dsk", weak_dsk())
+
+# ---------------------------------------------------------------------
 # A .zip holding three members: stored, deflated, and one in a format
 # the firmware does not read (which must be left out of the listing).
 # ---------------------------------------------------------------------

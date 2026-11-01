@@ -16,6 +16,7 @@
 #include <stdlib.h>
 
 #include "fdc.h"
+#include "settings.h"
 #include "spectrum.h"
 #include "tap.h"
 
@@ -191,6 +192,42 @@ int main(void) {
     CHECK(!fdc_port_out(DATA, 0), "no FDC writes on a 128K");
     spec_machine = MACHINE_PLUS3;
     CHECK(fdc_port_in(STATUS, &v), "and it is back on a +3");
+
+    /* ---------------------------------------------------------------- */
+    GROUP("copy protection");
+    {
+        extern settings_t settings;
+        uint32_t wl = load("tests/fixtures/weak.dsk");
+        CHECK(fdc_mount(wl, "tests/fixtures/weak.dsk", d, sizeof d), "mount: %s", d);
+        ready();
+        int n = read_sector(0, 0, 0xC1, buf, 512, NULL);
+        CHECK(n == 512 && buf[0] == 0x55 && buf[511] == 0x55, "a plain sector reads whole");
+        uint8_t first[3];
+        for (int k = 0; k < 3; k++) { n = read_sector(0, 0, 0xC2, buf, 512, NULL); first[k] = buf[100]; EQ(n, 512, "a weak sector reads one copy's worth"); }
+        CHECK(first[0] != first[1] && first[1] != first[2] && first[0] != first[2],
+              "and each read gets the next copy (%02X %02X %02X)", first[0], first[1], first[2]);
+        n = read_sector(0, 0, 0xC3, buf, 512, NULL);
+        CHECK(n == 512 && buf[0] == 0x44 && buf[255] == 0x44 && buf[256] == 0xE5 && buf[511] == 0xE5,
+              "a short sector reads its 256 bytes, then the filler");
+        memset(buf, 0x77, 512);
+        EQ(write_sector(0, 0, 0xC2, buf, 512), 512, "a weak sector takes a write");
+        int same = 1;
+        for (int k = 0; k < 3; k++) { read_sector(0, 0, 0xC2, buf, 512, NULL); if (buf[10] != 0x77) same = 0; }
+        CHECK(same, "and is weak no more: every copy has it");
+
+        uint8_t a[512], b[512], c2[512];
+        settings.p3_speedlock = 0;
+        read_sector(0, 0, 0x02, a, 512, NULL); read_sector(0, 0, 0x02, b, 512, NULL);
+        CHECK(!memcmp(a, b, 512), "Speedlock off: R2 reads the same twice");
+        settings.p3_speedlock = 1;
+        read_sector(0, 0, 0x02, a, 512, NULL);
+        read_sector(0, 0, 0x02, b, 512, NULL);
+        read_sector(0, 0, 0x02, c2, 512, NULL);
+        CHECK(memcmp(a, c2, 512) != 0, "Speedlock on: asked again, R2 comes back different");
+        CHECK(a[0] == 0xE5 && c2[0] == 0xE5, "but not in its first bytes");
+        settings.p3_speedlock = 0;
+        fdc_eject();
+    }
 
     return tap_done("fdc");
 }

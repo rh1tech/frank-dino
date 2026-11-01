@@ -41,7 +41,9 @@
  * tape and the .trd, and read with the CPU stopped inside an IN.
  */
 #define DSK_MAX_BYTES (1024 * 1024)
-extern uint8_t dsk_image[DSK_MAX_BYTES];
+#include "arena.h"
+/* In the PSRAM arena, beside the RAM a 4 MB machine borrows it for. */
+#define dsk_image (psram_arena + ARENA_DSK_OFF)
 
 /*
  * Take an image that is already in dsk_image.

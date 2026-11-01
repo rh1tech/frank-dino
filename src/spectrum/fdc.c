@@ -17,7 +17,6 @@
 #include "spectrum.h"
 #include "storage.h"
 
-uint8_t dsk_image[DSK_MAX_BYTES] __attribute__((section(".psram")));
 
 /* ── the disk image ──────────────────────────────────────────────────── */
 /*
@@ -163,6 +162,11 @@ static const uint8_t *track_hdr(const unsigned cyl, const unsigned head) {
  * itself uses 0xC1.. on a 180K disk and 0x41.. on a 720K one, so the R
  * in the sector list is the only thing that identifies it.
  */
+static uint8_t sec_copies;              // how many recorded copies the sector found has
+static uint32_t sec_unit;               // ...each of 128 << N bytes
+static uint32_t sec_rec;                // what one copy actually holds (short sectors)
+static uint8_t  sec_filler;             // what reads past it return: the track's filler
+
 static bool find_sector(const unsigned cyl, const unsigned head, const uint8_t r,
                         uint32_t *data_off, uint32_t *data_len,
                         uint8_t *st1, uint8_t *st2, uint8_t *nsize) {
@@ -184,8 +188,23 @@ static bool find_sector(const unsigned cyl, const unsigned head, const uint8_t r
         const uint32_t len = extended ? rd16(&si[6]) : (128u << (tn > 8 ? 8 : tn));
         if (si[2] == r) {
             if (at + len > image_len) return false;
+            /*
+             * A weak sector: an extended image stores a sector that
+             * reads differently every time as several recorded copies
+             * back to back, its length a whole multiple of 128 << N.
+             * Each read gets the next copy (start_data); taking the
+             * length as one sector ran the transfer over all of them.
+             * A sector shorter than its N reads the track's filler for
+             * the part that is not there. Both after pico-speccy's
+             * DskImage.cpp.
+             */
+            const uint32_t unit = 128u << (n > 7 ? 7 : n);
+            sec_unit   = unit;
+            sec_copies = (extended && len > unit && !(len % unit)) ? (uint8_t)(len / unit > 255 ? 255 : len / unit) : 1u;
+            sec_rec    = sec_copies > 1 ? unit : len;
+            sec_filler = t[0x17];
             *data_off = at;
-            *data_len = len;
+            *data_len = extended ? (sec_copies > 1 ? unit : (len < unit ? unit : len)) : len;
             *st1 = si[4];
             *st2 = si[5];
             *nsize = n;
@@ -273,6 +292,12 @@ static struct {
     /* The execution phase: a window into dsk_image, walked a byte at a time. */
     uint32_t data_off, data_len, data_at;
     bool     writing;
+    uint8_t  copies;            /* the sector's recorded copies (weak sectors) */
+    uint32_t unit, rec;         /* one copy's size, and what it really holds */
+    uint8_t  filler, sec_st1, sec_st2;
+    uint32_t weak_seq;          /* which copy the next read of a weak sector gets */
+    int      speedlock;         /* Fuse's Speedlock trick: 0 off, else its count */
+    uint32_t last_sector;
     uint8_t  fmt_n, fmt_count, fmt_at;   /* FORMAT TRACK collects C H R N */
 } f;
 
@@ -331,6 +356,33 @@ static void abort_nr(void) {
 /* ── executing a command ─────────────────────────────────────────────── */
 
 /*
+ * Speedlock, after Fuse by way of pico-speccy (Upd765.cpp). Its check
+ * reads C0 H0 R2 over and over and wants the reads to differ; the dumps
+ * hold one copy, so the difference is made: every 29th byte, once the
+ * same sector has been asked for twice running. Never on a sector that
+ * is already weak or flagged, so it cannot fight a dump that recorded
+ * the real thing. Off unless asked for.
+ */
+static void speedlock_arm(void) {
+    if (!settings.p3_speedlock) { f.speedlock = 0; return; }
+    const uint32_t u = (uint32_t)(f.param[2] & 1u) + ((uint32_t)f.param[1] << 1) + ((uint32_t)f.param[3] << 8);
+    if (f.param[3] == f.param[5] && u == 0x200u) {
+        if (u == f.last_sector) f.speedlock++;
+        else { f.speedlock = 0; f.last_sector = u; }
+    } else {
+        f.last_sector = 0;
+        f.speedlock = 0;
+    }
+}
+
+static uint8_t speedlock_byte(const uint8_t b, const uint32_t after) {
+    if (f.speedlock <= 0 || f.copies > 1 || f.sec_st1 || f.sec_st2) return b;
+    if (after < 64 && b != 0xE5) { f.speedlock = 2; return b; }         // W.E.C. Le Mans
+    if ((f.speedlock > 1 || after < 64) && after % 29u == 0) return (uint8_t)(b ^ after);
+    return b;
+}
+
+/*
  * Start a READ or WRITE. The sector is found by its recorded R, and the
  * window into the image is what the execution phase walks.
  */
@@ -360,6 +412,18 @@ static void start_data(const bool writing) {
      */
     if (f.param[4] == 0 && f.param[7] && f.param[7] < f.data_len)
         f.data_len = f.param[7];
+
+    f.copies = sec_copies;
+    f.unit   = sec_unit;
+    f.rec    = sec_rec;
+    f.filler = sec_filler;
+    f.sec_st1 = st1;
+    f.sec_st2 = st2;
+    if (f.copies > 1) {
+        f.data_off += (f.weak_seq % f.copies) * f.unit;     // the next copy, each read
+        if (!writing) f.weak_seq++;
+    }
+    if (!writing) speedlock_arm();
 
     f.data_at = 0;
     f.writing = writing;
@@ -567,8 +631,14 @@ bool __not_in_flash_func(fdc_port_out)(const uint16_t port, const uint8_t value)
             return true;
         }
 
-        if (!settings.disk_wrprot) {
-            dsk_image[f.data_off + f.data_at] = value;
+        if (!settings.disk_wrprot && (f.data_at < f.rec || !f.rec)) {
+            // Every copy of a weak sector takes it: written, it is weak no more.
+            if (f.copies > 1) {
+                const uint32_t base = f.data_off - ((f.weak_seq % f.copies) * f.unit);
+                for (unsigned k = 0; k < f.copies; k++) dsk_image[base + k * f.unit + f.data_at] = value;
+            } else {
+                dsk_image[f.data_off + f.data_at] = value;
+            }
             image_dirty = true;
         }
         if (++f.data_at >= f.data_len) result_rw();
@@ -605,7 +675,8 @@ bool __not_in_flash_func(fdc_port_in)(const uint16_t port, uint8_t *value) {
     if ((port & FDC_PORT_MASK) != FDC_DATA_PORT) return false;
 
     if (f.phase == PH_EXEC && !f.writing) {
-        *value = dsk_image[f.data_off + f.data_at];
+        const uint8_t b = (f.data_at < f.rec || !f.rec) ? dsk_image[f.data_off + f.data_at] : f.filler;
+        *value = speedlock_byte(b, f.data_at + 1u);
         if (++f.data_at >= f.data_len) result_rw();
         return true;
     }

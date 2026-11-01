@@ -79,6 +79,15 @@ bool beta_mount(uint32_t len, const char *path, char *detail, unsigned detail_le
 bool beta_dirty(void);
 bool beta_save(char *detail, unsigned detail_len);
 void beta_eject(void);
+
+/* Drives B-D (1-3): a .trd read from the card a cylinder at a time. */
+bool beta_mount_drive(unsigned drive, const char *path, char *detail, unsigned detail_len);
+void beta_eject_drive(unsigned drive);
+bool beta_drive_mounted(unsigned drive);
+const char *beta_drive_path(unsigned drive);
+
+/* Core 0's half: fetch a cylinder a drive asked for, write back what changed. */
+void beta_task(void);
 bool beta_mounted(void);
 
 /* How many tracks the mounted image turned out to have. */

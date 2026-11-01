@@ -91,7 +91,7 @@ typedef enum : uint8_t {
     MACHINE_ATM2,           /* ATM-Turbo 2, BIOS 1.06.02 */
     MACHINE_ATM2P,          /* ATM-Turbo 2+, BIOS 1.07.13 */
     MACHINE_ATM2X,          /* ATM-Turbo 2+, xBIOS 1.37 */
-    MACHINE_ATM3,           /* NedoPC ATM-Turbo 3 (1 MB of its 4 here), test ROM + xBIOS */
+    MACHINE_ATM3,           /* NedoPC ATM-Turbo 3: 4 MB, test ROM + xBIOS */
     MACHINE_ALF,            /* ALF TV Game: a 128K with banked cartridges */
     MACHINE_COUNT,
 } machine_t;
@@ -253,7 +253,9 @@ extern uint8_t spec_ram[SPEC_RAM_BANKS][SPEC_BANK_SIZE];
  * between; the shape here is simpler because only one window can hold a
  * high bank.
  */
-#define SPEC_MAX_BANKS 64                   /* 1 MB, which is the Profi */
+#define SPEC_MAX_BANKS 64
+#define SPEC_MAX_BANKS_BIG 256   /* the ATM-Turbo 3: 4 MB, the upper 3 in the PSRAM arena */
+unsigned spec_ram_banks(void);                   /* 1 MB, which is the Profi */
 uint8_t *spec_bank_ptr(unsigned bank);
 
 /*

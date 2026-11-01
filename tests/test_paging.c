@@ -493,6 +493,23 @@ int main(void) {
         out(0xDFFD, 0x00);
     }
 
+    GROUP("ATM-Turbo 3, 4 MB");
+    {
+        boot(MACHINE_ATM3);
+        EQ(spec_ram_banks(), 256, "the ATM-Turbo 3 has 256 banks");
+        out(0x0177, 0x03);                            // the manager on; /CPM down: shadow ports open
+        out(0xFFF7, 0x40 | (~0u & 0x3F));             // window 3: RAM, page from the register
+        out(0xF7F7, (uint8_t)~255u);                  // #x7F7 (A11=0): the 8-bit page, 255
+        z80_wpage[6][5] = 0xA5;
+        EQ(z80_rpage[6][5], 0xA5, "page 255 is writable");
+        out(0xF7F7, (uint8_t)~63u);                   // page 63 -- what 255 used to alias to
+        CHECK(z80_rpage[6][5] != 0xA5, "page 63 is not page 255");
+        out(0xF7F7, (uint8_t)~255u);
+        EQ(z80_rpage[6][5], 0xA5, "and page 255 kept its byte");
+        boot(MACHINE_ATM2P);
+        EQ(spec_ram_banks(), 64, "an ATM-Turbo 2+ is back to 64");
+    }
+
     GROUP("ATM-Turbo");
     {
         extern const uint8_t atm_rom2_107[];

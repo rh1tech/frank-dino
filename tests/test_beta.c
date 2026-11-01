@@ -179,5 +179,55 @@ int main(void) {
     CHECK(beta_take_boot_request(), "a boot request is taken once");
     CHECK(!beta_take_boot_request(), "and only once");
 
+    /* ---------------------------------------------------------------- */
+    GROUP("drives B-D, from the card");
+    {
+        // Four cylinders, every byte saying where it is: cylinder*16 + side*8 + sector.
+        enum { CYL = 2 * 16 * 256 };
+        static uint8_t img[4 * CYL];
+        for (int c = 0; c < 4; c++)
+            for (int sd = 0; sd < 2; sd++)
+                for (int sec = 0; sec < 16; sec++)
+                    memset(&img[c * CYL + (sd * 16 + sec) * 256], c * 16 + sd * 8 + sec, 256);
+        FILE *f = fopen("tests/out/driveb.trd", "wb");
+        fwrite(img, 1, sizeof img, f); fclose(f);
+
+        beta_set_rom_paged(true);
+        out(SYS, 0x04 | 0x10 | 0x02);                 // drive C, side 0: nothing in it
+        out(CMD, 0x00);                               // restore
+        CHECK(in(CMD) & 0x80, "an empty drive C is not ready");
+
+        CHECK(beta_mount_drive(1, "/tests/out/driveb.trd", d, sizeof d), "a .trd goes into drive B (%s)", d);
+        out(SYS, 0x04 | 0x10 | 0x01);                 // drive B, side 0
+        out(TRK, 2); out(SEC, 5);
+        out(CMD, 0x80);                               // read sector: cylinder 2 is not in yet
+        CHECK(in(CMD) & ST_BUSY, "held, BUSY, while core 0 fetches the cylinder");
+        CHECK(!(in(CMD) & ST_DRQ), "and no data offered yet");
+        beta_task();                                  // core 0
+        int n = 0, good = 0;
+        while ((in(CMD) & ST_DRQ) && n < 256) { if (in(DAT) == 2 * 16 + 0 * 8 + 4) good++; n++; }
+        EQ(n, 256, "then the whole sector comes");
+        EQ(good, 256, "and it is cylinder 2, side 0, sector 5");
+
+        out(SYS, 0x04 | 0x00 | 0x01);                 // side 1
+        out(SEC, 1);
+        out(CMD, 0xA0);                               // write sector 1, side 1 -- same cylinder, no wait
+        n = 0;
+        while ((in(CMD) & ST_DRQ) && n < 256) { out(DAT, 0x5A); n++; }
+        EQ(n, 256, "a write goes straight into the cached cylinder");
+        out(TRK, 3); out(SEC, 1);
+        out(CMD, 0x80);                               // another cylinder: the change goes back first
+        beta_task();
+        f = fopen("tests/out/driveb.trd", "rb");
+        fseek(f, 2 * CYL + (16 + 0) * 256, SEEK_SET);
+        uint8_t back[4] = {0};
+        fread(back, 1, 4, f); fclose(f);
+        EQ(back[0], 0x5A, "and is on the card when the head moves on");
+        while (in(CMD) & ST_DRQ) in(DAT);
+        beta_eject_drive(1);
+        CHECK(!beta_drive_mounted(1), "drive B ejects");
+        beta_set_rom_paged(false);
+    }
+
     return tap_done("beta");
 }

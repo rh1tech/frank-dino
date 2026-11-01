@@ -72,7 +72,9 @@ static uint32_t   last_tick_us;
  * the raw pin into the PSRAM -- both for tools/dino.py. */
 volatile uint8_t  tapein_debounce = 3;
 #define TAPEIN_CAP_BITS (8u * 1024u * 1024u)
-uint8_t           tapein_cap[TAPEIN_CAP_BITS / 8u] __attribute__((section(".psram")));
+#include "arena.h"
+/* In the PSRAM arena: on a 4 MB machine the space is RAM and there is no capture. */
+#define tapein_cap (psram_arena + ARENA_CAP_OFF)
 volatile uint8_t  tapein_cap_on;
 volatile uint32_t tapein_cap_bits;
 
@@ -117,7 +119,7 @@ static bool __not_in_flash_func(tapein_tick)(repeating_timer_t *rt) {
     const uint8_t v = raw;      // the statistics below are about the line itself
 
     /* The raw line, for tools: one bit a sample while armed. */
-    if (tapein_cap_on && tapein_cap_bits < TAPEIN_CAP_BITS) {
+    if (tapein_cap_on && !arena_big_ram && tapein_cap_bits < TAPEIN_CAP_BITS) {
         const uint32_t n = tapein_cap_bits;
         uint8_t *const c = &tapein_cap[n >> 3];
         *c = (uint8_t)(((n & 7u) ? *c : 0u) | (raw << (n & 7u)));

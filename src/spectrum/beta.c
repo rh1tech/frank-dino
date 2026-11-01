@@ -10,6 +10,7 @@
 
 #include "settings.h"
 #include "storage.h"
+#include "ff.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -48,7 +49,47 @@ static bool     mounted;
 static bool     boot_pending;
 static bool     rom_paged;
 
+/*
+ * Drives B, C and D.
+ *
+ * There is room for one whole disk in the PSRAM and not for four, so the
+ * other three are read from the card a cylinder at a time -- both sides
+ * of one track, 8 KB -- into a cache each. A read or write that wants a
+ * cylinder not in its drive's cache is held: the controller says BUSY,
+ * core 0 (beta_task) fetches the cylinder, and the command runs when it
+ * is there. That is milliseconds, and TR-DOS waits revolutions for a
+ * controller. Writes go into the cache and back to the card when the
+ * head moves on or the drive has been quiet a moment. .trd only: the
+ * other formats are converted, and a conversion has nowhere to live but
+ * drive A's image.
+ */
+#define CYL_BYTES (TRD_TRACK * TRD_SIDES)
+
+static struct {
+    bool     mounted;
+    char     path[STORAGE_MAX_PATH];
+    uint32_t len;
+    unsigned tracks;
+} bd[3];
+
+static uint8_t           cyl_cache[3][CYL_BYTES] __attribute__((section(".psram")));
+static volatile int16_t  cyl_of[3] = { -1, -1, -1 };    // the cylinder each cache holds
+static volatile bool     cyl_dirty[3];
+static volatile uint64_t cyl_wrote_at[3];
+static volatile int8_t   req_drive = -1;                // core 1 asks core 0 for a cylinder
+static volatile uint8_t  req_cyl;
+static uint8_t           deferred_cmd;                  // the command waiting for it
+static bool              deferred;
+
+static inline unsigned cur_drive(void);
+
+static bool drive_mounted(const unsigned d) { return d ? bd[d - 1].mounted : mounted; }
+
 bool     beta_mounted(void)    { return mounted; }
+bool     beta_drive_mounted(const unsigned d) { return d < 4 && drive_mounted(d); }
+const char *beta_drive_path(const unsigned d) {
+    return d == 0 ? image_path : d < 4 ? bd[d - 1].path : "";
+}
 unsigned beta_tracks(void)     { return tracks; }
 bool     beta_rom_paged(void)  { return rom_paged; }
 void     beta_set_rom_paged(const bool on) { rom_paged = on; }
@@ -129,7 +170,7 @@ static struct {
  * like flaky memory and is not.
  */
 static uint8_t index_pulse(void) {
-    if (!mounted || !wd.type1 || (wd.status & ST_BUSY) || wd.left) return 0;
+    if (!drive_mounted(cur_drive()) || !wd.type1 || (wd.status & ST_BUSY) || wd.left) return 0;
     const uint32_t us = (uint32_t)(time_us_64() % 200000u);     // 300 rpm
     return us < 4000u ? ST_INDEX : 0;
 }
@@ -138,6 +179,7 @@ void beta_reset(void) {
     memset(&wd, 0, sizeof wd);
     wd.type1  = true;
     wd.status = ST_TRACK0 | ST_HEADLOAD;
+    deferred = false;
     if (!mounted) wd.status |= ST_NOTREADY;
 }
 
@@ -178,6 +220,66 @@ bool beta_save(char *detail, const unsigned detail_len) {
     image_dirty = false;
     snprintf(detail, detail_len, "Saved %s", image_path);
     return true;
+}
+
+bool beta_mount_drive(const unsigned d, const char *path, char *detail, const unsigned detail_len) {
+    if (d < 1 || d > 3) return false;
+    FILINFO fi;
+    if (f_stat(path, &fi) != FR_OK || fi.fsize < CYL_BYTES || fi.fsize % CYL_BYTES) {
+        snprintf(detail, detail_len, "Drives B-D take a .trd");
+        return false;
+    }
+    beta_eject_drive(d);
+    snprintf(bd[d - 1].path, sizeof bd[d - 1].path, "%s", path);
+    bd[d - 1].len = (uint32_t)fi.fsize;
+    bd[d - 1].tracks = (unsigned)(fi.fsize / CYL_BYTES);
+    cyl_of[d - 1] = -1;
+    bd[d - 1].mounted = true;
+    snprintf(detail, detail_len, "drive %c: %u tracks", 'A' + d, bd[d - 1].tracks);
+    return true;
+}
+
+/* A cylinder of drive d back to the card, if it has changed. Core 0. */
+static void cyl_flush(const unsigned i) {
+    if (!cyl_dirty[i] || cyl_of[i] < 0) return;
+    cyl_dirty[i] = false;
+    FIL f;
+    if (f_open(&f, bd[i].path, FA_WRITE | FA_OPEN_EXISTING) != FR_OK) return;
+    UINT put = 0;
+    if (f_lseek(&f, (FSIZE_t)cyl_of[i] * CYL_BYTES) == FR_OK)
+        f_write(&f, cyl_cache[i], CYL_BYTES, &put);
+    f_close(&f);
+}
+
+void beta_eject_drive(const unsigned d) {
+    if (d == 0) { beta_eject(); return; }
+    if (d > 3) return;
+    cyl_flush(d - 1);
+    bd[d - 1].mounted = false;
+    bd[d - 1].path[0] = 0;
+    cyl_of[d - 1] = -1;
+}
+
+void beta_task(void) {
+    const int8_t d = req_drive;
+    if (d >= 1 && d <= 3) {
+        const unsigned i = (unsigned)d - 1u;
+        cyl_flush(i);
+        memset(cyl_cache[i], 0xFF, CYL_BYTES);
+        FIL f;
+        if (f_open(&f, bd[i].path, FA_READ) == FR_OK) {
+            UINT got = 0;
+            if (f_lseek(&f, (FSIZE_t)req_cyl * CYL_BYTES) == FR_OK)
+                f_read(&f, cyl_cache[i], CYL_BYTES, &got);
+            f_close(&f);
+        }
+        cyl_of[i] = req_cyl;
+        req_drive = -1;
+        return;
+    }
+    // A drive that has been written to and then left alone goes back to the card.
+    for (unsigned i = 0; i < 3; i++)
+        if (cyl_dirty[i] && !wd.left && time_us_64() - cyl_wrote_at[i] > 1500000u) cyl_flush(i);
 }
 
 void beta_eject(void) {
@@ -246,6 +348,12 @@ bool beta_autorun(char *out, const unsigned len) {
  * Sectors are numbered from one on a TR-DOS disk and from zero in the
  * file, which is the single most common off-by-one in this whole format.
  */
+static inline unsigned cur_drive(void) { return wd.sysreg & 3u; }
+
+/* Where a transfer reads and writes: drive A's image, or a drive's cylinder cache. */
+static uint8_t *xfer_base;
+static uint32_t xfer_len;
+
 static uint32_t sector_offset(const uint8_t track, const uint8_t side, const uint8_t sector) {
     if (sector < 1 || sector > TRD_SPT) return UINT32_MAX;
     const uint32_t lt = (uint32_t)track * TRD_SIDES + side;
@@ -261,6 +369,7 @@ static void end_transfer(void) {
 }
 
 static void start_transfer(const uint32_t addr, const uint32_t len, const bool writing) {
+    // (xfer_base and xfer_len are set by the caller, for the drive in use)
     wd.addr    = addr;
     wd.left    = len;
     wd.writing = writing;
@@ -275,7 +384,7 @@ static void start_transfer(const uint32_t addr, const uint32_t len, const bool w
 static void type1_done(void) {
     wd.type1  = true;
     wd.status = (uint8_t)(ST_HEADLOAD | (wd.track == 0 ? ST_TRACK0 : 0) |
-                          (mounted ? 0 : ST_NOTREADY));
+                          (drive_mounted(cur_drive()) ? 0 : ST_NOTREADY));
     wd.intrq = true;
     wd.drq   = false;
 }
@@ -298,6 +407,58 @@ void beta_stats(char *out, const unsigned len) {
              last_cmd, last_port, last_trk, last_sec, last_side,
              (unsigned long)n_read, (unsigned long)n_write,
              (unsigned long)n_notfound);
+}
+
+/*
+ * Point the transfer at the sector the registers name, on the selected
+ * drive: false when it is a B-D cylinder not yet in its cache, after
+ * asking core 0 for it.
+ */
+static uint32_t locate_off;
+
+static bool locate(void) {
+    const unsigned d = cur_drive();
+    if (d == 0) {
+        xfer_base  = trd_image;
+        xfer_len   = image_len;
+        locate_off = sector_offset(wd.track, wd.side, wd.sector);
+        return true;
+    }
+    const unsigned i = d - 1u;
+    if (!bd[i].mounted || wd.track >= bd[i].tracks) {
+        xfer_base = cyl_cache[i]; xfer_len = 0; locate_off = UINT32_MAX;
+        return true;                                // nothing to wait for: not found
+    }
+    if (cyl_of[i] != wd.track) {
+        req_cyl   = wd.track;
+        req_drive = (int8_t)d;
+        return false;
+    }
+    xfer_base  = cyl_cache[i];
+    xfer_len   = CYL_BYTES;
+    locate_off = (wd.sector < 1 || wd.sector > TRD_SPT) ? UINT32_MAX
+               : ((uint32_t)wd.side * TRD_SPT + (wd.sector - 1u)) * TRD_SECTOR;
+    return true;
+}
+
+/* A read or write waiting for its cylinder: BUSY, no DRQ, until it comes. */
+static void hold(const uint8_t cmd) {
+    deferred_cmd = cmd;
+    deferred = true;
+    wd.type1  = false;
+    wd.status = ST_BUSY;
+    wd.drq    = false;
+    wd.intrq  = false;
+}
+
+static void command(const uint8_t cmd);
+
+/* The held command, once core 0 has brought its cylinder in. */
+static void run_deferred(void) {
+    if (deferred && req_drive < 0) {
+        deferred = false;
+        command(deferred_cmd);
+    }
 }
 
 static void command(const uint8_t cmd) {
@@ -334,10 +495,11 @@ static void command(const uint8_t cmd) {
             return;
 
         case 0x8: case 0x9: {                       // Read sector
-            const uint32_t off = sector_offset(wd.track, wd.side, wd.sector);
-            if (!mounted || off == UINT32_MAX) {
+            if (!locate()) { hold(cmd); return; }
+            const uint32_t off = locate_off;
+            if (!drive_mounted(cur_drive()) || off == UINT32_MAX) {
                 wd.type1  = false;
-                wd.status = (uint8_t)(ST_NOTFOUND | (mounted ? 0 : ST_NOTREADY));
+                wd.status = (uint8_t)(ST_NOTFOUND | (drive_mounted(cur_drive()) ? 0 : ST_NOTREADY));
                 wd.intrq  = true;
                 n_notfound++;
                 return;
@@ -351,10 +513,11 @@ static void command(const uint8_t cmd) {
         }
 
         case 0xA: case 0xB: {                       // Write sector
-            const uint32_t off = sector_offset(wd.track, wd.side, wd.sector);
-            if (!mounted || off == UINT32_MAX) {
+            if (!locate()) { hold(cmd); return; }
+            const uint32_t off = locate_off;
+            if (!drive_mounted(cur_drive()) || off == UINT32_MAX) {
                 wd.type1  = false;
-                wd.status = (uint8_t)(ST_NOTFOUND | (mounted ? 0 : ST_NOTREADY));
+                wd.status = (uint8_t)(ST_NOTFOUND | (drive_mounted(cur_drive()) ? 0 : ST_NOTREADY));
                 wd.intrq  = true;
                 n_notfound++;
                 return;
@@ -384,6 +547,7 @@ static void command(const uint8_t cmd) {
             return;
 
         case 0xD:                                   // Force interrupt
+            deferred = false;
             end_transfer();
             type1_done();
             return;
@@ -452,10 +616,12 @@ bool __not_in_flash_func(beta_port_out)(const uint16_t port, const uint8_t value
         case 3:                                                 // #7F, data
             wd.data = value;
             if (wd.left && wd.writing) {
-                if (!wd.from_idfield && wd.addr < image_len
+                if (!wd.from_idfield && wd.addr < xfer_len
                     && !settings.disk_wrprot) {
-                    trd_image[wd.addr] = value;
-                    image_dirty = true;
+                    xfer_base[wd.addr] = value;
+                    const unsigned d = cur_drive();
+                    if (d) { cyl_dirty[d - 1] = true; cyl_wrote_at[d - 1] = time_us_64(); }
+                    else   image_dirty = true;
                 }
                 wd.addr++;
                 if (--wd.left == 0) end_transfer();
@@ -485,6 +651,7 @@ bool __not_in_flash_func(beta_port_in)(const uint16_t port, uint8_t *value) {
         case 0:                                                 // #1F, status
             // Reading the status is what clears the interrupt request,
             // and TR-DOS's wait loops depend on that.
+            run_deferred();
             wd.intrq = false;
             *value = (uint8_t)(wd.status | index_pulse());
             break;
@@ -495,7 +662,7 @@ bool __not_in_flash_func(beta_port_in)(const uint16_t port, uint8_t *value) {
         case 3:                                                 // #7F, data
             if (wd.left && !wd.writing) {
                 wd.data = wd.from_idfield ? wd.idfield[sizeof wd.idfield - wd.left]
-                        : wd.addr < image_len ? trd_image[wd.addr] : 0xFF;
+                        : wd.addr < xfer_len ? xfer_base[wd.addr] : 0xFF;
                 wd.addr++;
                 if (--wd.left == 0) end_transfer();
             }
@@ -506,6 +673,7 @@ bool __not_in_flash_func(beta_port_in)(const uint16_t port, uint8_t *value) {
             // Only two bits, and they are the two that matter: TR-DOS
             // polls this rather than the status register in its tight
             // transfer loops.
+            run_deferred();
             *value = (uint8_t)((wd.intrq ? 0x80 : 0) | (wd.drq ? 0x40 : 0));
             break;
 

@@ -329,8 +329,52 @@ def t_tape(b, r):
         b.setting('tape_realtime', was)
 
 
+def t_driveb(b, r):
+    """
+    A second Beta drive, read from the card: TR-DOS lists drive B and
+    boots its disk -- every sector of it streamed a cylinder at a time.
+    """
+    from dino import pick_machine
+    def cyl_b():
+        v = b.u16('beta.c:cyl_of')
+        return v - 0x10000 if v & 0x8000 else v
+    b.setting('beta_target', 0)
+    b.load('/ZX/TRD/MUSIC/bestbulba1.trd')      # drive A, so the pick below is a cold reset
+    pick_machine(b, 4, 3)                       # Pentagon
+    b.setting('beta_target', 1)
+    try:
+        ok, detail = b.load('/ZX/TRD/MUSIC/bestbulba2.trd')
+        r.check(ok and 'drive B' in detail, f'mounted into drive B ({detail})')
+    finally:
+        b.setting('beta_target', 0)
+    b.key('DOWN', 4, gap=0.4)
+    b.key('ENTER', gap=3)                       # TR-DOS
+    b.type('*"b"', gap=0.3)
+    b.key('ENTER', gap=2)
+    b.type('k', gap=0.3)                        # LIST
+    b.key('ENTER', gap=0.05)
+    seen, t0 = [], time.time()                  # TR-DOS reads cylinder 0, then looks at 7
+    while time.time() - t0 < 4:
+        c = cyl_b()
+        if not seen or seen[-1] != c:
+            seen.append(c)
+    r.check(0 in seen, f'the catalogue came from drive B, cylinder 0 (cylinders {seen})', b, 'driveb_list.png')
+    b.type('n', gap=1)
+    b.key('BS', 8, gap=0.3)
+    b.type('r', gap=0.4)                        # RUN: the disk's boot
+    b.key('ENTER', gap=0.05)
+    seen, t0 = [], time.time()
+    while time.time() - t0 < 12:
+        c = cyl_b()
+        if not seen or seen[-1] != c:
+            seen.append(c)
+    r.check(len(seen) > 2, f'and the boot streamed cylinder after cylinder ({seen})', b, 'driveb_boot.png')
+    r.check(b.alive(), 'the machine runs on')
+
+
 TESTS = {'boot': t_boot, 'steady': t_steady, 'volume': t_volume, 'pause': t_pause, 'menu': t_menu,
-         'machines': t_machines, 'snapshot': t_snapshot, 'snapshot128': t_snapshot128, 'sound': t_sound, 'tape': t_tape}
+         'machines': t_machines, 'snapshot': t_snapshot, 'snapshot128': t_snapshot128, 'sound': t_sound, 'tape': t_tape,
+         'driveb': t_driveb}
 
 
 def main():

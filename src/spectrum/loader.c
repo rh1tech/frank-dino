@@ -791,6 +791,11 @@ static bool load_dsk(FIL *f, const uint32_t size, const char *path,
 
 static bool load_trd(FIL *f, const uint32_t size, const char *path,
                      char *detail, const unsigned detail_len) {
+    /* Drives B-D are read from the card as they go: mounting one is all. */
+    if (settings.beta_target && path) {
+        if (!settings.betadisk) { settings.betadisk = 1; spec_set_machine(spec_machine); }
+        return beta_mount_drive(settings.beta_target, path, detail, detail_len);
+    }
     if (size > TRD_MAX_BYTES)
         FAIL("that .trd is %luK; the limit is %uK",
              (unsigned long)(size / 1024), TRD_MAX_BYTES / 1024);

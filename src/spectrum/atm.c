@@ -92,7 +92,7 @@ static void map_rom(const unsigned w, const unsigned page) {
 }
 
 static void map_ram(const unsigned w, const unsigned page) {
-    uint8_t *p = spec_ram_page(page & (SPEC_MAX_BANKS - 1u));
+    uint8_t *p = spec_ram_page(page & (spec_ram_banks() - 1u));
     z80_map_page(w, p, p);
 }
 
