@@ -184,7 +184,7 @@ typedef struct {
      * look broken with no way to guess why.
      */
     uint8_t timex;
-    uint8_t ui_theme;       // ui_theme_t: which of the three menu palettes
+    uint8_t ui_theme;       // no longer chosen: the menus have one look; kept so old files load
 
     // --- input ---
     uint8_t joystick;       // joystick_t

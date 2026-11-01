@@ -1,11 +1,9 @@
 /*
  * The UI rasteriser, drawn into the real 320x240 surface.
  *
- * The frames around panels are rounded, and they stopped being rounded
- * once already -- a band fill painted over the corners after the border
- * had been drawn, and nothing but a person looking at the screen
- * noticed. So the corners are asserted here, explicitly, on every
- * rounded frame this draws.
+ * The frames are square, as the Spectrum's boxes are -- and the corners
+ * are asserted, because a band fill painted over them after the border
+ * once went unnoticed by everything but a person looking at the screen.
  *
  * The test also writes out what it drew, so a change of appearance can
  * be looked at rather than argued about: tests/out/ as PPM.
@@ -22,9 +20,11 @@
 #include "tap.h"
 
 /* ---- writing out what was drawn ------------------------------------ */
-static const uint32_t PAL[16] = {
-    0x000000, 0x101018, 0x1C1C28, 0x2A2A3A, 0x3A3A50, 0x505070, 0x7070A0, 0x9090C0,
-    0xFFFFFF, 0xC8C8D8, 0x9090A0, 0x606070, 0x4CC2FF, 0x36D399, 0xFFB454, 0xFF5C5C,
+/* vga.c's kUiPalette, in role order: the 128K menu's colours. */
+static const uint32_t PAL[32] = {
+    0xAAAAAA, 0xFFFFFF, 0xFFFFFF, 0x000000, 0x000000, 0x555555, 0x000000, 0x55FFFF,
+    0xAAAAAA, 0x0000AA, 0xAAAAAA, 0x555555, 0xAA0000, 0xAA5500, 0x00AAAA, 0xAAAAAA,
+    0xFF0000, 0xFFFF00, 0x00FF00, 0x00FFFF, 0x000000, 0xFFFFFF, 0x00AA00,
 };
 
 static void write_surface(const char *name) {
@@ -34,7 +34,7 @@ static void write_surface(const char *name) {
     if (!f) return;
     fprintf(f, "P6\n%d %d\n255\n", UI_SURF_W, UI_SURF_H);
     for (int i = 0; i < UI_SURF_W * UI_SURF_H; i++) {
-        const uint32_t c = PAL[vga_ui_fb[i] & 15];
+        const uint32_t c = PAL[vga_ui_fb[i] & 31];
         const uint8_t px[3] = { (uint8_t)(c >> 16), (uint8_t)(c >> 8), (uint8_t)c };
         fwrite(px, 1, 3, f);
     }
@@ -43,18 +43,22 @@ static void write_surface(const char *name) {
 
 static uint8_t at(const int x, const int y) { return vga_ui_fb[y * UI_SURF_W + x]; }
 
-/*
- * A rounded frame must leave its four corner pixels alone.
- *
- * `bg` is what was there before the frame was drawn; if the corner
- * still holds it, the corner was rounded off.
- */
+/* A rounded frame leaves its four corner pixels as they were: `bg`. */
 static void check_corners(const char *what, const int x, const int y,
                           const int w, const int h, const uint8_t bg) {
     CHECK(at(x, y) == bg,                 "%s: top-left corner is rounded", what);
     CHECK(at(x + w - 1, y) == bg,         "%s: top-right corner is rounded", what);
     CHECK(at(x, y + h - 1) == bg,         "%s: bottom-left corner is rounded", what);
     CHECK(at(x + w - 1, y + h - 1) == bg, "%s: bottom-right corner is rounded", what);
+}
+
+/* A square frame has its border colour in all four corners. */
+static void check_square(const char *what, const int x, const int y,
+                          const int w, const int h, const uint8_t border) {
+    CHECK(at(x, y) == border,                 "%s: top-left corner is square", what);
+    CHECK(at(x + w - 1, y) == border,         "%s: top-right corner is square", what);
+    CHECK(at(x, y + h - 1) == border,         "%s: bottom-left corner is square", what);
+    CHECK(at(x + w - 1, y + h - 1) == border, "%s: bottom-right corner is square", what);
 }
 
 int main(void) {
@@ -112,7 +116,7 @@ int main(void) {
     memset(vga_ui_fb, C_BG, sizeof vga_ui_fb);
     ui_round_rect(20, 20, 120, 60, 4, C_SEP, C_PANEL);
     EQ(at(20, 20), C_SEP, "with rounding off the corner is drawn");
-    ui_rounded = true;
+    ui_rounded = false;     /* the default: the Spectrum's boxes are square */
 
     /* ---------------------------------------------------------------- */
     GROUP("text");
@@ -171,9 +175,9 @@ int main(void) {
         ui_radio(280, y, i == 2, C_TEXT, C_ACCENT);
     }
     ui_chevron(UI_SURF_W - 20, 34, C_TEXT_DIM);
-    check_corners("full screen frame", 4, 4, UI_SURF_W - 8, UI_SURF_H - 8, C_BG);
+    check_square("full screen frame", 4, 4, UI_SURF_W - 8, UI_SURF_H - 8, C_SEP);
     unsigned oob = 0;
-    for (int i = 0; i < UI_SURF_W * UI_SURF_H; i++) if (vga_ui_fb[i] > 15) oob++;
+    for (int i = 0; i < UI_SURF_W * UI_SURF_H; i++) if (vga_ui_fb[i] >= C_COUNT) oob++;
     EQ(oob, 0, "every pixel is a palette index");
     write_surface("menu");
 

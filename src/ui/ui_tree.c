@@ -206,12 +206,6 @@ static const ui_option_t opt_kport[] = {
     { "#5F", 3, NULL },
 };
 
-static const ui_option_t opt_uitheme[] = {
-    { "Black panels",     UI_THEME_BLACK, "Black" },
-    { "Navy (pico-spec)", UI_THEME_NAVY,  "Navy"  },
-    { "Slate, dithered",  UI_THEME_SLATE, "Slate" },
-};
-
 /* ── what the rows do ────────────────────────────────────────────────── */
 
 static void say(const char *fmt, ...) __attribute__((format(printf, 1, 2)));
@@ -599,7 +593,6 @@ static void info_page(void) {
         UI_MK_TEXT "ULA+ palette   : %s\n"
         UI_MK_TEXT "Gigascreen     : %s\n"
         UI_MK_TEXT "Timex video    : %s\n"
-        UI_MK_TEXT "Menu colours   : " UI_MK_WHITE "%s\n"
         "\n"
         UI_MK_HEAD "--- Audio ---\n"
         UI_MK_TEXT "DAC            : " UI_MK_WHITE "PWM, L on GP46, R on GP44\n"
@@ -641,7 +634,6 @@ static void info_page(void) {
                         : spec_timex_mode == 1 ? UI_MK_OK "second screen"
                                                : UI_MK_OK "on, standard mode")
                        : UI_MK_DIM "Off",
-        opt_uitheme[settings.ui_theme < UI_THEME_COUNT ? settings.ui_theme : 0].label,
         opt_output[settings.output < OUTPUT_COUNT ? settings.output : 0].label,
         opt_ay_stereo[settings.ay_stereo < AY_STEREO_COUNT ? settings.ay_stereo : 0].label,
         yn[settings.turbosound ? 1 : 0],
@@ -955,17 +947,6 @@ static const ui_node_t audio_kids[] = {
 };
 
 /*
- * The menu's own colours, which the menu is standing in front of you
- * while you change -- so the table is rebuilt and the whole surface
- * repainted before this returns, and the choice shows itself.
- */
-static void uitheme_changed(void) {
-    vga_build_ui_palette();
-    ui_draw_frame_once();
-    ui_mark_dirty(D_ALL);
-}
-
-/*
  * Turning ULA+ off has to put the palette back: the guest may have left
  * it enabled, and the attribute byte means something different while it
  * is. The machine is paused here, so clearing the flag is enough -- the
@@ -1011,7 +992,6 @@ static const ui_node_t video_kids[] = {
     UI_BOOL ("ULA+ (64 colours)", &settings.ulaplus, ulaplus_changed),
     UI_RADIO("Gigascreen",   &settings.gigascreen, opt_giga, gigascreen_changed),
     UI_BOOL ("Timex video (#FF)", &settings.timex, timex_changed),
-    UI_RADIO("Menu colours", &settings.ui_theme,  opt_uitheme, uitheme_changed),
 };
 
 static const ui_node_t input_kids[] = {

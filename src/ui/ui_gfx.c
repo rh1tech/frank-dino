@@ -13,7 +13,7 @@
 
 #include <string.h>
 
-bool ui_rounded = true;
+bool ui_rounded = false;     /* the Spectrum's boxes are square */
 
 /* ── pixels ──────────────────────────────────────────────────────────── */
 
@@ -60,7 +60,7 @@ static void glyph(const int x, const int y, const char ch, const ui_color_t ink)
         const uint8_t bits = g[r];
         if (!bits) continue;
         for (int b = 0; b < UI_FONT_W; b++) {
-            if (!(bits & (0x20 >> b))) continue;
+            if (!(bits & (0x40 >> b))) continue;
             ui_px(x + b, y + r, ink);
         }
     }
@@ -189,16 +189,37 @@ void ui_round_rect_border(const int x, const int y, const int w, const int h, in
     }
 }
 
-/* ZX rainbow: four slanted bands, 11x9 logical px. */
-void ui_rainbow(const int x, const int y) {
-    for (int r = 0; r < 9; r++) {
-        for (int c = 0; c < 11; c++) {
-            const int k = c + (8 - r) / 3;
-            const ui_color_t col = (k < 3) ? C_ACCENT : (k < 6) ? C_ICON_Y
-                                 : (k < 9) ? C_ICON_R : C_ICON_C;
-            ui_fill(x + c, y + r, 1, 1, col);
-        }
-    }
+/*
+ * The 128K menu's flash: red, yellow, green and cyan, eight pixels each,
+ * slanting up to the right over the height of the bar -- as wide as the
+ * four stripes plus the slant.
+ */
+#define FLASH_STRIPE 8
+
+void ui_rainbow_h(const int x, const int y, const int h) {
+    static const ui_color_t c[4] = { C_FLASH_R, C_FLASH_Y, C_FLASH_G, C_FLASH_C };
+    for (int r = 0; r < h; r++)
+        for (int k = 0; k < 4; k++)
+            ui_hline(x + (h - 1 - r) + k * FLASH_STRIPE, y + r, FLASH_STRIPE, c[k]);
 }
 
-int ui_rainbow_w(void) { return 11; }
+int ui_rainbow_w_h(const int h) { return 4 * FLASH_STRIPE + h - 1; }
+
+void ui_rainbow(const int x, const int y) { ui_rainbow_h(x, y, UI_FONT_H); }
+int  ui_rainbow_w(void) { return ui_rainbow_w_h(UI_FONT_H); }
+
+void ui_title_bar(const int x, const int y, const int w, const int h,
+                  const char *title, const char *right) {
+    ui_fill(x, y, w, h, C_TITLE_BG);
+    const int ty = y + (h - UI_FONT_H) / 2;
+    const int fw = ui_rainbow_w_h(h);
+    const int fx = x + w - fw - FLASH_STRIPE;          /* a stripe's width of black after it */
+    ui_rainbow_h(fx, y, h);
+    int limit = fx - FLASH_STRIPE;
+    if (right && *right) {
+        const int rw = ui_text_width(right);
+        ui_text(limit - rw, ty, right, C_TITLE_TEXT);
+        limit -= rw + ui_glyph_w();
+    }
+    if (title) ui_text_clip(x + 3, ty, limit - (x + 3), title, C_TITLE_TEXT);
+}

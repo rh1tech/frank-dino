@@ -261,6 +261,29 @@ class Board:
             return self.ocd.read(a, 8, 1)[0]
         self.ocd.write(a, 8, [value])
 
+    # -- the file browser, by name ---------------------------------------------
+    def browser_names(self, stride=72):
+        """The current folder's entries, in the browser's order."""
+        n = self.u32('ui_browser.c:entry_count')
+        base = self.addr('ui_browser.c:entries')
+        raw = bytes(self.ocd.read(base, 8, n * stride)) if n else b''
+        return [raw[i * stride:i * stride + 64].split(b'\0')[0].decode(errors='replace') for i in range(n)]
+
+    def browser_cwd(self):
+        return bytes(self.ocd.read(self.addr('ui_browser.c:cwd'), 8, 64)).split(b'\0')[0].decode()
+
+    def browser_goto(self, name, gap=0.18, open_it=False):
+        """Walk the browser's cursor to `name`, a key at a time, as a person would."""
+        names = self.browser_names()
+        want = next(i for i, x in enumerate(names) if x.lower() == name.lower())
+        for _ in range(200):
+            cur = self.u32('ui_browser.c:sel')
+            if cur == want:
+                break
+            self.key('DOWN' if cur < want else 'UP', gap=gap)
+        if open_it:
+            self.key('ENTER', gap=1.2)
+
     # -- loading a file, as the browser would ---------------------------------
     def load(self, path, timeout=20):
         """Load a file from the card (any kind the browser takes). Returns (ok, detail)."""

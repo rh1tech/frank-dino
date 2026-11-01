@@ -167,9 +167,9 @@ static void draw_footer(void) {
     ui_hline(LY.ix, y, LY.iw, C_SEP);
 
 #if USB_KEYBOARD
-    ui_text(LY.ix + LY.pad, y + 3, "640x480 HDMI   keyboard on USB-A", C_TEXT_DIM);
+    ui_text(LY.ix + LY.pad, y + 3, "640x480 HDMI   keyboard on USB-A", C_TEXT);
 #else
-    ui_text(LY.ix + LY.pad, y + 3, "640x480 HDMI   console on USB-C", C_TEXT_DIM);
+    ui_text(LY.ix + LY.pad, y + 3, "640x480 HDMI   console on USB-C", C_TEXT);
 #endif
 
     unsigned pass, fail;
@@ -178,7 +178,7 @@ static void draw_footer(void) {
     if (fail) snprintf(t, sizeof t, "%u failed", fail);
     else      snprintf(t, sizeof t, "%u passed", pass);
     ui_text(LY.ix + LY.iw - ui_text_width(t) - LY.pad, y + 3, t,
-            fail ? C_ICON_R : C_ACCENT);
+            fail ? C_ICON_R : C_OK);
 }
 
 /* ── the body ────────────────────────────────────────────────────────── */

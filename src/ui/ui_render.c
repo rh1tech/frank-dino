@@ -52,15 +52,16 @@ void ui_compute_layout(void) {
     LY.h = UI_SURF_H;
     LY.pad = 2;                             /* inner text padding */
 
-    /* The window: small margin, 1-px rounded border, content inset one more. */
-    LY.margin = 2;
+    /* The window: a margin of the screen's grey, as the 128K leaves the
+     * border around its menu, a 1-px black frame, content inset one more. */
+    LY.margin = 6;
     LY.ix = LY.margin + 1;
-    LY.iy = 3;
+    LY.iy = LY.margin + 1;
     LY.iw = LY.w - 2 * LY.ix;
-    LY.ih = LY.h - LY.iy - 3;
+    LY.ih = LY.h - 2 * LY.iy;
 
-    LY.row_h  = UI_FONT_H + 2;              /* 12 px */
-    LY.hdr_h  = UI_FONT_H + 6;
+    LY.row_h  = UI_FONT_H + 2;              /* 10 px */
+    LY.hdr_h  = UI_FONT_H + 4;              /* the black title bar */
     LY.sub_h  = UI_FONT_H + 4;
     LY.foot_h = UI_FONT_H + 4;
 
@@ -72,7 +73,7 @@ void ui_compute_layout(void) {
      * enough for a long label AND its value column ("Kempston port  #1F"),
      * with what remains still holding the right pane's longest content.
      */
-    const int lchars = (ui_cols() >= 50) ? 24 : 19;
+    const int lchars = 25;
     LY.lx = LY.ix;
     LY.lw = lchars * ui_glyph_w() + 2 * LY.pad;
     LY.sep_x = LY.lx + LY.lw;
@@ -130,16 +131,7 @@ void ui_draw_frame_once(void) {
 /* ── bands ───────────────────────────────────────────────────────────── */
 
 void ui_draw_header(void) {
-    const int y = LY.iy;
-
-    ui_fill(LY.ix, y, LY.iw, LY.hdr_h, C_PANEL);
-    ui_rainbow(LY.ix + LY.pad, y + 3);
-    int tx = LY.ix + LY.pad + ui_rainbow_w() + 2 * LY.pad;
-    tx += ui_text(tx, y + 4, "frank-dino", C_WHITE);
-    (void)tx;
-    const char *ver = "v" FIRMWARE_VERSION;
-    ui_text(LY.ix + LY.iw - ui_text_width(ver) - LY.pad, y + 4, ver, C_TEXT_DIM);
-    ui_hline(LY.ix, y + LY.hdr_h - 1, LY.iw, C_SEP);
+    ui_title_bar(LY.ix, LY.iy, LY.iw, LY.hdr_h, "frank-dino", "v" FIRMWARE_VERSION);
 }
 
 static void draw_sub_header(void) {
@@ -326,7 +318,7 @@ static void draw_footer(void) {
         : int_pane
         ? SYM_UP SYM_DOWN " Adjust   " SYM_ENTER " / " SYM_LEFT " Back"
         : SYM_UP SYM_DOWN " Move   " SYM_ENTER " Change   " SYM_LEFT " Back";
-    const int hx = ui_text(LY.ix + LY.pad, y + 3, hint, C_TEXT_DIM);
+    const int hx = ui_text(LY.ix + LY.pad, y + 3, hint, C_TEXT);
 
     /*
      * Where theirs counts staged edits, this says what the last action

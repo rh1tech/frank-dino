@@ -30,12 +30,12 @@
 #include "vga.h"
 
 /*
- * The 16 UI colours. Values are palette indices in vga.c's palette16,
- * which holds pico-speccy's kUiPaletteVga in this same order.
- *
- * Their budget note applies here unchanged: exactly 16, with duplicates
- * merged (one white serves text, header and selection) to free four
- * slots for the rainbow mark in the header.
+ * The UI colours, as roles: palette indices into vga.c's kUiPalette,
+ * which gives them the 128K menu's colours in this same order. The
+ * surface is a byte a pixel and the video masks it to five bits, so
+ * there is room for 32; roles that share a colour still keep their own
+ * name, so a screen says what a thing is and the palette what it looks
+ * like.
  */
 typedef enum {
     C_BG = 0,       /* outside the rounded window */
@@ -44,16 +44,23 @@ typedef enum {
     C_SEP,          /* rules and the window border */
     C_TEXT,         /* primary text */
     C_TEXT_DIM,     /* secondary text, footer hints */
-    C_WHITE,        /* emphasis, text on the selection bar */
+    C_WHITE,        /* emphasis, text on the selection bar (black, here) */
     C_SEL_BG,       /* selection bar, focused pane */
     C_SEL_BAND,     /* subtle band for the focused row of the unfocused pane */
     C_ACCENT,       /* chosen radio dot */
     C_FOOT_BG,
     C_SHADOW,
-    C_ICON_R,       /* rainbow mark */
-    C_ICON_Y,
-    C_ICON_C,
+    C_ICON_R,       /* ink: an error */
+    C_ICON_Y,       /* ink: a warning */
+    C_ICON_C,       /* ink: news */
     C_DISABLED,     /* "<< Back" and non-selectable rows */
+    C_FLASH_R,      /* the 128K's flash, bright, in a title bar */
+    C_FLASH_Y,
+    C_FLASH_G,
+    C_FLASH_C,
+    C_TITLE_BG,     /* the black bar a window's title sits in */
+    C_TITLE_TEXT,
+    C_OK,           /* ink: a pass */
     C_COUNT
 } ui_color_t;
 
@@ -65,7 +72,7 @@ static inline int ui_glyph_w(void) { return UI_FONT_W; }
 static inline int ui_cols(void)    { return UI_SURF_W / UI_FONT_W; }
 static inline int ui_rows(void)    { return UI_SURF_H / UI_FONT_H; }
 
-/* Options > Menu corners, in their UI. Square when false. */
+/* Square unless set: the Spectrum's boxes are. */
 extern bool ui_rounded;
 
 void ui_px(int x, int y, ui_color_t c);
@@ -95,6 +102,14 @@ void ui_round_rect(int x, int y, int w, int h, int r, ui_color_t border, ui_colo
  */
 void ui_round_rect_border(int x, int y, int w, int h, int r,
                           ui_color_t border, ui_color_t outside);
-/* The ZX rainbow mark of the header. */
+/* The 128K menu's flash, a font-height tall, and at any height. */
 void ui_rainbow(int x, int y);
 int  ui_rainbow_w(void);
+void ui_rainbow_h(int x, int y, int h);
+int  ui_rainbow_w_h(int h);
+/*
+ * A window's title bar as the 128K draws it: black, the title in white
+ * on the left, `right` (may be NULL) in white before the flash, and the
+ * flash at the right-hand end.
+ */
+void ui_title_bar(int x, int y, int w, int h, const char *title, const char *right);

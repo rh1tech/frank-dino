@@ -91,14 +91,8 @@ int main(void) {
 
     /* ---------------------------------------------------------------- */
     GROUP("UI palette");
-    for (int theme = 0; theme < 3; theme++) {
-        settings.ui_theme = (uint8_t)theme;
-        vga_build_ui_palette();
-        char what[48]; snprintf(what, sizeof what, "ui_dither theme %d", theme);
-        sweep(what, (const uint8_t *)ui_dither, sizeof ui_dither);
-        snprintf(what, sizeof what, "palette16 theme %d", theme);
-        sweep(what, palette16, sizeof palette16);
-    }
+    vga_build_ui_palette();
+    sweep("ui_dither", (const uint8_t *)ui_dither, sizeof ui_dither);
 
     /* ---------------------------------------------------------------- */
     GROUP("ULA+");

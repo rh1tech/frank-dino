@@ -88,13 +88,13 @@ static struct {
 
 static void compute_layout(void) {
     L.pad    = 2;
-    L.margin = 2;
+    L.margin = 6;                       /* the menu's grey border, see ui_render.c */
     L.ix = L.margin + 1;
-    L.iy = 3;
+    L.iy = L.margin + 1;
     L.iw = UI_SURF_W - 2 * L.ix;
-    L.ih = UI_SURF_H - L.iy - 3;
+    L.ih = UI_SURF_H - 2 * L.iy;
 
-    L.hdr_h  = UI_FONT_H + 6;
+    L.hdr_h  = UI_FONT_H + 4;
     L.path_h = UI_FONT_H + 4;
     L.foot_h = UI_FONT_H + 4;
     L.row_h  = UI_FONT_H + 2;
@@ -104,7 +104,7 @@ static void compute_layout(void) {
     L.rows   = L.body_h / L.row_h;
 
     /* Info pane: a fixed character budget; the list takes the rest. */
-    const int ichars = (ui_cols() >= 52) ? 17 : 14;
+    const int ichars = 15;
     L.rw    = ichars * ui_glyph_w() + 2 * L.pad;
     L.rx    = L.ix + L.iw - L.rw;
     L.sep_x = L.rx - 1;
@@ -194,20 +194,11 @@ static void draw_chrome(void) {
 }
 
 static void draw_header(void) {
-    const int y = L.iy;
-    ui_fill(L.ix, y, L.iw, L.hdr_h, C_PANEL);
-    ui_rainbow(L.ix + L.pad, y + 3);
-    int tx = L.ix + L.pad + ui_rainbow_w() + 2 * L.pad;
-    tx += ui_text(tx, y + 4, "Files", C_WHITE);
-    (void)tx;
-
     char cnt[28];
     const int n = vis_total();
     if (n > 0) snprintf(cnt, sizeof cnt, "%d/%d", sel + 1, n);
     else       snprintf(cnt, sizeof cnt, "empty");
-    ui_text(L.ix + L.iw - ui_text_width(cnt) - L.pad, y + 4, cnt, C_TEXT_DIM);
-
-    ui_hline(L.ix, y + L.hdr_h - 1, L.iw, C_SEP);
+    ui_title_bar(L.ix, L.iy, L.iw, L.hdr_h, "Files", cnt);
 }
 
 static void draw_path_bar(void) {
@@ -274,10 +265,30 @@ static void draw_list(void) {
     draw_scrollbar();
 }
 
+/*
+ * The pane is cleared just ahead of the pen rather than all at once: a
+ * pane blanked whole and then written shows, for a frame, as the blank --
+ * which on every cursor move was a flicker.
+ */
+static int info_clean_y;
+
+static void info_clear_to(const int y_end) {
+    const int end = y_end < L.body_y + L.body_h ? y_end : L.body_y + L.body_h;
+    if (end > info_clean_y) ui_fill(L.rx, info_clean_y, L.rw, end - info_clean_y, C_PANEL);
+    if (end > info_clean_y) info_clean_y = end;
+}
+
 /* The info pane: everything known about the focused entry, then the verbs. */
+static void draw_info_body(void);
+
 static void draw_info(void) {
+    info_clean_y = L.body_y;
+    draw_info_body();
+    info_clear_to(L.body_y + L.body_h);         /* whatever the last entry left below */
+}
+
+static void draw_info_body(void) {
     const int x = L.rx, w = L.rw;
-    ui_fill(x, L.body_y, w, L.body_h, C_PANEL);
     int y = L.body_y + 2;
     const int lh = UI_FONT_H + 2;
     const int tx = x + L.pad, tw = w - 2 * L.pad;
@@ -285,6 +296,7 @@ static void draw_info(void) {
 
     const storage_entry_t *e = vis_entry(sel);
     if (!e) {
+        info_clear_to(y + UI_FONT_H + 2);
         ui_text(tx, y, query[0] ? "No match" : "No files", C_TEXT_DIM);
         return;
     }
@@ -294,27 +306,32 @@ static void draw_info(void) {
     for (int ln = 0; ln < 3 && ln * fits < len; ln++) {
         char buf[64];
         snprintf(buf, sizeof buf, "%.*s", fits, e->name + ln * fits);
+        info_clear_to(y + lh);
         ui_text(tx, y, buf, C_WHITE);
         y += lh;
     }
     y += 2;
 
     if (e->kind == FILE_DIR) {
+        info_clear_to(y + lh);
         ui_text(tx, y, "Folder", C_TEXT_DIM);
         y += lh;
     } else {
+        info_clear_to(y + lh);
         ui_text(tx, y, type_label(e), runnable(e) ? C_ACCENT : C_TEXT_DIM);
         y += lh;
         char buf[24];
         if (e->size < 10000u)              snprintf(buf, sizeof buf, "%u bytes", (unsigned)e->size);
         else if (e->size < 10u << 20)      snprintf(buf, sizeof buf, "%u KB", (unsigned)(e->size >> 10));
         else                               snprintf(buf, sizeof buf, "%u MB", (unsigned)(e->size >> 20));
+        info_clear_to(y + lh);
         ui_text(tx, y, buf, C_TEXT);
         y += lh;
     }
     y += 3;
 
     /* Verbs from the bottom up would jump around; a fixed block reads better. */
+    info_clear_to(y + 3);
     ui_hline(tx, y, tw, C_SEP);
     y += 3;
     const bool dir = (e->kind == FILE_DIR);
@@ -328,6 +345,7 @@ static void draw_info(void) {
         if (!verbs[i].on) continue;
         if (y + lh > L.body_y + L.body_h) break;
         const int kw = ui_text_width(verbs[i].k);
+        info_clear_to(y + lh);
         ui_text(tx, y, verbs[i].k, C_TEXT_DIM);
         ui_text(tx + kw + ui_glyph_w(), y, verbs[i].what, C_TEXT);
         y += lh;
@@ -355,13 +373,23 @@ static void draw_footer(void) {
     }
     ui_text(L.ix + L.pad, y + 3,
             SYM_UP SYM_DOWN " Move  " SYM_ENTER " Open  " SYM_LEFT " Up  F3 Find  Esc Close",
-            C_TEXT_DIM);
+            C_TEXT);
 }
 
 /* Bands square the window corners off — the border re-pass restores them. */
 static void frame_fix(void) {
     ui_round_rect_border(L.margin, L.iy - 1, UI_SURF_W - 2 * L.margin, L.ih + 2, 4,
                          C_SEP, C_BG);
+}
+
+/* Everything but the screen clear: what changes when the view does. */
+static void draw_view(void) {
+    draw_header();
+    draw_path_bar();
+    draw_list();
+    draw_info();
+    draw_footer();
+    frame_fix();
 }
 
 static void draw_all(void) {
@@ -697,9 +725,17 @@ bool ui_browser_run(void) {
                 default: break;
             }
             clamp_view();
-            draw_all();
+            draw_view();
             continue;
         }
+
+        /*
+         * Redraw what moved. The cursor going down a page that does not
+         * scroll is two rows and the panes beside them; anything else is
+         * the view, still without clearing the screen under it.
+         */
+        const int was_sel = sel, was_top = top;
+        bool whole = false;
 
         switch (k) {
             case BK_UP:   move_sel(-1); break;
@@ -709,16 +745,18 @@ bool ui_browser_run(void) {
             case BK_HOME: move_sel(-MAX_ENTRIES); break;
             case BK_END:  move_sel(+MAX_ENTRIES); break;
             case BK_RIGHT:
-            case BK_ENTER: status[0] = 0; activate(); break;
+            case BK_ENTER: status[0] = 0; activate(); whole = true; break;
             case BK_LEFT:
-            case BK_BACK:  status[0] = 0; leave_dir(); break;
-            case BK_FIND:  searching = true; query[0] = 0; sel = top = 0; break;
+            case BK_BACK:  status[0] = 0; leave_dir(); whole = true; break;
+            case BK_FIND:  searching = true; query[0] = 0; sel = top = 0; whole = true; break;
 
             case BK_SETTINGS:
                 ui_menu_run();
                 if (menu_rescan_wanted) { menu_rescan_wanted = false; ui_browser_rescan(); }
                 vga_set_mode(VGA_MODE_UI);
-                break;
+                clamp_view();
+                draw_all();             /* the settings drew over all of it */
+                continue;
 
             case BK_ESC:
             case BK_CLOSE:
@@ -732,6 +770,15 @@ bool ui_browser_run(void) {
             default: break;
         }
         clamp_view();
-        draw_all();
+        if (whole || top != was_top) {
+            draw_view();
+        } else if (sel != was_sel) {
+            draw_list_row(was_sel - top);
+            draw_list_row(sel - top);
+            draw_header();
+            draw_info();
+            draw_footer();
+            frame_fix();
+        }
     }
 }

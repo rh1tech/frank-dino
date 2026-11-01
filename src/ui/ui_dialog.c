@@ -51,7 +51,11 @@ static box_t draw_box(const char *text_body, const char *title, const int extra_
     const int tl  = title ? lh + 2 : 0;
 
     int tw = max_line_width(text_body);
-    if (title) { const int t2 = ui_text_width(title); if (t2 > tw) tw = t2; }
+    /* A title bar has the flash in it as well as the title. */
+    if (title) {
+        const int t2 = ui_text_width(title) + ui_rainbow_w_h(lh) + 3 * ui_glyph_w();
+        if (t2 > tw) tw = t2;
+    }
 
     box_t b;
     b.w = tw + 2 * pad;
@@ -63,16 +67,14 @@ static box_t draw_box(const char *text_body, const char *title, const int extra_
     b.x = (UI_SURF_W - b.w) / 2;
     b.y = (UI_SURF_H - b.h) / 2;
 
-    /* Drop shadow, then the window: it is what separates a modal from
-     * the page it is standing on. */
-    ui_fill(b.x + 2, b.y + 2, b.w, b.h, C_SHADOW);
+    /* A box as the 128K draws one: framed, no shadow, the title in a
+     * black bar across the top. */
     ui_round_rect(b.x, b.y, b.w, b.h, 3, border, C_PANEL_ALT);
 
     int y = b.y + pad;
     if (title) {
-        ui_text(b.x + pad, y, title, C_WHITE);
-        ui_hline(b.x + pad, y + lh, b.w - 2 * pad, C_SEP);
-        y += tl + 2;
+        ui_title_bar(b.x + 1, b.y + 1, b.w - 2, lh, title, NULL);
+        y = b.y + 1 + lh + pad;
     }
 
     const char *p = text_body;
@@ -221,9 +223,9 @@ static ui_color_t ink_for(const char c) {
     switch (c) {
         case 'd': return C_TEXT_DIM;
         case 'w': return C_WHITE;
-        case 'g': return C_ACCENT;
+        case 'g': return C_OK;
         case 'r': return C_ICON_R;
-        case 'h': return C_ICON_Y;
+        case 'h': return C_ACCENT;
         default:  return C_TEXT;
     }
 }
@@ -286,10 +288,10 @@ void ui_text_page(const char *title, const char *body, const char *hdr_right) {
     /* The same inset the menu and the browser use, so the title and the
      * footer hints line up across every screen. */
     const int pad = 2;
-    const int margin = 2;
-    const int ix = margin + 1, iy = 3;
-    const int iw = UI_SURF_W - 2 * ix, ih = UI_SURF_H - iy - 3;
-    const int hdr_h = UI_FONT_H + 6, foot_h = UI_FONT_H + 4;
+    const int margin = 6;
+    const int ix = margin + 1, iy = margin + 1;
+    const int iw = UI_SURF_W - 2 * ix, ih = UI_SURF_H - 2 * iy;
+    const int hdr_h = UI_FONT_H + 4, foot_h = UI_FONT_H + 4;
     const int body_y = iy + hdr_h + 2;
     const int body_h = iy + ih - foot_h - body_y;
     const int rows = body_h / lh;
@@ -311,21 +313,12 @@ void ui_text_page(const char *title, const char *body, const char *hdr_right) {
     /* Static chrome. */
     ui_fill(0, 0, UI_SURF_W, UI_SURF_H, C_BG);
     ui_round_rect(margin, iy - 1, UI_SURF_W - 2 * margin, ih + 2, 4, C_SEP, C_PANEL);
-    ui_fill(ix, iy, iw, hdr_h, C_PANEL);
-    ui_rainbow(ix + pad, iy + 3);
-    int title_w = iw - 4 * pad - ui_rainbow_w();
-    if (hdr_right && *hdr_right) {
-        const int rw = ui_text_width(hdr_right);
-        ui_text(ix + iw - pad - rw, iy + 4, hdr_right, C_TEXT_DIM);
-        title_w -= rw + 2 * pad;
-    }
-    ui_text_clip(ix + pad + ui_rainbow_w() + 2 * pad, iy + 4, title_w, title, C_WHITE);
-    ui_hline(ix, iy + hdr_h - 1, iw, C_SEP);
+    ui_title_bar(ix, iy, iw, hdr_h, title, hdr_right);
 
     const int fy = iy + ih - foot_h;
     ui_fill(ix, fy, iw, foot_h, C_FOOT_BG);
     ui_hline(ix, fy, iw, C_SEP);
-    ui_text(ix + pad, fy + 3, SYM_UP SYM_DOWN " Scroll   Esc Close", C_TEXT_DIM);
+    ui_text(ix + pad, fy + 3, SYM_UP SYM_DOWN " Scroll   Esc Close", C_TEXT);
     /* Bands are square fills -- restore the window's corner curve over them. */
     ui_round_rect_border(margin, iy - 1, UI_SURF_W - 2 * margin, ih + 2, 4, C_SEP, C_BG);
 
@@ -374,7 +367,7 @@ int ui_pick_list(const char *title, const int n, const ui_row_cb cb,
     if (footer && !*footer) footer = NULL;
 
     int tw = wchars * ui_glyph_w();
-    { const int t2 = ui_text_width(title); if (t2 > tw) tw = t2; }
+    { const int t2 = ui_text_width(title) + ui_rainbow_w_h(lh) + 8 * ui_glyph_w(); if (t2 > tw) tw = t2; }
     if (footer) { const int t3 = ui_text_width(footer); if (t3 > tw) tw = t3; }
 
     int rows = n;
@@ -396,22 +389,17 @@ int ui_pick_list(const char *title, const int n, const ui_row_cb cb,
 
     char row[96];
     for (;;) {
-        ui_fill(b.x + 2, b.y + 2, b.w, b.h, C_SHADOW);
         ui_round_rect(b.x, b.y, b.w, b.h, 3, C_SEP, C_PANEL_ALT);
-        ui_text(b.x + pad, b.y + pad - 1, title, C_WHITE);
-        if (n > rows) {
-            char pos[28];
-            snprintf(pos, sizeof pos, "%d/%d", sel + 1, n);
-            ui_text(b.x + b.w - pad - ui_text_width(pos), b.y + pad - 1, pos, C_TEXT_DIM);
-        }
-        ui_hline(b.x + pad, b.y + pad + lh - 2, b.w - 2 * pad, C_SEP);
+        char pos[28] = "";
+        if (n > rows) snprintf(pos, sizeof pos, "%d/%d", sel + 1, n);
+        ui_title_bar(b.x + 1, b.y + 1, b.w - 2, lh, title, pos);
 
         const int ly0 = b.y + pad + lh + 1;
         for (int r = 0; r < rows; r++) {
             const int i = top + r;
             const int y = ly0 + r * lh;
             const bool s = (i == sel);
-            ui_fill(b.x + 2, y - 1, b.w - 4, lh, s ? C_SEL_BG : C_PANEL_ALT);
+            ui_fill(b.x + 1, y - 1, b.w - 2, lh, s ? C_SEL_BG : C_PANEL_ALT);
             if (i < n) {
                 row[0] = 0;
                 cb(i, row, sizeof row);
