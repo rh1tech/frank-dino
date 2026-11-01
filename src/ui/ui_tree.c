@@ -46,6 +46,9 @@
 #include "ula_frame.h"
 #include "snapshot.h"
 #include "loader.h"
+#include "joymap.h"
+#include "joyprof.h"
+#include "customrom.h"
 #include "taperec.h"
 #include "pulse.h"
 #include "ui_nav.h"
@@ -164,6 +167,7 @@ static const ui_option_t opt_ide[] = {
     { "NEMO",   1, NULL },
     { "DivIDE", 2, NULL },
     { "ATM",    3, NULL },
+    { "SMUC (Scorpion)", 4, "SMUC" },
 };
 
 static bool ide_on(void) { return settings.ide != 0; }
@@ -183,6 +187,15 @@ static const ui_option_t opt_trdos[] = {
     { "5.05D",  3, NULL },
     { "6.11e",  4, NULL },
 };
+
+static const ui_option_t opt_wear[] = {
+    { "Off",                       0, NULL },
+    { "Light: a little wow",       1, "Light" },
+    { "Medium: wow and dropouts",  2, "Medium" },
+    { "Heavy: a chewed tape",      3, "Heavy" },
+};
+
+static void wear_changed(void) { pulse_set_wear(settings.tape_wear); }
 
 static const ui_option_t opt_covox[] = {
     { "Off",  COVOX_OFF, NULL },
@@ -625,7 +638,7 @@ static void info_page(void) {
         (snprintf(clk, sizeof clk, "%s", opt_turbo[settings.turbo < 3 ? settings.turbo : 0].label), clk),
         (unsigned long)z80_get_pace(), (unsigned long)z80_get_pace_floor(),
         yn[settings.issue2 ? 1 : 0],
-        yn[settings.scanlines ? 1 : 0],
+        (const char *[]){ "Off", "Light", "Medium", "Strong", "Max" }[settings.scanlines < 5 ? settings.scanlines : 0],
         yn[settings.ulaplus ? 1 : 0],
         spec_ulaplus_on ? UI_MK_OK "enabled by the guest" : UI_MK_DIM "not enabled",
         settings.gigascreen == 2 ? UI_MK_OK "Auto" : yn[settings.gigascreen ? 1 : 0],
@@ -916,6 +929,14 @@ static const ui_node_t snapshot_kids[] = {
     UI_ACTIONV("  POKE it",        poke_action, poke_info),
 };
 
+/* Stock from flash, or the card's /roms (customrom.c), as the last reset found. */
+static const char *rom_info(void) {
+    if (customrom_active && customrom_trdos_active) return "card + TR-DOS";
+    if (customrom_active)       return "from the card";
+    if (customrom_trdos_active) return "TR-DOS from card";
+    return "stock";
+}
+
 static const ui_node_t machine_kids[] = {
     UI_RADIO("Machine",           &settings.machine,  opt_machine, machine_changed),
     UI_BOOL ("Issue 2 keyboard",  &settings.issue2,   NULL),
@@ -923,6 +944,7 @@ static const ui_node_t machine_kids[] = {
     UI_BOOL ("ULA contention",    &settings.contention, contention_changed),
     UI_BOOL ("Spanish ROMs",      &settings.rom_spanish, machine_changed),
     UI_ACTION("Reset the machine", reset_action),
+    UI_ACTIONV("ROM",             NULL, rom_info),
 };
 
 static const ui_node_t audio_kids[] = {
@@ -980,6 +1002,35 @@ static void gigascreen_changed(void) {
                             : "One screen at a time again");
 }
 
+static const ui_option_t opt_palette[] = {
+    { "Sinclair (solid)", 0, "Sinclair" },
+    { "Pulsar",           1, NULL },
+    { "Alone",            2, NULL },
+    { "Grayscale",        3, "Gray" },
+    { "Mars",             4, NULL },
+    { "Ocean",            5, NULL },
+};
+
+static const ui_option_t opt_scan[] = {
+    { "Off",    0, NULL },
+    { "Light",  1, NULL },
+    { "Medium", 2, NULL },
+    { "Strong", 3, NULL },
+    { "Max",    4, NULL },
+};
+
+static const ui_option_t opt_crt[] = {
+    { "Off",              0, NULL },
+    { "Soft",             1, NULL },
+    { "Medium",           2, NULL },
+    { "Strong",           3, NULL },
+    { "Soft + grille",    4, "Soft+G" },
+    { "Medium + grille",  5, "Med+G" },
+    { "Strong + grille",  6, "Str+G" },
+};
+
+static void look_changed(void) { vga_spec_palette_changed(); }
+
 /* The builder is core 1's; the machine is paused, so this is safe. */
 static void beam_changed(void) {
     ula_set_enabled(settings.beam != 0);
@@ -988,16 +1039,110 @@ static void beam_changed(void) {
 
 static const ui_node_t video_kids[] = {
     UI_BOOL ("Beam-accurate picture", &settings.beam, beam_changed),
-    UI_BOOL ("Scanlines",    &settings.scanlines, NULL),
+    UI_RADIO("Palette",      &settings.palette,   opt_palette, look_changed),
+    UI_RADIO("Scanlines",    &settings.scanlines, opt_scan,    look_changed),
+    UI_RADIO("CRT filter",   &settings.crt,       opt_crt,     look_changed),
     UI_BOOL ("ULA+ (64 colours)", &settings.ulaplus, ulaplus_changed),
     UI_RADIO("Gigascreen",   &settings.gigascreen, opt_giga, gigascreen_changed),
     UI_BOOL ("Timex video (#FF)", &settings.timex, timex_changed),
+};
+
+static const ui_option_t opt_jtarget[] = {
+    { "Default", 0, NULL },
+    { "Nothing", 1, NULL },
+    { "Up", 2, NULL },
+    { "Down", 3, NULL },
+    { "Left", 4, NULL },
+    { "Right", 5, NULL },
+    { "Fire", 6, NULL },
+    { "Fire 2", 7, NULL },
+    { "Fire 3", 8, NULL },
+    { "Fire 4", 9, NULL },
+    { "Caps Shift", 10, "CS" },
+    { "Key Z", 11, "Z" },
+    { "Key X", 12, "X" },
+    { "Key C", 13, "C" },
+    { "Key V", 14, "V" },
+    { "Key A", 15, "A" },
+    { "Key S", 16, "S" },
+    { "Key D", 17, "D" },
+    { "Key F", 18, "F" },
+    { "Key G", 19, "G" },
+    { "Key Q", 20, "Q" },
+    { "Key W", 21, "W" },
+    { "Key E", 22, "E" },
+    { "Key R", 23, "R" },
+    { "Key T", 24, "T" },
+    { "Key 1", 25, "1" },
+    { "Key 2", 26, "2" },
+    { "Key 3", 27, "3" },
+    { "Key 4", 28, "4" },
+    { "Key 5", 29, "5" },
+    { "Key 0", 30, "0" },
+    { "Key 9", 31, "9" },
+    { "Key 8", 32, "8" },
+    { "Key 7", 33, "7" },
+    { "Key 6", 34, "6" },
+    { "Key P", 35, "P" },
+    { "Key O", 36, "O" },
+    { "Key I", 37, "I" },
+    { "Key U", 38, "U" },
+    { "Key Y", 39, "Y" },
+    { "Enter", 40, "Enter" },
+    { "Key L", 41, "L" },
+    { "Key K", 42, "K" },
+    { "Key J", 43, "J" },
+    { "Key H", 44, "H" },
+    { "Space", 45, "Space" },
+    { "Symbol Shift", 46, "SS" },
+    { "Key M", 47, "M" },
+    { "Key N", 48, "N" },
+    { "Key B", 49, "B" },
+};
+
+/* Saved under the name of what was loaded last, so the map follows the game. */
+static void joyprof_save_action(void) {
+    const char *name = loader_last_name[0] ? loader_last_name : "My pad";
+    say(joyprof_save(name) ? "Pad map saved as %s" : "Could not save %s", name);
+}
+
+static void joyprof_row(const int i, char *out, const unsigned n) {
+    snprintf(out, n, "%s", joyprof_name(i));
+}
+
+static void joyprof_load_action(void) {
+    const int n = joyprof_count();
+    if (!n) { say("No pad maps saved yet."); return; }
+    const int pick = ui_pick_list("Pad maps", n, joyprof_row, 0, 24, NULL);
+    if (pick < 0) return;
+    joyprof_load(pick);
+    ui_mark_dirty(D_ALL);
+    say("Pad map %s", joyprof_name(pick));
+}
+
+static const ui_node_t pad_kids[] = {
+    UI_RADIO("Left",    &settings.joymap[PAD_LEFT],   opt_jtarget, NULL),
+    UI_RADIO("Right",   &settings.joymap[PAD_RIGHT],  opt_jtarget, NULL),
+    UI_RADIO("Up",      &settings.joymap[PAD_UP],     opt_jtarget, NULL),
+    UI_RADIO("Down",    &settings.joymap[PAD_DOWN],   opt_jtarget, NULL),
+    UI_RADIO("Select",  &settings.joymap[PAD_SELECT], opt_jtarget, NULL),
+    UI_RADIO("A / Cross",    &settings.joymap[PAD_A], opt_jtarget, NULL),
+    UI_RADIO("B / Circle",   &settings.joymap[PAD_B], opt_jtarget, NULL),
+    UI_RADIO("RB / R1",      &settings.joymap[PAD_C], opt_jtarget, NULL),
+    UI_RADIO("X / Square",   &settings.joymap[PAD_X], opt_jtarget, NULL),
+    UI_RADIO("Y / Triangle", &settings.joymap[PAD_Y], opt_jtarget, NULL),
+    UI_RADIO("LB / L1",      &settings.joymap[PAD_Z], opt_jtarget, NULL),
+    UI_RADIO("LT / L2",      &settings.joymap[PAD_L2], opt_jtarget, NULL),
+    UI_RADIO("RT / R2",      &settings.joymap[PAD_R2], opt_jtarget, NULL),
+    UI_ACTION("Save as a pad map",  joyprof_save_action),
+    UI_ACTION("Load a pad map",     joyprof_load_action),
 };
 
 static const ui_node_t input_kids[] = {
     UI_RADIO("Joystick",           &settings.joystick,      opt_joystick, NULL),
     UI_RADIO("Kempston port",      &settings.kempston_port, opt_kport,    NULL),
     UI_BOOL ("Cursor keys as joy", &settings.cursor_as_joy, NULL),
+    UI_SUB  ("Pad buttons",        pad_kids, NULL),
     UI_BOOL ("Kempston mouse",     &settings.mouse, NULL),
     UI_BOOL ("Gluk clock (#BFF7)", &settings.rtc, NULL),
     UI_INT  ("Mouse speed",        &settings.mouse_sens, 1, 8, 1, NULL),
@@ -1031,6 +1176,7 @@ static const ui_node_t storage_kids[] = {
     UI_ACTIONV("Save SAVEd blocks", rec_save_action, rec_info),
     UI_BOOL   ("Every tape in real time", &settings.tape_realtime, NULL),
     UI_BOOL   ("Rodolfo Guerra timings",  &settings.tape_rg, NULL),
+    UI_RADIO  ("Tape wear",        &settings.tape_wear, opt_wear, wear_changed),
     UI_BOOL   ("Beta Disk (TR-DOS)", &settings.betadisk, betadisk_changed),
     UI_RADIO_EN("  TR-DOS version", &settings.trdos_rom, opt_trdos, machine_changed, betadisk_on),
     UI_ACTIONV_EN("  Eject disk",     disk_action, disk_info, betadisk_on),
@@ -1051,7 +1197,64 @@ static const ui_node_t storage_kids[] = {
     UI_ACTION ("Re-read the card", rescan_action),
 };
 
+/* ── settings profiles ─────────────────────────────────────────────── */
+
+static int  prof_slots[SETTINGS_PROFILES];
+static char prof_names[SETTINGS_PROFILES][32];
+
+/* The saved profiles, in slot order: how many. */
+static int prof_scan(void) {
+    int n = 0;
+    for (int i = 0; i < SETTINGS_PROFILES; i++)
+        if (settings_profile_name(i, prof_names[n], sizeof prof_names[n])) prof_slots[n++] = i;
+    return n;
+}
+
+static void prof_row(const int i, char *out, const unsigned n) { snprintf(out, n, "%s", prof_names[i]); }
+
+static void profile_save_action(void) {
+    const char *name = loader_last_name[0] ? loader_last_name : spec_machine_name();
+    const int slot = settings_profile_save(name);
+    if (slot < 0) say("No room: %d profiles already", SETTINGS_PROFILES);
+    else          say("Saved as profile \"%s\"", name);
+}
+
+/* Everything a setting's own row would have done when changed, at once. */
+static void apply_loaded_settings(void) {
+    spec_set_machine((machine_t)settings.machine);
+    spec_tune_clock();
+    ula_set_enabled(settings.beam != 0);
+    pulse_set_wear(settings.tape_wear);
+    vga_spec_palette_changed();
+    if (!settings.ulaplus) spec_ulaplus_on = false;
+    if (!settings.timex) { spec_timex_mode = 0; spec_timex_ink = 0; }
+    z80_trace_on = settings.bus_trace != 0;
+}
+
+static void profile_load_action(void) {
+    const int n = prof_scan();
+    if (!n) { say("No profiles saved yet."); return; }
+    const int pick = ui_pick_list("Load a profile", n, prof_row, 0, 28, NULL);
+    if (pick < 0) return;
+    if (!settings_profile_load(prof_slots[pick])) { say("Could not read it."); return; }
+    apply_loaded_settings();
+    ui_mark_dirty(D_ALL);
+    say("Profile \"%s\" on", prof_names[pick]);
+}
+
+static void profile_delete_action(void) {
+    const int n = prof_scan();
+    if (!n) { say("No profiles saved yet."); return; }
+    const int pick = ui_pick_list("Delete a profile", n, prof_row, 0, 28, NULL);
+    if (pick < 0) return;
+    if (!ui_confirm(prof_names[pick], "Delete this profile?", false)) return;
+    say(settings_profile_delete(prof_slots[pick]) ? "Deleted." : "Could not delete it.");
+}
+
 static const ui_node_t system_kids[] = {
+    UI_ACTION ("Save as a profile",   profile_save_action),
+    UI_ACTION ("Load a profile",      profile_load_action),
+    UI_ACTION ("Delete a profile",    profile_delete_action),
     UI_ACTIONV("PSRAM",          NULL, psram_info),
     UI_ACTION ("Test the PSRAM", psram_test_action),
     UI_ACTIONV("Z80",            NULL, z80_info),

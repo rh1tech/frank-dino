@@ -454,11 +454,11 @@ int main(void) {
         boot(MACHINE_ZS1024);
         out(0x1FFD, 0x02);                            // the service ROM, which arms the tap
         CHECK(!memcmp(z80_rpage[0], spec_romprof + 2 * 16384, 16), "ProfROM plane 0, service bank");
-        CHECK(z80_opfetch_cb != NULL, "and the plane switch is watching fetches");
-        z80_opfetch_cb(0x0101, 0);                    // row 0 keeps the plane
-        CHECK(!memcmp(z80_rpage[0], spec_romprof + 2 * 16384, 16), "a jump to #0101 stays on plane 0");
-        z80_opfetch_cb(0x010C, 0);                    // row 3, from plane 0 -> plane 1
-        CHECK(!memcmp(z80_rpage[0], spec_romprof + (4 + 2) * 16384, 16), "a jump to #010C is plane 1");
+        CHECK(z80_rtap_cb != NULL && z80_rtap_base == 0x0100, "and the plane switch is watching reads of #0100-#010F");
+        z80_rtap_cb(0x0101, 0);                       // row 0 keeps the plane
+        CHECK(!memcmp(z80_rpage[0], spec_romprof + 2 * 16384, 16), "a read of #0101 stays on plane 0");
+        z80_rtap_cb(0x010C, 0);                       // row 3, from plane 0 -> plane 1
+        CHECK(!memcmp(z80_rpage[0], spec_romprof + (4 + 2) * 16384, 16), "a read of #010C is plane 1");
         out(0x1FFD, 0xC0);                            // D6,D7: +16, +32
         out(0x7FFD, 0x05);
         z80_wpage[6][3] = 0x99;
@@ -469,6 +469,30 @@ int main(void) {
     }
 
     /* ---------------------------------------------------------------- */
+    GROUP("Profi serial mouse");
+    {
+        extern uint8_t z80_int_vector;
+        boot(MACHINE_PROFI);
+        out(0x00F3, 0x04);                            // RxE: the receiver on
+        spec_mouse_buttons = 1;                       // left
+        spec_mouse_dx = 20; spec_mouse_dy = -6;      // right 10, up 3 at half rate
+        EQ(z80_io_in(0x00F3, 0), 0x07, "#F3 says a byte waits (TxRDY+TxE+RxRDY)");
+        EQ(z80_io_in(0x00D3, 0), 0x40 | 0x20 | 0x0C | 0x00, "byte 1: sync, left, dy high bits");
+        EQ(z80_io_in(0x00D3, 0), 10, "byte 2: dx");
+        EQ(z80_io_in(0x00D3, 0), (uint8_t)(-3) & 0x3F, "byte 3: dy");
+        EQ(z80_io_in(0x00F3, 0), 0x05, "and nothing waits after the packet");
+        out(0x7FFD, 0x00);
+        out(0xDFFD, 0x20);                            // CP/M
+        out(0x0093, 0x01);                            // the interrupt on
+        spec_mouse_dx = 4;
+        z80_io_in(0x00F3, 0);
+        EQ(spec_port_dffd, 0x20, "CP/M is on (#DFFD D5)");
+        EQ(z80_int_vector, 0xE7, "a waiting byte in CP/M puts RST #20 on the bus");
+        z80_io_in(0x00D3, 0); z80_io_in(0x00D3, 0); z80_io_in(0x00D3, 0);
+        EQ(z80_int_vector, 0xFF, "and the packet read gives the bus back");
+        out(0xDFFD, 0x00);
+    }
+
     GROUP("ATM-Turbo");
     {
         extern const uint8_t atm_rom2_107[];

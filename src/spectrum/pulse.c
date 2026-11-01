@@ -12,6 +12,7 @@
  */
 
 #include "pulse.h"
+#include "tapewear.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -315,7 +316,15 @@ static bool plan_pzx(const uint32_t p) {
 // ---------------------------------------------------------------------------
 // Opening and moving about
 // ---------------------------------------------------------------------------
+/* The worn tape's state: see pulse_fill(). */
+static tapewear_t wear;
+static uint8_t    wear_level;
+static bool       wear_frozen;
+static uint32_t   wear_frozen_bit, wear_last_bit;
+
 static void reset_play(void) {
+    if (wear_level) tw_reset(&wear, wear_level, 0x2468ACE1u);
+    wear_frozen = false;
     st_n = st_i = 0;
     ctr = sub = cur = 0;
     blk_started = false;
@@ -536,16 +545,25 @@ static bool run_stage(stage_t *s) {
         case S_PAUSE: {
             if (!out_left) return false;
             uint32_t t = s->a * T_PER_MS;
-            // A pause ends low. If the level is high, it falls a
-            // millisecond in, the way every TZX player does it.
-            if (level && sub == 0) {
-                hold(T_PER_MS);
-                level = false;
+            /*
+             * A pause starts with an edge: the one that ends the last
+             * pulse of the block before it. Then a millisecond at that
+             * level, and low for the rest, as every TZX player does it.
+             *
+             * It used to hold the level it found instead -- so a block
+             * whose last pulse was high never had its last pulse end,
+             * the ROM's LD-EDGE timed out on the checksum's last bit,
+             * and every header failed its parity: no real-time load
+             * ever got past "Program:". The trap never noticed; it
+             * does not listen to pulses.
+             */
+            if (sub == 0) {
+                edge(T_PER_MS);
                 sub = 1;
                 if (!out_left) return false;
             }
-            if (sub == 1) t = t > T_PER_MS ? t - T_PER_MS : 1u;
-            hold(t);
+            level = false;                  // a millisecond in, the line falls
+            hold(t > T_PER_MS ? t - T_PER_MS : 1u);
             return true;
         }
 
@@ -664,7 +682,48 @@ static bool next_block(void) {
     return false;
 }
 
+/*
+ * The worn tape, applied to what was just made: lengths through the wow
+ * and the lurches, and through a drop the level the line was left at.
+ * Off, it costs one compare per call.
+ */
+
+void pulse_set_wear(const uint8_t level) {
+    if (level == wear_level) return;
+    wear_level = level;
+    tw_reset(&wear, level, 0x2468ACE1u);
+}
+
+static void wear_apply(uint32_t *p, const uint32_t n) {
+    for (uint32_t i = 0; i < n; i++) {
+        const uint32_t len = p[i] & PULSE_LEN_MASK;
+        uint32_t bit = p[i] & PULSE_LEVEL;
+        if (len > TW_MAX_PULSE_T) {
+            tw_advance(&wear, len, false);          // a pause: a running fault ends in it
+            wear_frozen = false;
+            wear_last_bit = bit;
+            continue;
+        }
+        bool freeze;
+        const uint32_t out = tw_pulse(&wear, len, &freeze);
+        if (freeze) {
+            if (!wear_frozen) { wear_frozen = true; wear_frozen_bit = wear_last_bit; }
+            bit = wear_frozen_bit;
+        } else {
+            wear_frozen = false;
+        }
+        p[i] = bit | (out & PULSE_LEN_MASK);
+        wear_last_bit = bit;
+    }
+}
+
 uint32_t pulse_fill(uint32_t *out, const uint32_t max) {
+    const uint32_t got = pulse_fill_clean(out, max);
+    if (wear_level) wear_apply(out, got);
+    return got;
+}
+
+uint32_t pulse_fill_clean(uint32_t *out, const uint32_t max) {
     out_p = out;
     out_left = max;
 

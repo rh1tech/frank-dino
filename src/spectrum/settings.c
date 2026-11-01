@@ -7,6 +7,8 @@
  */
 
 #include "settings.h"
+#include "joymap.h"
+#include "ide.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -56,7 +58,9 @@ static const field_t fields[] = {
     { "beam",           &settings.beam,           1  },
     { "contention",     &settings.contention,     1  },
     { "rom_spanish",    &settings.rom_spanish,    1  },
-    { "scanlines",      &settings.scanlines,      1  },
+    { "scanlines",      &settings.scanlines,      4  },
+    { "palette",        &settings.palette,        5  },
+    { "crt",            &settings.crt,            6  },
     { "ulaplus",        &settings.ulaplus,        1  },
     { "disk_wrprot",    &settings.disk_wrprot,    1  },
     { "esxdos",         &settings.esxdos,         1  },
@@ -70,15 +74,30 @@ static const field_t fields[] = {
     { "rtc",            &settings.rtc,            1  },
     { "trdos_rom",      &settings.trdos_rom,      4  },
     { "zcontroller",    &settings.zcontroller,    1  },
-    { "ide",            &settings.ide,            3  },
+    { "ide",            &settings.ide,            IDE_COUNT - 1 },
     { "mouse_sens",     &settings.mouse_sens,     8  },
     { "cursor_as_joy",  &settings.cursor_as_joy,  1  },
+    { "joymap0",      &settings.joymap[0],   JT_COUNT - 1 },
+    { "joymap1",      &settings.joymap[1],   JT_COUNT - 1 },
+    { "joymap2",      &settings.joymap[2],   JT_COUNT - 1 },
+    { "joymap3",      &settings.joymap[3],   JT_COUNT - 1 },
+    { "joymap4",      &settings.joymap[4],   JT_COUNT - 1 },
+    { "joymap5",      &settings.joymap[5],   JT_COUNT - 1 },
+    { "joymap6",      &settings.joymap[6],   JT_COUNT - 1 },
+    { "joymap7",      &settings.joymap[7],   JT_COUNT - 1 },
+    { "joymap8",      &settings.joymap[8],   JT_COUNT - 1 },
+    { "joymap9",      &settings.joymap[9],   JT_COUNT - 1 },
+    { "joymap10",     &settings.joymap[10],  JT_COUNT - 1 },
+    { "joymap11",     &settings.joymap[11],  JT_COUNT - 1 },
+    { "joymap12",     &settings.joymap[12],  JT_COUNT - 1 },
+    { "joymap13",     &settings.joymap[13],  JT_COUNT - 1 },
 
     { "bus_trace",      &settings.bus_trace,      1  },
     { "betadisk",       &settings.betadisk,       1  },
     { "tape_autostart", &settings.tape_autostart, 1  },
     { "tape_realtime",  &settings.tape_realtime,  1  },
     { "tape_rg",        &settings.tape_rg,        1  },
+    { "tape_wear",      &settings.tape_wear,      3  },
 };
 
 #define FIELD_COUNT (sizeof fields / sizeof fields[0])
@@ -173,16 +192,19 @@ void settings_defaults(void) {
 
 // ---------------------------------------------------------------------------
 
-bool settings_save(void) {
+bool settings_save_to(const char *path, const char *name) {
     FIL f;
-    if (f_open(&f, CFG_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return false;
+    if (f_open(&f, path, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return false;
 
-    f_printf(&f, "# frank-dino settings\n");
+    if (name) f_printf(&f, "# name: %s\n", name);
+    else      f_printf(&f, "# frank-dino settings\n");
     for (unsigned i = 0; i < FIELD_COUNT; i++)
         f_printf(&f, "%s %u\n", fields[i].key, *fields[i].at);
 
     return f_close(&f) == FR_OK;
 }
+
+bool settings_save(void) { return settings_save_to(CFG_PATH, NULL); }
 
 static void apply_line(char *line) {
     while (*line == ' ' || *line == '\t') line++;
@@ -206,11 +228,13 @@ static void apply_line(char *line) {
     }
 }
 
-bool settings_load(void) {
+bool settings_load(void) { return settings_load_from(CFG_PATH); }
+
+bool settings_load_from(const char *path) {
     settings_defaults();
 
     FIL f;
-    if (f_open(&f, CFG_PATH, FA_READ) != FR_OK) return false;
+    if (f_open(&f, path, FA_READ) != FR_OK) return false;
 
     char line[64];
     while (f_gets(line, sizeof line, &f)) {
@@ -221,4 +245,60 @@ bool settings_load(void) {
 
     f_close(&f);
     return true;
+}
+
+// ---------------------------------------------------------------------------
+// Profiles
+// ---------------------------------------------------------------------------
+/*
+ * Whole settings files kept by name in /profiles: a machine, its sound,
+ * its joystick, saved together and brought back together. pico-speccy's
+ * (Config::profileSave/profileLoad) in this file's own format -- a
+ * profile is a settings file with its name in the first line.
+ */
+#define PROF_DIR "/profiles"
+
+static bool prof_path(const int slot, char *out, const unsigned n) {
+    if (slot < 0 || slot >= SETTINGS_PROFILES) return false;
+    snprintf(out, n, PROF_DIR "/profile%02d.cfg", slot);
+    return true;
+}
+
+bool settings_profile_name(const int slot, char *out, const unsigned n) {
+    char path[40];
+    out[0] = 0;
+    if (!prof_path(slot, path, sizeof path)) return false;
+    FIL f;
+    if (f_open(&f, path, FA_READ) != FR_OK) return false;
+    char line[64];
+    const bool got = f_gets(line, sizeof line, &f) != NULL;
+    f_close(&f);
+    if (!got || strncmp(line, "# name: ", 8) != 0) { snprintf(out, n, "Profile %d", slot + 1); return true; }
+    char *nl = strpbrk(line + 8, "\r\n");
+    if (nl) *nl = 0;
+    snprintf(out, n, "%s", line + 8);
+    return true;
+}
+
+int settings_profile_save(const char *name) {
+    f_mkdir(PROF_DIR);
+    char path[40], have[32];
+    int slot = -1;
+    for (int i = 0; i < SETTINGS_PROFILES; i++) {          // the same name, overwritten
+        if (settings_profile_name(i, have, sizeof have) && !strcmp(have, name)) { slot = i; break; }
+    }
+    for (int i = 0; slot < 0 && i < SETTINGS_PROFILES; i++) // else the first free slot
+        if (!settings_profile_name(i, have, sizeof have)) slot = i;
+    if (slot < 0 || !prof_path(slot, path, sizeof path)) return -1;
+    return settings_save_to(path, name) ? slot : -1;
+}
+
+bool settings_profile_load(const int slot) {
+    char path[40];
+    return prof_path(slot, path, sizeof path) && settings_load_from(path);
+}
+
+bool settings_profile_delete(const int slot) {
+    char path[40];
+    return prof_path(slot, path, sizeof path) && f_unlink(path) == FR_OK;
 }

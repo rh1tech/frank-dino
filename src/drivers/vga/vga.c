@@ -228,8 +228,10 @@ static uint8_t spec_palette_dim[16];
  * change at all: where it used to repeat a byte four times it now
  * repeats a pattern twice.
  */
-static uint16_t spec_pal16[16];
-static uint16_t spec_pal16_dim[16];
+/* [scanline-dimmed][Bayer row][colour]: the 16 ZX colours as each output
+ * line draws them. A colour on the grid has the same pattern in both rows,
+ * so the default palette is as solid as it ever was. */
+static uint16_t spec_pal16x[2][2][16];
 
 /* ULA+: [entry][Bayer row], and the dimmed twin for scanlines. */
 static uint16_t ulaplus_pal16[64][2];
@@ -335,23 +337,118 @@ static void build_gigascreen(void) {
     }
 }
 
+/*
+ * The look of the 16 ZX colours: a palette, a scanline strength and a CRT
+ * filter, all applied here and none of them per pixel.
+ *
+ * Palettes are pico-speccy's (Video.cpp, Unreal Speccy's format): black,
+ * normal and bright levels and a 3x3 matrix. "Sinclair" is this board's
+ * own AA/FF, every colour on the ladder's grid -- solid, as it has always
+ * been. The others land between grid levels and come out through the
+ * 2x2 dither the ULA+ already uses.
+ */
+typedef struct { uint8_t zz, nn, bb; uint16_t m[9]; } zx_palette_t;
+static const zx_palette_t kZxPalettes[] = {
+    { 0x00, 0xAA, 0xFF, { 0x100,0,0, 0,0x100,0, 0,0,0x100 } },                          // Sinclair
+    { 0x00, 0xCD, 0xFF, { 0x100,0,0, 0,0x100,0, 0,0,0x100 } },                          // Pulsar
+    { 0x00, 0xA0, 0xFF, { 0x100,0,0, 0,0x100,0, 0,0,0x100 } },                          // Alone
+    { 0x00, 0xCD, 0xFF, { 0x049,0x092,0x024, 0x049,0x092,0x024, 0x049,0x092,0x024 } },  // Grayscale
+    { 0x00, 0xCD, 0xFF, { 0x100,0,0, 0x040,0x0C0,0, 0,0x040,0x0C0 } },                  // Mars
+    { 0x00, 0xCD, 0xFF, { 0x0D0,0,0x030, 0,0x0D0,0x030, 0,0,0x100 } },                  // Ocean
+};
+#define ZX_PALETTES (sizeof kZxPalettes / sizeof kZxPalettes[0])
+
+/* Scanline strength: what the dimmed line keeps, out of 256. */
+static const uint16_t kScanScale[5] = { 256, 224, 184, 128, 64 };
+
+/* pico-speccy's CRT colour stage: P22-ish phosphors, rows summing to 1.0
+ * so white stays white, then a gamma curve and a black lift. Levels 1-3,
+ * and 4-6 the same with the aperture grille. */
+static const uint16_t kCrtPhosphor[4][9] = {
+    { 0x100, 0, 0,  0, 0x100, 0,  0, 0, 0x100 },
+    {  246,  8, 3,   5,  248, 3,   3, 15, 238 },
+    {  238, 15, 3,  10,  241, 5,   5, 26, 225 },
+    {  230, 23, 3,  15,  233, 8,   8, 36, 212 },
+};
+static const uint8_t kCrtLift[4] = { 0, 4, 8, 12 };
+/* 255 * (x/255)^gamma for gamma 1.0 / 1.15 / 1.30 / 1.45, on 17 points; linear between. */
+static const uint8_t kCrtGamma[4][17] = {
+    {   0,  16,  32,  48,  64,  80,  96, 112, 128, 144, 160, 176, 192, 208, 224, 240, 255 },
+    {   0,  11,  23,  37,  52,  67,  83,  99, 115, 132, 149, 166, 184, 202, 220, 238, 255 },
+    {   0,   7,  17,  29,  42,  57,  72,  88, 104, 121, 139, 157, 176, 196, 215, 236, 255 },
+    {   0,   5,  13,  23,  34,  47,  62,  77,  94, 111, 130, 149, 169, 190, 211, 234, 255 },
+};
+
+static uint32_t mat3(const uint32_t rgb, const uint16_t m[9]) {
+    const int r = (rgb >> 16) & 0xFF, g = (rgb >> 8) & 0xFF, b = rgb & 0xFF;
+    int o[3];
+    for (int k = 0; k < 3; k++) {
+        const int v = (r * m[3 * k] + g * m[3 * k + 1] + b * m[3 * k + 2]) >> 8;
+        o[k] = v > 255 ? 255 : v;
+    }
+    return ((uint32_t)o[0] << 16) | ((uint32_t)o[1] << 8) | (uint32_t)o[2];
+}
+
+static uint8_t gamma_lift(const uint8_t v, const unsigned st) {
+    const uint8_t *g = kCrtGamma[st];
+    const unsigned i = v >> 4, f = v & 15u;
+    int o = (int)(g[i] + ((g[i + 1] - g[i]) * (int)f) / 16) + kCrtLift[st];
+    return (uint8_t)(o > 255 ? 255 : o);
+}
+
+static uint32_t zx_colour(const int i) {
+    const zx_palette_t *p = &kZxPalettes[settings.palette < ZX_PALETTES ? settings.palette : 0];
+    const uint32_t lvl = (i & 8) ? p->bb : p->nn;
+    const int c = i & 7;
+    uint32_t rgb = (((c & 2) ? lvl : p->zz) << 16) | (((c & 4) ? lvl : p->zz) << 8) | ((c & 1) ? lvl : p->zz);
+    rgb = mat3(rgb, p->m);
+    const unsigned st = settings.crt <= 3 ? settings.crt : settings.crt - 3u;
+    if (st) {
+        rgb = mat3(rgb, kCrtPhosphor[st]);
+        rgb = ((uint32_t)gamma_lift((uint8_t)(rgb >> 16), st) << 16)
+            | ((uint32_t)gamma_lift((uint8_t)(rgb >> 8), st) << 8)
+            |  (uint32_t)gamma_lift((uint8_t)rgb, st);
+    }
+    return rgb;
+}
+
+static inline uint8_t grid_level(const uint32_t v) { return (uint8_t)((v + 42u) / 85u); }
+
+static uint8_t to_px(const uint32_t rgb, const unsigned scale) {
+    return (uint8_t)PX(grid_level((((rgb >> 16) & 0xFF) * scale) >> 8),
+                       grid_level((((rgb >> 8)  & 0xFF) * scale) >> 8),
+                       grid_level((( rgb        & 0xFF) * scale) >> 8));
+}
+
 static void build_spec_palette(void) {
+    const unsigned scan = kScanScale[settings.scanlines < 5 ? settings.scanlines : 1];
+    const bool grille = settings.crt >= 4;
     for (int i = 0; i < 16; i++) {
-        const int lvl = (i & 8) ? 3 : 2;
-        const int c   = i & 7;
-        spec_palette[i] = PX((c & 2) ? lvl : 0,      // red
-                             (c & 4) ? lvl : 0,      // green
-                             (c & 1) ? lvl : 0);     // blue
-
-        const int dim = lvl - 1;
-        spec_palette_dim[i] = PX((c & 2) ? dim : 0,
-                                 (c & 4) ? dim : 0,
-                                 (c & 1) ? dim : 0);
-
-        spec_pal16[i]     = (uint16_t)(spec_palette[i]     * 0x0101u);
-        spec_pal16_dim[i] = (uint16_t)(spec_palette_dim[i] * 0x0101u);
+        const uint32_t rgb = zx_colour(i);
+        for (int d = 0; d < 2; d++) {
+            const unsigned scale = d ? scan : 256u;
+            uint16_t rows[2];
+            ulaplus_entry(rgb, (int)scale, rows);
+            if (grille) {
+                /* The aperture grille: the right pixel of each doubled pair
+                 * at two thirds -- 171, the one factor that keeps the
+                 * ladder's grid on the grid. */
+                uint16_t dark[2];
+                ulaplus_entry(rgb, (int)(scale * 171u >> 8), dark);
+                for (int r = 0; r < 2; r++) rows[r] = (uint16_t)((rows[r] & 0x00FFu) | (dark[r] & 0xFF00u));
+            }
+            spec_pal16x[d][0][i] = rows[0];
+            spec_pal16x[d][1][i] = rows[1];
+        }
+        /* The byte-wide paths (16 colours, hi-res) have no 2x2 cell to
+         * dither in: the nearest grid colour. */
+        spec_palette[i]     = to_px(rgb, 256u);
+        spec_palette_dim[i] = to_px(rgb, scan);
     }
 }
+
+volatile bool vga_spec_palette_dirty;
+void vga_spec_palette_changed(void) { vga_spec_palette_dirty = true; }
 
 /*
  * Nibble to four doubled pixels.
@@ -463,8 +560,10 @@ static void build_atm_palette(void) {
         spec_palette[i] = PX(rgb[i][0], rgb[i][1], rgb[i][2]);
         spec_palette_dim[i] = PX(rgb[i][0] ? rgb[i][0] - 1 : 0, rgb[i][1] ? rgb[i][1] - 1 : 0,
                                  rgb[i][2] ? rgb[i][2] - 1 : 0);
-        spec_pal16[i]     = (uint16_t)(spec_palette[i]     * 0x0101u);
-        spec_pal16_dim[i] = (uint16_t)(spec_palette_dim[i] * 0x0101u);
+        for (int r = 0; r < 2; r++) {
+            spec_pal16x[0][r][i] = (uint16_t)(spec_palette[i]     * 0x0101u);
+            spec_pal16x[1][r][i] = (uint16_t)(spec_palette_dim[i] * 0x0101u);
+        }
     }
 }
 
@@ -485,7 +584,7 @@ __force_inline static uint8_t *atm_bits8(uint8_t *__restrict px, const uint8_t b
 static void render_atm_line(uint32_t *__restrict out, const uint32_t line, const atm_vmode_t vm,
                             const bool dim) {
     const uint8_t  *__restrict pal   = dim ? spec_palette_dim : spec_palette;
-    const uint16_t *__restrict pal16 = dim ? spec_pal16_dim : spec_pal16;
+    const uint16_t *__restrict pal16 = spec_pal16x[dim][line & 1];
     const uint32_t border32 = (uint32_t)pal16[atm_border_index() & 15u] * 0x00010001u;
     if (line < 40u || line >= 440u) {
         for (int i = 0; i < VISIBLE_BYTES / 4; i++) out[i] = border32;
@@ -616,7 +715,7 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
          * line address, each byte two pixels of four bits, IGRB: the
          * low pixel bits 6 and 2-0, the high bits 7 and 5-3.
          */
-        const uint16_t *__restrict pal = dim ? spec_pal16_dim : spec_pal16;
+        const uint16_t *__restrict pal = spec_pal16x[dim][line & 1];
         const uint32_t border32 = (uint32_t)pal[spec_border & 7] * 0x00010001u;
         if (line < SPEC_Y0 || line >= SPEC_Y0 + SPEC_H) {
             for (int i = 0; i < VISIBLE_BYTES / 4; i++) out[i] = border32;
@@ -736,7 +835,7 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
          * microseconds, and it only runs when the setting is on.
          */
         const uint16_t (*__restrict g)[16][2] = dim ? giga16_dim : giga16;
-        const uint16_t *__restrict pal = dim ? spec_pal16_dim : spec_pal16;
+        const uint16_t *__restrict pal = spec_pal16x[dim][line & 1];
         const uint32_t border32 = (uint32_t)pal[spec_border & 7] * 0x00010001u;
 
         if (line < SPEC_Y0 || line >= SPEC_Y0 + SPEC_H) {
@@ -776,7 +875,7 @@ __force_inline static void render_spectrum_line(uint32_t *__restrict out, const 
         return;
     }
 
-    const uint16_t *__restrict pal = dim ? spec_pal16_dim : spec_pal16;
+    const uint16_t *__restrict pal = spec_pal16x[dim][line & 1];
 
     if (likely(beam_frame) && tmode == 0u) {
         render_beam_line(out, line, beam_frame, pal);
@@ -970,7 +1069,8 @@ void __time_critical_func(vga_scanline)(void) {
                 atm_pal_dirty = false;
                 build_atm_palette();
                 pal_is_atm = true;
-            } else if (!atm && pal_is_atm) {
+            } else if (!atm && (pal_is_atm || vga_spec_palette_dirty)) {
+                vga_spec_palette_dirty = false;
                 build_spec_palette();
                 pal_is_atm = false;
             }

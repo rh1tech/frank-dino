@@ -87,6 +87,10 @@ vga_mode_t vga_get_mode(void);
  */
 void vga_build_ui_palette(void);
 
+/* The ZX palette, scanline strength or CRT filter setting changed: the
+ * colours are rebuilt in the next vertical blank. */
+void vga_spec_palette_changed(void);
+
 /* Rebuild the ULA+ colour tables. Called from the blanking. */
 void vga_build_ulaplus(void);
 void vga_refresh_ulaplus_border(void);

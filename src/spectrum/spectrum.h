@@ -385,6 +385,9 @@ extern volatile bool spec_beeper;
 
 /* The Kempston mouse: see spectrum.c. Written by the USB driver. */
 extern volatile uint8_t spec_mouse_x, spec_mouse_y, spec_mouse_buttons, spec_mouse_wheel;
+/* The mouse's movement as USB reports it, not yet taken: the Profi's
+ * serial mouse sends deltas rather than positions. */
+extern volatile int16_t spec_mouse_dx, spec_mouse_dy;
 extern volatile bool    spec_mouse_seen;
 
 /* Gigascreen "Auto" has seen a program flipping screens every frame. */

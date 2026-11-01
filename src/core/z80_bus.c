@@ -90,6 +90,8 @@ z80_opfetch_fn z80_opfetch_cb;
 
 volatile uint8_t z80_wwatch_mask;
 z80_wwatch_fn    z80_wwatch_cb;
+z80_rtap_fn      z80_rtap_cb;
+uint16_t         z80_rtap_base;
 
 uint32_t z80_t;
 volatile uint32_t z80_fetch0;
@@ -332,6 +334,8 @@ __force_inline static uint32_t bus_service(const uint32_t prev, uint32_t *const 
                 if (diag) z80_stats.mem_read++;
             }
             v = mem_read(a);
+            // After the read: the byte is the old plane's, the next cycle the new one's.
+            if (unlikely(z80_rtap_cb) && (a & 0xFFF0u) == z80_rtap_base) z80_rtap_cb(a, t);
         } else {
             // ~MREQ idle with ~RD active is an I/O read and nothing else.
             v = z80_io_in(a, t);

@@ -7,6 +7,7 @@
  */
 
 #include "tapeplay.h"
+#include "z80_bus.h"
 
 #include "hardware/sync.h"
 
@@ -89,18 +90,27 @@ void __not_in_flash_func(tapeplay_frame_end)(const uint32_t frame_tstates, const
      *
      * A loader samples #FE every fifty-odd T-states while it waits for
      * an edge: well over a thousand times a frame. A program that is not
-     * loading reads it for the keyboard, eight times a frame at most. A
-     * second of the latter stops the tape; one frame of the former
+     * loading reads it for the keyboard, eight times a frame at most.
+     * Three seconds of the latter stop the tape; one frame of the former
      * starts it.
+     *
+     * Except in the ROM's own loader, which counts for both whatever it
+     * reads (pico-speccy decides by the PC too). Hunting for a pilot it
+     * reads a handful of times and then sits a second in LD-WAIT, which
+     * reads nothing -- over and over, under any read count. Judged by
+     * reads alone the tape stopped under it, came back a frame after
+     * LD-EDGE had already given up, and a real-time load died mid-block.
      */
+    const uint16_t pc = z80_stats.last_opfetch_addr;
+    const bool rom_loader = pc >= 0x0556u && pc < 0x0605u;
     if (motor) {
-        quiet = reads < 40u ? quiet + 1u : 0u;
-        if (quiet >= 50u) {
+        quiet = (reads < 40u && !rom_loader) ? quiet + 1u : 0u;
+        if (quiet >= 150u) {
             motor  = false;
             remain = (int32_t)(seg_end - end) > 0 ? seg_end - end : 0u;
             stopped_by_tape = false;
         }
-    } else if (reads >= 400u && (gen_state == PULSE_RUNNING || stopped_by_tape
+    } else if ((reads >= 400u || rom_loader) && (gen_state == PULSE_RUNNING || stopped_by_tape
                                  || r_tail != r_head)) {
         if (stopped_by_tape) resume_req = true;
         stopped_by_tape = false;
@@ -132,7 +142,13 @@ bool tapeplay_mount(const uint8_t *image, const uint32_t len, const pulse_fmt_t 
     quiet = 0;
     stopped_by_tape = false;
     gen_state = pulse_state();
-    motor = true;
+    /*
+     * The motor waits for a loader. Started here, it ran on while
+     * LOAD "" was still being typed and took most of the header's pilot
+     * with it; the heuristic below starts it on the first frame of a
+     * loader, which is when a person would press PLAY.
+     */
+    motor = false;
     tapeplay_active = true;
     return true;
 }

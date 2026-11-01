@@ -640,10 +640,12 @@ static bool load_tap(FIL *f, const uint32_t size, const tape_format_t fmt,
     static const pulse_fmt_t pf[] = { PULSE_TAP, PULSE_TZX, PULSE_PZX, PULSE_CSW, PULSE_CSW };
     pulse_set_is_48k(spec_is_48k_class(spec_machine));
     pulse_set_rg_timings(settings.tape_rg != 0);
+    pulse_set_wear(settings.tape_wear);
     if (!pulse_open(tape_raw, len, pf[fmt])) FAIL("that is not a tape this can play");
 
     char mounted[64];
-    const bool trap = !settings.tape_realtime && pulse_all_rom_loadable()
+    // A worn tape has to be played: the trap would read straight past the damage.
+    const bool trap = !settings.tape_realtime && !settings.tape_wear && pulse_all_rom_loadable()
                       && len <= TAPE_MAX_BYTES && fmt != TAPE_CSW && fmt != TAPE_WAV;
     if (trap) {
         // Into the trap's own buffer, converted in place; see tape.c.
@@ -989,8 +991,19 @@ static bool load_if2(FIL *f, const uint32_t size, char *detail, const unsigned d
 
 // ---------------------------------------------------------------------------
 
+/* The last file loaded, as a name a person would give it: the base name
+ * without its extension. A pad profile saved now is named after it. */
+char loader_last_name[24];
+
 bool loader_load(const char *path, const file_kind_t kind,
                  char *detail, const unsigned detail_len) {
+    {
+        const char *b = strrchr(path, '/');
+        b = b ? b + 1 : path;
+        snprintf(loader_last_name, sizeof loader_last_name, "%s", b);
+        char *dot = strrchr(loader_last_name, '.');
+        if (dot && dot != loader_last_name) *dot = 0;
+    }
     FILINFO fi;
     if (f_stat(path, &fi) != FR_OK) FAIL("cannot stat %s", path);
 

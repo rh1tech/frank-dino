@@ -19,6 +19,7 @@ typedef enum : uint8_t {
     IDE_NEMO,
     IDE_DIVIDE,
     IDE_ATM,
+    IDE_SMUC,       // the Scorpion's card; its ports live in smuc.c
     IDE_COUNT,
 } ide_scheme_t;
 
@@ -30,3 +31,12 @@ void        ide_reset(void);
 
 bool ide_port_out(uint16_t port, uint8_t v);
 bool ide_port_in(uint16_t port, uint8_t *v);
+
+/* The register file for an interface that decodes its own ports (SMUC):
+ * register 0 is the 16-bit data register's low byte, its high byte goes
+ * through the latch. */
+uint8_t ide_smuc_read(unsigned reg);
+void    ide_smuc_write(unsigned reg, uint8_t v);
+uint8_t ide_smuc_latch_read(void);
+void    ide_smuc_latch_write(uint8_t v);
+void    ide_smuc_control(uint8_t v);    // Device Control: SRST on D2

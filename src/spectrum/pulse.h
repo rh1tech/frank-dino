@@ -67,6 +67,11 @@ bool pulse_seek_block(uint32_t n);
  * means the generator stopped -- see pulse_state() for why.
  */
 uint32_t pulse_fill(uint32_t *out, uint32_t max);
+/* As pulse_fill(), without the worn tape -- what the tape really holds. */
+uint32_t pulse_fill_clean(uint32_t *out, uint32_t max);
+
+/* A worn tape, 0 off to 3 heavy (tapewear.h). Restarts its generator. */
+void pulse_set_wear(uint8_t level);
 
 pulse_state_t pulse_state(void);
 

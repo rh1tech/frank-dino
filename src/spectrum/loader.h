@@ -33,3 +33,6 @@
  * was loaded, or why it was not.
  */
 bool loader_load(const char *path, file_kind_t kind, char *detail, unsigned detail_len);
+
+/* The last file loaded, base name without extension; "" before any. */
+extern char loader_last_name[24];

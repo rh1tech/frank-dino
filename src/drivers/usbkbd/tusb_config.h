@@ -53,7 +53,7 @@
 //--------------------------------------------------------------------
 
 // Size of buffer to hold descriptors and other data used for enumeration
-#define CFG_TUH_ENUMERATION_BUFSIZE 256
+#define CFG_TUH_ENUMERATION_BUFSIZE 1024    // a DualSense's audio interfaces come with it
 
 #define CFG_TUH_HUB                 1
 #define CFG_TUH_CDC                 0
@@ -66,6 +66,7 @@
  */
 #define CFG_TUH_MSC                 1
 #define CFG_TUH_VENDOR              0
+#define CFG_TUH_XINPUT              1 // xinput_host.c, an app class driver
 
 // Max device support (excluding hub device)
 #define CFG_TUH_DEVICE_MAX          (CFG_TUH_HUB ? 4 : 1) // Hub typically has 4 ports

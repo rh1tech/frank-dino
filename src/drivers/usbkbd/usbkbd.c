@@ -18,6 +18,9 @@
 #include <bsp/board_api.h>
 #include <tusb.h>
 
+#include "joymap.h"
+#include "xinput_host.h"
+
 #include "menu.h"
 #include "settings.h"
 #include "spectrum.h"
@@ -256,10 +259,11 @@ static void apply_report(const uint8_t *r) {
  * a direction, which is what makes an analogue stick usable on a machine
  * whose joystick is four switches.
  *
- * What is not here is the rest of their file -- the DualShock 4 and 5
- * report formats, the xinput class driver, and a table of per-vendor
- * quirks. Those are two thousand lines for pads this has no way to test
- * against, and this is a copy_to_ram build.
+ * The DualShock 4 and DualSense reports are decoded too, picked by
+ * VID:PID at mount, and XInput pads (Xbox and the PC pads in X mode) come
+ * through usb64's class driver, xinput_host.c. Every one of them becomes
+ * the same fourteen bits (joymap.h); what those do to the machine is the
+ * map in the settings.
  */
 /* Defined with the keyboard's translation, below. */
 static void menu_arrow(char last);
@@ -267,36 +271,17 @@ static void menu_arrow(char last);
 static bool    mouse_present;
 static uint8_t mouse_addr, mouse_inst;
 
-static bool    pad_present;
-static uint8_t pad_addr, pad_inst;
-static uint8_t pad_prev;            // the last state, so only edges are sent
-
-/* B is fire: the bottom button of the diamond, which is where a thumb sits. */
-#define PAD_BIT_A      0x20
-#define PAD_BIT_B      0x40
-#define PAD_BIT_START  0x20
-#define PAD_BIT_SELECT 0x10
+static bool      pad_present;
+static uint8_t   pad_addr, pad_inst;
+static padkind_t pad_kind_;
+static uint16_t  pad_prev;          // the last state, so only edges are sent
 
 bool usbkbd_pad_present(void) { return pad_present; }
 
-static void pad_decode(const uint8_t *report, const uint16_t len) {
-    if (len < 7) return;
-
-    const bool left  = report[0] < 0x40;
-    const bool right = report[0] > 0xC0;
-    const bool up    = report[1] < 0x40;
-    const bool down  = report[1] > 0xC0;
-    const uint8_t b5 = report[5], b6 = report[6];
-    const bool fire  = (b5 & (PAD_BIT_A | PAD_BIT_B)) != 0;   // either, for one-button games
-    const bool start = (b6 & PAD_BIT_START)  != 0;
-    const bool sel   = (b6 & PAD_BIT_SELECT) != 0;
-
-    const uint8_t now = (uint8_t)((up    ? 1u << JOY_BIT_UP    : 0)
-                                | (down  ? 1u << JOY_BIT_DOWN  : 0)
-                                | (left  ? 1u << JOY_BIT_LEFT  : 0)
-                                | (right ? 1u << JOY_BIT_RIGHT : 0)
-                                | (fire  ? 1u << JOY_BIT_FIRE  : 0));
-
+/* One pad's state, from whichever decoder: the menu's cursor while the
+ * menu is up, the machine's joystick and keys otherwise. */
+static void pad_input(const uint16_t now) {
+    const uint16_t went_down = (uint16_t)(now & ~pad_prev);
     if (menu_is_open()) {
         /*
          * In the UI the pad drives the cursor, which is the difference
@@ -304,23 +289,71 @@ static void pad_decode(const uint8_t *report, const uint16_t len) {
          * down to do it. Edges only: the report repeats while a
          * direction is held.
          */
-        const uint8_t went_down = (uint8_t)(now & ~pad_prev);
-        if (went_down & (1u << JOY_BIT_UP))    menu_arrow('A');
-        if (went_down & (1u << JOY_BIT_DOWN))  menu_arrow('B');
-        if (went_down & (1u << JOY_BIT_RIGHT)) menu_arrow('C');
-        if (went_down & (1u << JOY_BIT_LEFT))  menu_arrow('D');
-        if (went_down & (1u << JOY_BIT_FIRE))  menu_key('\r');
-        if (start && !(pad_prev & 0x80)) menu_key('\t');     // Start closes
-        if (sel)   menu_key(0x7F);                           // Select goes up
+        if (went_down & PAD_BIT(PAD_UP))    menu_arrow('A');
+        if (went_down & PAD_BIT(PAD_DOWN))  menu_arrow('B');
+        if (went_down & PAD_BIT(PAD_RIGHT)) menu_arrow('C');
+        if (went_down & PAD_BIT(PAD_LEFT))  menu_arrow('D');
+        if (went_down & (PAD_BIT(PAD_A) | PAD_BIT(PAD_B))) menu_key('\r');
+        if (went_down & PAD_BIT(PAD_START))  menu_key('\t');     // Start closes
+        if (went_down & PAD_BIT(PAD_SELECT)) menu_key(0x7F);      // Select goes up
     } else {
-        for (uint8_t b = 0; b < 5; b++)
-            if (((now ^ pad_prev) >> b) & 1)
-                spec_joy_set(b, (now >> b) & 1);
+        joymap_apply(now);
         /* Start is the way into the browser without reaching for F11. */
-        if (start && !(pad_prev & 0x80)) { menu_wanted_settings = false; menu_wanted = true; }
+        if (went_down & PAD_BIT(PAD_START)) {
+            joymap_release();
+            menu_wanted_settings = false;
+            menu_wanted = true;
+        }
     }
+    pad_prev = now;
+}
 
-    pad_prev = (uint8_t)(now | (start ? 0x80 : 0));
+static void pad_decode(const uint8_t *report, const uint16_t len) {
+    uint16_t p;
+    bool ok;
+    switch (pad_kind_) {
+        case PADKIND_DS4: ok = pad_from_ds4(report, len, &p); break;
+        case PADKIND_DS5: ok = pad_from_ds5(report, len, &p); break;
+        default:          ok = pad_from_generic(report, len, &p); break;
+    }
+    if (ok) pad_input(p);
+}
+
+// ---------------------------------------------------------------------------
+// XInput, through usb64's class driver
+// ---------------------------------------------------------------------------
+/* TinyUSB asks for the extra class drivers by this name (usbh.c). */
+usbh_class_driver_t const *usbh_app_driver_get_cb(uint8_t *driver_count) {
+    *driver_count = 1;
+    return &usbh_xinput_driver;
+}
+
+void tuh_xinput_mount_cb(uint8_t dev_addr, uint8_t instance, const xinputh_interface_t *itf) {
+    // A 360 wireless receiver has no pad until one connects: listen first.
+    if (!(itf->type == XBOX360_WIRELESS && !itf->connected)) {
+        tuh_xinput_set_led(dev_addr, instance, 0, false);
+        tuh_xinput_set_rumble(dev_addr, instance, 0, 0, false);
+    }
+    tuh_xinput_receive_report(dev_addr, instance);
+    printf("[usbkbd] xinput pad on address %u\n", dev_addr);
+}
+
+void tuh_xinput_umount_cb(uint8_t dev_addr, uint8_t instance) {
+    (void)dev_addr; (void)instance;
+    pad_prev = 0;
+    joymap_release();
+}
+
+void tuh_xinput_report_received_cb(uint8_t dev_addr, uint8_t instance,
+                                   uint8_t const *report, uint16_t len) {
+    (void)len;
+    const xinputh_interface_t *itf = (const xinputh_interface_t *)report;
+    const xinput_gamepad_t *g = &itf->pad;
+    uint16_t p;
+    if (itf->connected && itf->new_pad_data
+        && pad_from_xinput(g->wButtons, g->bLeftTrigger, g->bRightTrigger, g->sThumbLX, g->sThumbLY, &p))
+        pad_input(p);
+    tuh_xinput_receive_report(dev_addr, instance);
 }
 
 // ---------------------------------------------------------------------------
@@ -336,19 +369,23 @@ void tuh_hid_mount_cb(uint8_t dev_addr, uint8_t instance,
     if (proto == HID_ITF_PROTOCOL_NONE) {
         /*
          * Neither a boot keyboard nor a boot mouse, which in practice on
-         * this port means a gamepad: the cheap SNES-shaped ones and the
-         * DragonRise clones all announce protocol NONE and then send the
-         * fixed eight-byte report pad_decode() reads.
-         *
-         * Taken without parsing the report descriptor, exactly as theirs
-         * does for this family -- the descriptor would have to be walked
-         * to learn a layout that is the same on every one of them.
+         * this port means a gamepad. Which one is the VID:PID: Sony's two
+         * have their own reports, and everything else is taken to be the
+         * cheap SNES-shaped family whose fixed report every one of them
+         * shares. Taking a DualShock for one of those read its report ID
+         * as the X axis -- LEFT, held for ever.
          */
+        uint16_t vid = 0, pid = 0;
+        tuh_vid_pid_get(dev_addr, &vid, &pid);
+        pad_kind_ = pad_kind(vid, pid);
         tuh_hid_receive_report(dev_addr, instance);
         pad_addr = dev_addr;
         pad_inst = instance;
         pad_present = true;
-        printf("[usbkbd] gamepad on address %u instance %u\n", dev_addr, instance);
+        pad_prev = 0;
+        printf("[usbkbd] gamepad %04X:%04X (%s) on address %u\n", vid, pid,
+               pad_kind_ == PADKIND_DS4 ? "DualShock 4" : pad_kind_ == PADKIND_DS5 ? "DualSense" : "generic",
+               dev_addr);
         return;
     }
 
@@ -392,7 +429,7 @@ void tuh_hid_umount_cb(uint8_t dev_addr, uint8_t instance) {
         pad_prev = 0;
         /* A pad unplugged with a direction held otherwise leaves the
          * machine walking into a wall for ever. */
-        for (uint8_t b = 0; b < 5; b++) spec_joy_set(b, false);
+        joymap_release();
         printf("[usbkbd] gamepad gone\n");
         return;
     }
@@ -569,6 +606,11 @@ static void mouse_decode(const uint8_t *r, const uint16_t len) {
     fx %= 2;
     fy %= 2;
     spec_mouse_buttons = r[0] & 7u;
+    /* The raw deltas too, for a serial mouse, bounded so a mouse moved
+     * while nothing reads it does not build up a fling. */
+    const int dx = spec_mouse_dx + (int8_t)r[1], dy = spec_mouse_dy + (int8_t)r[2];
+    spec_mouse_dx = (int16_t)(dx > 1024 ? 1024 : dx < -1024 ? -1024 : dx);
+    spec_mouse_dy = (int16_t)(dy > 1024 ? 1024 : dy < -1024 ? -1024 : dy);
     if (len >= 4) spec_mouse_wheel = (uint8_t)(spec_mouse_wheel + (int8_t)r[3]);
 }
 

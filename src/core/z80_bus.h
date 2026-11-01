@@ -201,6 +201,19 @@ extern volatile uint8_t z80_wwatch_mask;
 extern z80_wwatch_fn    z80_wwatch_cb;
 
 /*
+ * Called AFTER a memory read -- an opcode fetch or a data read -- from
+ * the sixteen bytes at z80_rtap_base, once the byte has gone out.
+ *
+ * For hardware that switches on being read: ProfROM's plane select is a
+ * tap on #0100-#010F that fires on data reads (its trampolines are
+ * LD L,(HL)) and takes effect for the cycle after. NULL when nothing is
+ * armed, so every other machine pays one load and a predicted branch.
+ */
+typedef void (*z80_rtap_fn)(uint16_t addr, uint32_t t);
+extern z80_rtap_fn z80_rtap_cb;
+extern uint16_t    z80_rtap_base;
+
+/*
  * Where in the frame the machine is, in T-states.
  *
  * Kept by both loops and handed to every handler, so anything that has

@@ -213,4 +213,24 @@ bool chips_any(void) { return false; }
 bool ide_port_out(uint16_t p, uint8_t v) { (void)p; (void)v; return false; }
 bool ide_port_in(uint16_t p, uint8_t *v) { (void)p; (void)v; return false; }
 void ide_reset(void) { }
+bool ide_mounted(void) { return false; }
+uint8_t ide_smuc_read(unsigned r) { (void)r; return 0; }
+void    ide_smuc_write(unsigned r, uint8_t v) { (void)r; (void)v; }
+uint8_t ide_smuc_latch_read(void) { return 0; }
+void    ide_smuc_latch_write(uint8_t v) { (void)v; }
+void    ide_smuc_control(uint8_t v) { (void)v; }
+#endif
+
+/* --- ROMs from the card: there is no card on a host ------------------- */
+#include "customrom.h"
+bool customrom_active, customrom_trdos_active;
+const char *customrom_tag(machine_t m, unsigned *b) { (void)m; *b = 0; return NULL; }
+bool customrom_load(machine_t m, uint8_t *const *s, unsigned b) { (void)m; (void)s; (void)b; return false; }
+bool customrom_trdos(uint8_t *d) { (void)d; return false; }
+
+/* --- the clock: answered by rtc.c where a test links it -------------- */
+#ifndef REAL_RTC
+void    rtc_select(uint8_t r) { (void)r; }
+uint8_t rtc_read(void) { return 0x55; }
+void    rtc_write(uint8_t v) { (void)v; }
 #endif

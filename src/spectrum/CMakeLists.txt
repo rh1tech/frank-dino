@@ -34,6 +34,10 @@ target_sources(spectrum INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/rtc.c
         ${CMAKE_CURRENT_LIST_DIR}/diskconv.c
         ${CMAKE_CURRENT_LIST_DIR}/ide.c
+        ${CMAKE_CURRENT_LIST_DIR}/smuc.c
+        ${CMAKE_CURRENT_LIST_DIR}/joymap.c
+        ${CMAKE_CURRENT_LIST_DIR}/joyprof.c
+        ${CMAKE_CURRENT_LIST_DIR}/customrom.c
         ${CMAKE_CURRENT_LIST_DIR}/diskconv_td0.cpp
         ${CMAKE_CURRENT_LIST_DIR}/td0.cpp
         ${CMAKE_CURRENT_LIST_DIR}/launch.c

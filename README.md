@@ -26,14 +26,14 @@ the RP2350B being everything else the CPU can see.
 | CPU | A real Z84C00 at each machine's own clock (3.5, 3.5469 or 3.528 MHz), paced by the wall clock; 5.3 and 7 MHz on request |
 | Timing | Every handler is told its T-state: the ULA's contention and floating bus on the Sinclair machines, a picture built as the ULA fetched it (multicolour, border effects), Gigascreen with an Auto mode |
 | RAM | 128 KB in SRAM; up to 1 MB more in the 8 MB PSRAM, at #C000 through a staging page or anywhere at all through the XIP cache (the ATM) |
-| Video | 256x192 and border doubled into 640x480 over HDMI; ULA+, Gigascreen, the Timex modes, Pentagon 16 colours, Profi 512x240, ATM EGA/hires/80x25 text with its palette |
+| Video | 256x192 and border doubled into 640x480 over HDMI; ULA+, Gigascreen, the Timex modes, Pentagon 16 colours, Profi 512x240, ATM EGA/hires/80x25 text with its palette; palettes (Sinclair, Pulsar, Alone, Grayscale, Mars, Ocean), four scanline strengths and a CRT filter with an aperture grille, all dithered onto the ladder at no cost per pixel |
 | Sound | Beeper, two AYs (TurboSound and TurboSound FM's YM2203s), SAA1099 and the CMS pair, OPL3, YM2413, two SN76489s, Covox (#FB or #DD), SounDrive, SpecDrum, the Byte's 8253 -- synthesised on core 0 from timestamped writes, stereo to two PWM DACs |
-| Tape | `.tap`, `.tzx` (every block type, GDB included), `.pzx`, `.csw`, `.wav` in real time onto the EAR bit, or instantly by ROM trap when a tape is all standard blocks; a tape browser; SAVE recorded back to `.tap`; Rodolfo Guerra timings |
+| Tape | `.tap`, `.tzx` (every block type, GDB included), `.pzx`, `.csw`, `.wav` in real time onto the EAR bit, or instantly by ROM trap when a tape is all standard blocks; a real cassette on J8; a worn-tape model (wow, lurches, dropouts); a tape browser; SAVE recorded back to `.tap`; Rodolfo Guerra timings |
 | Snapshots | `.sna` and `.z80` in; `.z80` v3 out, ten quick-save slots, a register page -- the registers read from the real CPU by NMI |
-| Disks | Beta Disk with TR-DOS 5.03, 5.04T, 5.04TM, 5.05D or 6.11e: `.trd`, `.scl`, `.fdi`, `.udi`, `.td0`; the +3's uPD765; DivMMC/esxDOS and a Z-Controller on its card image; an IDE hard disk behind NEMO, DivIDE or ATM ports |
-| Input | The full matrix over USB or the console, mapped the way pico-speccy and SpeccyP map it; USB gamepads and mice (Kempston mouse with wheel); Kempston, Sinclair 1 and 2, Cursor and Fuller joysticks; Pause |
-| Other | Mr Gluk's clock with its NVRAM on the card, Interface 2 and ALF cartridges, POKE, `.gz` and `.zip` |
-| Menus | pico-speccy's, ported: browser, settings tree, dialogs and info pages on their own 320x240 surface |
+| Disks | Beta Disk with TR-DOS 5.03, 5.04T, 5.04TM, 5.05D or 6.11e: `.trd`, `.scl`, `.fdi`, `.udi`, `.td0`; the +3's uPD765; DivMMC/esxDOS and a Z-Controller on its card image; an IDE hard disk behind NEMO, DivIDE, ATM or the Scorpion's SMUC (with its 24LC16 NVRAM and clock, so ProfROM keeps its setup) |
+| Input | The full matrix over USB or the console, mapped the way pico-speccy and SpeccyP map it; USB gamepads -- generic, DualShock 4, DualSense and XInput -- with every button mappable to a fire bit or a key, and named maps on the card; mice as a Kempston mouse with wheel, and as the Profi's serial mouse; Kempston (three fire buttons), Sinclair 1 and 2, Cursor and Fuller joysticks; Pause |
+| Other | Mr Gluk's clock with its NVRAM on the card, Interface 2 and ALF cartridges, a machine's ROM from `/roms` on the card, settings profiles, POKE, `.gz` and `.zip` |
+| Menus | pico-speccy's layout in the 128K's own style -- the Spectrum's ROM font, the rainbow title bar, the cyan bar -- on their own 320x240 surface |
 
 Five of those are worth a sentence each, because they are not what an
 emulator does.
@@ -334,17 +334,13 @@ This makes "did stage 0 pass" a question a script can answer.
 
 ## What comes next
 
-The machine runs, loads and plays. What it has not got:
+The machine runs, loads and plays. What it has not got yet:
 
-- **Custom tape loaders.** Speedlock, Alkatraz and every turbo loader
-  never call the ROM's `LD-BYTES`, so the trap never sees them. Reaching
-  them needs the tape replayed as a real signal on the ULA's EAR bit with
-  the original timings, which is a different feature and a larger one.
-- **Writing disks back to the card.** A `.trd` can be written to, but the
-  changes live in the PSRAM copy and go when the power does.
-- **Contention and the floating bus.** Port 0xFF returns 0xFF here.
-  Reproducing the real thing needs the video and the CPU to share a
-  clock, which on this board they do not.
+- **ZX Evolution BaseConf.** The ATM-Turbo 2+ memory manager with the
+  Evo's own ports, its keyboard controller, font RAM and rasters.
+- **Four Beta drives.** One is all TR-DOS sees today.
+- **+3 copy protection.** Weak sectors and Speedlock.
+- **The ATM-Turbo 3's full 4 MB.** It has 1 MB here.
 
 ## Toolchain
 
@@ -380,7 +376,8 @@ of it GPL-3.0 or compatible, and each ported file says so at its top:
 - **pico-speccy** (https://github.com/drewpo28/pico-speccy) by drew.po28 —
   the machine models (Pentagon 512/1024, Scorpion/ProfROM/KAY/Phoenix,
   ATM-Turbo, Byte, ALF, Profi DS80), the FM and PSG cores, the tape timings,
-  the TD0 decoder, the Kempston mouse decode, the menus and their font.
+  the TD0 decoder, the Kempston mouse decode, SMUC, the tape wear model, the
+  pad decoders and button map, the palettes and CRT filter, and the menus.
 - **ESPectrum** by Víctor Iborra [Eremus] and David Crespo [dcrespo3d], from
   which pico-speccy grew, and ZX-ESPectrum-Wiimote, Ramón Martinez and
   Jorge Fuertes, and Pete Todd's paseVGA before it.
@@ -390,6 +387,9 @@ of it GPL-3.0 or compatible, and each ported file says so at its top:
 - **UnrealSpeccy** — the ATM memory manager and the Teledisk loader.
 - **Fuse** — the contention patterns and the first contended T-states.
 - **SpeccyP** — the keyboard's extra keys.
+- **usb64** by Ryan Wendland — the XInput class driver (MIT).
+- **ZXMAK2 / UnrealSpeccy** — the 24LC16 model behind SMUC's NVRAM.
+- **Sinclair Research** — the menus' font is the 48K ROM's own.
 
 The ROM images are their owners'; `roms/README.md` says where each came
 from.

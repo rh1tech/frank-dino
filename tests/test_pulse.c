@@ -236,5 +236,42 @@ int main(void) {
         EQ(len_of(1), 793651u, "and a long one");
     }
 
-    return tap_done("pulse");
+        GROUP("the pause closes the last pulse");
+    {
+        // A block whose last pulse is high: the pause must start with the
+        // edge that ends it, or the ROM's LD-EDGE times out on the last bit.
+        const uint8_t body[2] = { 0xFF, 0xFF };              // flag FF, then FF: ends on a 1
+        uint32_t len = put_tap_block(img, body, sizeof body);
+        CHECK(pulse_open(img, len, PULSE_TAP), "a tap opens");
+        uint32_t p[20000];
+        const uint32_t np = pulse_fill(p, 20000);
+        uint32_t last = 0;
+        for (uint32_t i = 0; i < np; i++) if ((p[i] & PULSE_LEN_MASK) > 100000u) { last = i; break; }
+        CHECK(last > 1, "the pause is there");
+        // the pulse before the pause's first part is the block's last half
+        CHECK(((p[last - 2] ^ p[last - 1]) & PULSE_LEVEL) != 0, "the last data pulse ends in an edge");
+        EQ(p[last - 1] & PULSE_LEN_MASK, 3500u, "then a millisecond at the new level");
+    }
+    GROUP("worn tape");
+    {
+        // A tape's pulses, worn heavily: lengths move, a pause does not, the count stays.
+        uint32_t clean[256], worn[256];
+        const uint8_t body[64] = { 0xFF, 0x12, 0x34, 0x56 };
+        const uint32_t len = put_tap_block(img, body, sizeof body);
+        CHECK(pulse_open(img, len, PULSE_TAP), "a tap opens");
+        const uint32_t n = pulse_fill(clean, 256);
+        pulse_set_wear(3);
+        pulse_rewind();
+        const uint32_t m = pulse_fill(worn, 256);
+        EQ(m, n, "the same number of pulses");
+        unsigned moved = 0;
+        for (uint32_t i = 0; i < n; i++) if ((clean[i] & PULSE_LEN_MASK) != (worn[i] & PULSE_LEN_MASK)) moved++;
+        CHECK(moved > n / 4, "heavy wear moves most pulse lengths (%u of %u)", moved, n);
+        pulse_set_wear(0);
+        pulse_rewind();
+        uint32_t again[256];
+        pulse_fill(again, 256);
+        CHECK(!memcmp(again, clean, n * 4), "and off again, the tape is as it was");
+    }
+return tap_done("pulse");
 }

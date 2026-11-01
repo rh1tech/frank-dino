@@ -37,6 +37,7 @@
 #include "sound.h"
 #include "tapeplay.h"
 #include "rtc.h"
+#include "smuc.h"
 #if USB_KEYBOARD
 #include "usbkbd.h"
 #endif
@@ -358,6 +359,7 @@ int main(void) {
     if (storage_mount()) printf("[sd] card mounted\n");
     else                 printf("[sd] no card\n");
     rtc_init();                         // its NVRAM lives on the card
+    smuc_init();                        // ...and so does the SMUC's 24LC16
 
     /*
      * Settings before core 1, because core 1 starts a machine with them.
@@ -397,6 +399,7 @@ int main(void) {
         sound_task();
         tapeplay_task();
         rtc_task();
+        smuc_task();
         audio_task();
         /*
          * The tape input follows its setting, wherever the setting was

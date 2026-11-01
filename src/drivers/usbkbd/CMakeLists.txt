@@ -12,7 +12,9 @@
 
 add_library(usbkbd INTERFACE)
 
-target_sources(usbkbd INTERFACE ${CMAKE_CURRENT_LIST_DIR}/usbkbd.c)
+target_sources(usbkbd INTERFACE
+        ${CMAKE_CURRENT_LIST_DIR}/usbkbd.c
+        ${CMAKE_CURRENT_LIST_DIR}/xinput_host.c)   # usb64's, MIT
 
 # tusb_config.h has to be found before the SDK's own, so this directory
 # goes on the include path of everything that pulls TinyUSB in.

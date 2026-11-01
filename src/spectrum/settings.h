@@ -91,7 +91,8 @@ typedef enum : uint8_t {
 } output_t;
 
 /* The directions, as the rest of the firmware talks about them. */
-enum { JOY_BIT_RIGHT = 0, JOY_BIT_LEFT, JOY_BIT_DOWN, JOY_BIT_UP, JOY_BIT_FIRE };
+enum { JOY_BIT_RIGHT = 0, JOY_BIT_LEFT, JOY_BIT_DOWN, JOY_BIT_UP, JOY_BIT_FIRE,
+       JOY_BIT_FIRE2, JOY_BIT_FIRE3, JOY_BIT_FIRE4 };   // the extended Kempston's bits 5-7
 
 /*
  * Where the Covox answers. #FB is the Pentagon's and the common one;
@@ -144,7 +145,9 @@ typedef struct {
     uint8_t rom_spanish;    // Investronica's ROMs on the 48K, 128K and +2
     uint8_t contention;     // the ULA stops the CPU for screen fetches, as on a real 48K/128K
     uint8_t beam;           // build the picture as the ULA saw it: multicolour, border effects
-    uint8_t scanlines;      // dim every second output line
+    uint8_t scanlines;      // dim every second output line: 0 off, 1-4 light to strong
+    uint8_t palette;        // the 16 ZX colours: 0 Sinclair, Pulsar, Alone, Grayscale, Mars, Ocean
+    uint8_t crt;            // CRT filter: 0 off, 1-3 colour stage, 4-6 the same with the grille
     /*
      * ULA+: sixty-four programmable colours through ports #BF3B/#FF3B.
      *
@@ -196,6 +199,7 @@ typedef struct {
     uint8_t trdos_rom;      // 0 5.04T, 1 5.03, 2 5.04TM, 3 5.05D, 4 6.11e
     uint8_t mouse_sens;     // 1-8, in halves: 2 is one count per USB count
     uint8_t cursor_as_joy;  // the cursor keys drive the selected joystick too
+    uint8_t joymap[14];     // per pad control (joymap.h PAD_*): a JT_* target, 0 its default
 
     // --- diagnostics ---
     uint8_t bus_trace;      // record every bus cycle into the ring
@@ -222,6 +226,7 @@ typedef struct {
     uint8_t tape_autostart; // type LOAD "" after mounting a .tap
     uint8_t tape_realtime;  // play every tape as a signal, never by the ROM trap
     uint8_t tape_rg;        // Rodolfo Guerra's fast-load ROM timings for .tap blocks
+    uint8_t tape_wear;      // a worn tape: 0 off, 1 light, 2 medium, 3 heavy (tapewear.h)
 } settings_t;
 
 extern settings_t settings;
@@ -242,3 +247,18 @@ void settings_defaults(void);
  */
 bool settings_load(void);
 bool settings_save(void);
+
+/* The same, to or from another file; `name`, if not NULL, heads it. */
+bool settings_load_from(const char *path);
+bool settings_save_to(const char *path, const char *name);
+
+/*
+ * Profiles: whole settings files kept by name in /profiles. Save writes
+ * over the profile of the same name or into the first free slot and
+ * returns it (-1 when full); name is false for an empty slot.
+ */
+#define SETTINGS_PROFILES 16
+int  settings_profile_save(const char *name);
+bool settings_profile_load(int slot);
+bool settings_profile_delete(int slot);
+bool settings_profile_name(int slot, char *out, unsigned n);

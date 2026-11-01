@@ -31,6 +31,8 @@
 #include "z80_bus.h"
 #include "atm.h"
 #include "rtc.h"
+#include "smuc.h"
+#include "customrom.h"
 #include "ide.h"
 
 // ============================================================================
@@ -298,7 +300,29 @@ static void alf_select(const uint8_t v) {
 }
 
 /* The flash master a slot is filled from, per machine. */
+static void rom_load_flash(const machine_t m);
+
+/*
+ * Flash first, then the card's /roms over it where there is a ROM for
+ * this machine there (customrom.c) -- read on every reset, so taking the
+ * file away puts the stock ROM back. A cartridge in the 48K wins.
+ */
 static void rom_load_window(const machine_t m) {
+    rom_load_flash(m);
+    unsigned banks;
+    customrom_active = false;
+    if (customrom_tag(m, &banks) && !(m == MACHINE_48K && if2_in)) {
+        uint8_t *const slots[4] = { rom_window[ROMW_0], rom_window[ROMW_1],
+                                    rom_window[ROMW_2], rom_window[ROMW_3] };
+        if (customrom_load(m, slots, banks)) {
+            customrom_active = true;
+            if (banks == 1) memcpy(rom_window[ROMW_1], rom_window[ROMW_0], SPEC_BANK_SIZE);
+        }
+    }
+    customrom_trdos_active = customrom_trdos(rom_window[ROMW_TRDOS]);
+}
+
+static void rom_load_flash(const machine_t m) {
     if (m == MACHINE_ALF) {
         memcpy(rom_window[ROMW_0], spec_romalf, SPEC_BANK_SIZE);
         memcpy(rom_window[ROMW_1], spec_romalf + SPEC_BANK_SIZE, SPEC_BANK_SIZE);
@@ -613,6 +637,55 @@ volatile bool     spec_beeper;
  */
 volatile uint8_t spec_mouse_x, spec_mouse_y, spec_mouse_buttons;
 volatile uint8_t spec_mouse_wheel = 0x0F;
+volatile int16_t spec_mouse_dx, spec_mouse_dy;
+
+/*
+ * The Profi's serial mouse: a Microsoft mouse on the K580VV51 (an 8251),
+ * after pico-speccy's Profi.cpp and the FPGA's serial_mouse.vhd.
+ *
+ *   #F3  read: status -- TxRDY+TxE always, RxRDY when a byte waits;
+ *        write: command, D2 (RxE) arms the receiver
+ *   #D3  read: the waiting byte, and the next one comes up
+ *   #B3 / #93  write D0: the interrupt enable
+ *
+ * A packet is three bytes, 01LRyyxx 00xxxxxx 00yyyyyy, built from the
+ * USB deltas at half rate with the remainder kept. With the interrupt
+ * enabled, in CP/M, a waiting byte holds INT and puts #E7 -- RST #20 --
+ * on the bus at the acknowledge, as the board's hw_int.vhd does.
+ */
+static uint8_t sm_ctl, sm_inten, sm_last_btns;
+static uint8_t sm_pkt[3], sm_pos = 3;
+static bool    sm_rxrdy;
+static bool    frame_int_on;           // the frame's own interrupt is up
+
+static void sm_build(void) {
+    if (sm_pos < 3 || !(sm_ctl & 0x04u)) return;
+    const uint8_t b = spec_mouse_buttons;
+    const uint8_t btns = (uint8_t)(((b & 1u) ? 0x20u : 0) | ((b & 2u) ? 0x10u : 0));
+    int dx = spec_mouse_dx / 2, dy = spec_mouse_dy / 2;
+    if (dx > 127) dx = 127; else if (dx < -128) dx = -128;
+    if (dy > 127) dy = 127; else if (dy < -128) dy = -128;
+    if (!dx && !dy && btns == sm_last_btns) return;
+    spec_mouse_dx = (int16_t)(spec_mouse_dx - dx * 2);
+    spec_mouse_dy = (int16_t)(spec_mouse_dy - dy * 2);
+    sm_last_btns = btns;
+    sm_pkt[0] = (uint8_t)(0x40u | btns | (((uint8_t)dy >> 4) & 0x0Cu) | (((uint8_t)dx >> 6) & 0x03u));
+    sm_pkt[1] = (uint8_t)dx & 0x3Fu;
+    sm_pkt[2] = (uint8_t)dy & 0x3Fu;
+    sm_pos = 0;
+    sm_rxrdy = true;
+}
+
+static inline bool sm_int(void) {
+    return sm_rxrdy && sm_inten && (spec_port_dffd & 0x20u);
+}
+
+/* The INT line, from the frame's interrupt and the mouse's. */
+static void sm_update_int(void) {
+    const bool m = sm_int();
+    z80_int_vector = m ? 0xE7u : 0xFFu;
+    z80_set_int(frame_int_on || m);
+}
 volatile bool    spec_mouse_seen;
 
 /*
@@ -1117,9 +1190,26 @@ static void update_opfetch_hook(void);
  */
 static const uint8_t prof_plane_map[16] = { 0, 1, 2, 3, 3, 3, 3, 2, 2, 2, 0, 1, 1, 0, 1, 0 };
 
-static bool prof_tap_armed(void) {
+static inline bool prof_tap_armed(void) {
     return (spec_machine == MACHINE_ZS1024 || spec_machine == MACHINE_SCORPEVO)
         && (spec_port_1ffd & 0x02u) && !(spec_port_1ffd & 0x01u);
+}
+
+/*
+ * The tap itself, on reads as well as fetches and after the byte has
+ * gone out -- ProfROM's trampolines switch with LD L,(HL), and with the
+ * fetch half alone it ran its RAM test and fell into plane 0's 128 ROM,
+ * which is the 48 BASIC ZS-1024 used to start in. pico-speccy found the
+ * same (CPU.cpp, peek8: "the load-bearing one").
+ */
+static void __not_in_flash_func(prof_rtap)(const uint16_t addr, const uint32_t t) {
+    (void)t;
+    if (!prof_tap_armed()) return;
+    const uint8_t plane = prof_plane_map[(addr & 0x0Cu) | (prof_plane & 0x03u)];
+    if (plane != prof_plane) {
+        prof_plane = plane;
+        load_plane(spec_machine, plane);        // the windows already point at the slots
+    }
 }
 
 static void __not_in_flash_func(spec_opfetch)(const uint16_t addr, const uint32_t t) {
@@ -1127,14 +1217,6 @@ static void __not_in_flash_func(spec_opfetch)(const uint16_t addr, const uint32_
     if (settings.esxdos) divmmc_opfetch(addr);
 
     if (spec_is_atm(spec_machine) && !tramp_active) { atm_opfetch(addr); return; }
-
-    if (unlikely((addr & 0xFFF0u) == 0x0100u) && prof_tap_armed()) {
-        const uint8_t plane = prof_plane_map[(addr & 0x0Cu) | (prof_plane & 0x03u)];
-        if (plane != prof_plane) {
-            prof_plane = plane;
-            load_plane(spec_machine, plane);    // the windows already point at the slots
-        }
-    }
 
     if (unlikely(tramp_active)) {
         /*
@@ -1194,9 +1276,11 @@ static void update_opfetch_hook(void) {
      * DivMMC -- the last two because both decide where they are paged
      * by watching where the CPU is fetching from.
      */
-    z80_opfetch_cb = (tramp_active || settings.betadisk || settings.esxdos || prof_tap_armed()
+    z80_opfetch_cb = (tramp_active || settings.betadisk || settings.esxdos
                       || spec_is_atm(spec_machine))
                          ? spec_opfetch : NULL;
+    z80_rtap_base = 0x0100u;
+    z80_rtap_cb   = prof_tap_armed() ? prof_rtap : NULL;
 }
 
 void spec_begin_launch(uint8_t *page, const uint16_t jp_addr) {
@@ -1245,6 +1329,8 @@ static uint16_t profi_cpm_port(const uint16_t port) {
 
 static bool has_gluk(void) {
     const machine_t m = spec_machine;
+    // The ScorpEvo's clock is on the board, not a card (pico-speccy Ports.cpp:1400).
+    if (m == MACHINE_SCORPEVO) return true;
     return settings.rtc && (spec_is_pentagon_class(m) || spec_is_scorpion_class(m)
                             || m == MACHINE_PROFI || spec_is_atm(m));
 }
@@ -1276,7 +1362,16 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
         if (ula_decodes(port)) atm_fe_write(port, value);
         if (atm_port_write(port, value)) return;
     }
+    // The Profi's serial port, ahead of the Beta decode that #F3/#D3/#B3/#93
+    // would otherwise alias onto.
+    if (unlikely(spec_machine == MACHINE_PROFI)) {
+        const uint8_t lo = (uint8_t)port;
+        if (lo == 0xF3u) { sm_ctl = value; if (!(value & 0x04u)) { sm_rxrdy = false; sm_pos = 3; } sm_update_int(); return; }
+        if (lo == 0xB3u || lo == 0x93u) { sm_inten = value & 0x01u; sm_update_int(); return; }
+        if (lo == 0xD3u) return;                    // the transmit side: nothing listens
+    }
     // The hard disk, ahead of the ULA: NEMO's registers are even ports.
+    if (unlikely(spec_is_scorpion_class(spec_machine)) && smuc_port_out(port, value)) return;
     if (unlikely(settings.ide) && ide_port_out(port, value)) return;
 
     // The ALF's ROM-bank select: any OUT with A7 low and A0 high.
@@ -1671,7 +1766,7 @@ static void __not_in_flash_func(spec_io_out)(const uint16_t port, const uint8_t 
 static volatile uint8_t joy_state;      // bits per JOY_BIT_*
 
 void spec_joy_set(const uint8_t bit, const bool pressed) {
-    if (bit > JOY_BIT_FIRE) return;
+    if (bit > JOY_BIT_FIRE4) return;
     if (pressed) joy_state |=  (uint8_t)(1u << bit);
     else         joy_state &= (uint8_t)~(1u << bit);
 }
@@ -1718,7 +1813,7 @@ static uint8_t joy_row_mask(const unsigned row) {
 }
 
 /*
- * Kempston: its own port, active high, and only five bits of it.
+ * Kempston: its own port, active high, five bits and three more.
  *
  * The decode is A5 low and nothing else, which is why #1F is the usual
  * name for it and why it collides with a good deal else. Some interfaces
@@ -1731,6 +1826,11 @@ static uint8_t kempston_byte(void) {
     if (JOY(JOY_BIT_DOWN))  v |= 0x04;
     if (JOY(JOY_BIT_UP))    v |= 0x08;
     if (JOY(JOY_BIT_FIRE))  v |= 0x10;
+    // Bits 5-7: the second and third buttons of the extended interfaces,
+    // which the games that know them read and the rest mask off.
+    if (JOY(JOY_BIT_FIRE2)) v |= 0x20;
+    if (JOY(JOY_BIT_FIRE3)) v |= 0x40;
+    if (JOY(JOY_BIT_FIRE4)) v |= 0x80;
     return v;
 }
 
@@ -1753,10 +1853,27 @@ static uint8_t __not_in_flash_func(spec_io_in)(const uint16_t port, const uint32
         if (atm_port_read(port, &a)) return a;
     }
     if (unlikely(port == 0xBFF7u) && has_gluk()) return rtc_read();
+    if (unlikely(spec_machine == MACHINE_PROFI)) {
+        const uint8_t lo = (uint8_t)port;
+        if (lo == 0xF3u) { sm_build(); sm_update_int(); return (uint8_t)(0x05u | (sm_rxrdy ? 0x02u : 0)); }
+        if (lo == 0xD3u) {
+            const uint8_t v = sm_pkt[sm_pos > 2 ? 2 : sm_pos];
+            if (sm_rxrdy) {
+                sm_rxrdy = false;
+                if (++sm_pos < 3) sm_rxrdy = true; else sm_build();
+            }
+            sm_update_int();
+            return v;
+        }
+    }
     if (unlikely(spec_machine == MACHINE_ALF) && ((port & 0xFDu) == 0x1Du)) {
         const bool on = !(port & 0x02u);
         if (on != alf_sram) { alf_sram = on; apply_paging(); }
         if (on) return 0xFF;                // #1F carries on to the joystick
+    }
+    if (unlikely(spec_is_scorpion_class(spec_machine))) {
+        uint8_t d;
+        if (smuc_port_in(port, &d)) return d;
     }
     if (unlikely(settings.ide)) {
         uint8_t d;
@@ -1816,7 +1933,11 @@ static uint8_t __not_in_flash_func(spec_io_in)(const uint16_t port, const uint32
      * The buttons answer 0xFF until a mouse has ever been seen, which is
      * how software decides there is none. After pico-speccy's Ports.cpp.
      */
-    if (settings.mouse && (port & 0xFFu) == 0xDFu) {
+    /* On the Profi the mouse is decoded on all sixteen bits and only out of
+     * CP/M: #0ADF is the Karabas clock's presence probe. */
+    if (settings.mouse && (port & 0xFFu) == 0xDFu
+        && !(spec_machine == MACHINE_PROFI
+             && ((spec_port_dffd & 0x20u) || !(port == 0xFBDFu || port == 0xFFDFu || port == 0xFADFu)))) {
         const uint16_t hi = port & 0x0700u;
         if (hi == 0x0300u) return spec_mouse_x;
         if (hi == 0x0700u) return spec_mouse_y;
@@ -2156,11 +2277,15 @@ void spec_init(void) {
     spec_port_7ffd = 0;
     spec_port_1ffd = 0;
     spec_port_dffd = 0;
+    sm_ctl = 0; sm_inten = 0; sm_pos = 3; sm_rxrdy = false; sm_last_btns = 0;
+    spec_mouse_dx = spec_mouse_dy = 0;
+    z80_int_vector = 0xFF;
     spec_port_eff7 = 0;
     spec_pent16c   = false;
     pent_cache_in  = false;
     if (spec_is_atm(spec_machine)) atm_reset();
     ide_reset();
+    smuc_reset();
     spec_timex_hsr = 0;
     timex_ff = 0;
     spec_timex_exrom = false;
@@ -2240,6 +2365,8 @@ uint32_t spec_samples_per_frame(void) { return samples_per_frame; }
 #define FRAME_STOPS 16u
 
 __force_inline static void run_slice(const uint32_t t_end) {
+    // The Profi's mouse can want the CPU at any point of the frame.
+    if (unlikely(spec_machine == MACHINE_PROFI) && (sm_ctl & 0x04u)) { sm_build(); sm_update_int(); }
     z80_run_until(t_end);
     snd_put(t_end, SD_MARK, 0);
 }
@@ -2774,9 +2901,11 @@ static void run_frame(void) {
     z80_t = 0;
     // The ATM 2+ and 3 gate the frame interrupt with #77 D5.
     const bool int_on = !spec_is_atm(spec_machine) || atm_int_enabled();
-    z80_set_int(int_on);
+    frame_int_on = int_on;
+    if (unlikely(spec_machine == MACHINE_PROFI)) sm_update_int(); else z80_set_int(int_on);
     z80_run_until(held);
-    z80_set_int(false);
+    frame_int_on = false;
+    if (unlikely(spec_machine == MACHINE_PROFI)) sm_update_int(); else z80_set_int(false);
 
     /*
      * Sixteen stops a frame, each one a mark core 0 can render up to:
@@ -2790,6 +2919,17 @@ static void run_frame(void) {
     snd_put(total, SD_END, 0);
     ula_frame_end();
     if (unlikely(tapeplay_active)) tapeplay_frame_end(total, num);
+
+    /*
+     * The frame is over, so its T-states are spent: whatever the bus does
+     * before the next one starts happens at the start of that one. The
+     * pacer parks the CPU with z80_park(), which finishes the cycle in
+     * progress -- and when that was an IN of #FE, the tape was asked
+     * where it was at T 69888 of a frame it had already left, ran a whole
+     * frame ahead, and stood still for the next one: one dead frame in
+     * the middle of a header, and a real-time load failed every time.
+     */
+    z80_t = 0;
 
     if (giga_flips) { giga_quiet = 0; if (++giga_run >= 3) spec_giga_auto = true; }
     else            { giga_run = 0;   if (++giga_quiet >= 50) spec_giga_auto = false; }

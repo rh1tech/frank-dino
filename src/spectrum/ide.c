@@ -358,6 +358,18 @@ bool ide_port_in(const uint16_t port, uint8_t *v) {
     }
 }
 
+uint8_t ide_smuc_read(const unsigned r) { return (r & 7u) == 0 ? read16_lo() : reg_read(r); }
+void    ide_smuc_write(const unsigned r, const uint8_t v) { if ((r & 7u) == 0) write16_lo(v); else reg_write(r, v); }
+uint8_t ide_smuc_latch_read(void) { return latch; }
+void    ide_smuc_latch_write(const uint8_t v) { latch = v; }
+
+/* Device Control's SRST: set and cleared again is a reset, and the drive
+ * comes back ready -- ProfROM's driver waits for DRDY after it. */
+void ide_smuc_control(const uint8_t v) {
+    if ((ctrl & 0x04u) && !(v & 0x04u)) ide_reset();
+    ctrl = v;
+}
+
 void ide_reset(void) {
     err = 0x01; count = 1; sec = 1; cyl_lo = cyl_hi = 0; dh = 0;
     pos = -1; left = 0; div_hi = false;

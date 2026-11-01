@@ -299,8 +299,38 @@ def t_sound(b, r):
             b.setting(n, v)
 
 
+JSW = '/ZX/TAP/j/JET SET WILLY 1 (-).TAP'
+
+
+def t_tape(b, r):
+    """
+    A tape played in real time, not trapped: the 48K's own loader reads
+    the header, the BASIC and the code header from the pulses, and the
+    code block starts landing at #7FFE. 32 s is enough to see it begin.
+    """
+    from dino import pick_machine
+    pick_machine(b, 0, 3)
+    was = b.setting('tape_realtime')
+    b.setting('tape_realtime', 1)
+    try:
+        ok, detail = b.load(JSW)
+        if not r.check(ok and 'real time' in detail, f'mounted for real-time play ({detail})', b, 'tape.png'):
+            return
+        time.sleep(32)
+        r.check(b.u32('pulse.c:blk_no') == 3, f'the tape is on the code block ({b.u32("pulse.c:blk_no")})')
+        # #8200: the first word-aligned stretch of the game that is not zeros --
+        # past byte 322, the #FF that a missing closing edge used to lose.
+        got = b.zread(0x8200, 64)
+        want = bytes.fromhex('00600061006200630064006500660067206020612062206320642065206620674060406140624063406440654066406760606061606260636064606560666067')
+        r.check(got == want, 'the code block is loading, byte for byte', b, 'tape.png')
+        r.check(0x5E9 <= b.status()['pc'] <= 0x5FA, f'the ROM is still reading bits (pc {b.status()["pc"]:04X})',
+                b, 'tape.png')
+    finally:
+        b.setting('tape_realtime', was)
+
+
 TESTS = {'boot': t_boot, 'steady': t_steady, 'volume': t_volume, 'pause': t_pause, 'menu': t_menu,
-         'machines': t_machines, 'snapshot': t_snapshot, 'snapshot128': t_snapshot128, 'sound': t_sound}
+         'machines': t_machines, 'snapshot': t_snapshot, 'snapshot128': t_snapshot128, 'sound': t_sound, 'tape': t_tape}
 
 
 def main():
