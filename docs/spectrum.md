@@ -28,6 +28,7 @@ this is built around answering a real one. Where a sequence *is* theirs
 | ATM-Turbo | 1, 2, 2+ (BIOS 1.07.13 or xBIOS 1.37), 3 | 1 MB | The memory manager in every window; EGA, hires and text modes; the 3 has all 4 MB |
 | Timex | TC2068 | 48 KB | The SCLD, the dock and the EX-ROM |
 | ALF | ALF TV Game | 128 KB | Banked cartridges |
+| ZX Evolution | BaseConf | 4 MB | The 2+'s manager with the Evo's ports; EVO Reset Service, its Magic NMI menu in the one-page text mode, EVO ProfROM, NEO-DOS; four rasters |
 
 Every machine runs at its own clock and frame length — a 128's ULA runs
 311 lines to the 48's 312 and the line is a T-state longer; a Pentagon's
@@ -40,8 +41,34 @@ not reach 7 MHz.
 
 Not here, because they need more than one Z80 or a faster one: the
 Spectrum Next, SAM Coupe, TS-Conf, Scorpion GMX, MB-02+ and General
-Sound. ZX-Evo BaseConf is not here yet either: it needs a behavioural
-model of its AVR and FPGA that has not been ported.
+Sound.
+
+### The ZX Evolution
+
+BaseConf, the Evo's standard FPGA configuration, is an ATM-Turbo 2+
+memory manager with ports of its own (`src/spectrum/atm.c`, after
+pico-speccy's EvoBase.cpp and the base_trdemu FPGA sources). It starts in
+EVO Reset Service, whose menu leads to NEO-DOS, BASIC 48 and 128, and —
+with **G** — to EVO ProfROM after the next reset; ERS keeps its settings
+in the Gluk clock's cells #E7-#EF, so they are saved to `/cmos.nvr`.
+
+- **Magic button (NMI)**, in Settings > Machine: ERS's Magic Service, in
+  the one-page 80x25 text mode. The NMI is taken with the next frame, as
+  on the board, and RAM page #FF is in window 0 from the fetch at #0066
+  until two M1s after OUT (#BE).
+- **Evo raster**: Pentagon (71680 T-states), 60 Hz (58688), 48K (69888)
+  or 128K (70908), the last two with contention — by address, #4000 and
+  on the 128K raster #C000 with #7FFD D0, whatever the manager has there.
+- The font RAM: #BF D2 lets every memory write land in the character
+  generator. ERS reloads it at every reset with a KOI-8 font, so Magic's
+  frame characters come out as Cyrillic letters, as they do with that font.
+- The AVR answers its version window (#F0-#FF) with this firmware's name
+  and build date; the PS/2 scancode log is there but always empty, so the
+  Evo-only programs that read keys from it (avrconf) see none.
+- The NEMO IDE moves whole words through #10 alone, as Evo ProfROM wants.
+- 7 and 14 MHz (#77 D3, #EFF7 D4) are latched and ignored, and the drive
+  emulator's page-#FE trap is modelled but ERS's virtual drives have not
+  been tried.
 
 ### Timing
 
@@ -109,7 +136,7 @@ can be fixed with a text editor.
 
 | Setting | What it does |
 |---|---|
-| **Machine** | 48K, 128K, +2 or Pentagon 128. Restarts the machine. |
+| **Machine** | Any of the machines above. Restarts the machine. |
 | **Issue 2 keyboard** | Bit 6 of port 0xFE reads back the last write: bit 4 on an issue 3, bits 3 *and* 4 on an issue 2. A handful of 48K games test this to tell the boards apart, and one written for an issue 2 reads the key rows as permanently pressed on an issue 3. |
 | **Z80 speed** | 3.5, 5.3 or 7 MHz. Not a trick: the clock is generated here edge by edge and the part is a Z84C00-**10**. |
 

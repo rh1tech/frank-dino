@@ -74,6 +74,25 @@ int main(void) {
     EQ(b[0], 0xEF, "the written low byte");
     EQ(b[1], 0xBE, "and the high one through the latch");
 
+    GROUP("the Evo's #10 toggle");
+    ide_nemo_toggle = true;
+    ide_reset();                               // as spec_init does when the Evo starts
+    out(R(6), 0xE0);
+    out(R(3), 9); out(R(4), 0); out(R(5), 0); out(R(2), 1);
+    out(R(7), 0x30);
+    for (int i = 0; i < 512; i += 2) { out(R(0), 0x34); out(R(0), 0x12); }   // two writes, one word
+    out(R(3), 9); out(R(2), 1);
+    out(R(7), 0x20);
+    for (int i = 0; i < 512; i++) b[i] = in(R(0));                         // INIR : INIR
+    EQ(b[0], 0x34, "#10, #10 reads the low byte");
+    EQ(b[1], 0x12, "then the high one");
+    EQ(b[511], 0x12, "all the way down the sector");
+    out(R(3), 9); out(R(2), 1);
+    out(R(7), 0x20);
+    read_sector(b);
+    CHECK(b[0] == 0x34 && b[1] == 0x12, "and #10 + #11 still pairs as before");
+    ide_nemo_toggle = false;
+
     ide_eject();
     return tap_done("ide");
 }

@@ -93,6 +93,7 @@ typedef enum : uint8_t {
     MACHINE_ATM2X,          /* ATM-Turbo 2+, xBIOS 1.37 */
     MACHINE_ATM3,           /* NedoPC ATM-Turbo 3: 4 MB, test ROM + xBIOS */
     MACHINE_ALF,            /* ALF TV Game: a 128K with banked cartridges */
+    MACHINE_EVO,            /* ZX Evolution, BaseConf: a 2+ manager, 4 MB, EVO Reset Service */
     MACHINE_COUNT,
 } machine_t;
 
@@ -290,6 +291,10 @@ void spec_bank_flush(void);
  * space holds, and both have to be able to say so.
  */
 void apply_paging_hook(void);
+
+/* Which windows the ULA contends, again: for the ATM's manager, which
+ * pages behind apply_paging()'s back. */
+void spec_contend_remask(void);
 
 // ============================================================================
 // State the video driver reads

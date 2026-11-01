@@ -12,7 +12,8 @@
  */
 
 /*
- * MicroART ATM-Turbo 1, 2 and 2+, and NedoPC's ATM-Turbo 3.
+ * MicroART ATM-Turbo 1, 2 and 2+, NedoPC's ATM-Turbo 3, and the ZX
+ * Evolution's BaseConf, which is a 2+ manager with ports of its own.
  *
  * A memory manager that can put any ROM or RAM page in any of the four
  * windows, an address latch on the ATM-Turbo 1's #FE, a palette of sixteen
@@ -32,10 +33,10 @@
 
 static inline bool spec_is_atm(const machine_t m) {
     return m == MACHINE_ATM1 || m == MACHINE_ATM2 || m == MACHINE_ATM2P
-        || m == MACHINE_ATM2X || m == MACHINE_ATM3;
+        || m == MACHINE_ATM2X || m == MACHINE_ATM3 || m == MACHINE_EVO;
 }
 
-typedef enum : uint8_t { ATM_VM_ZX = 0, ATM_VM_EGA, ATM_VM_HIRES, ATM_VM_TEXT } atm_vmode_t;
+typedef enum : uint8_t { ATM_VM_ZX = 0, ATM_VM_EGA, ATM_VM_HIRES, ATM_VM_TEXT, ATM_VM_TEXT1 } atm_vmode_t;
 
 /* The ROM image the machine boots from, and how many 16 KB pages it is. */
 const uint8_t *atm_rom_image(machine_t m, unsigned *pages);
@@ -52,6 +53,13 @@ void atm_fe_write(uint16_t port, uint8_t value);
 
 /* TR-DOS in and out, by where the CPU fetches. Replaces the Beta rule. */
 void atm_opfetch(uint16_t addr);
+
+/* The ZX Evolution: the NMI #BF D3 asked for, to be taken at the next
+ * frame (true once, and the #0066 fetch is then watched for); the Magic
+ * button; and which even ports are its ULA's. */
+bool atm_take_nmi(void);
+void atm_nmi_button(void);
+bool atm_evo_ula(uint16_t port);
 
 /* #77 D5 gates the frame interrupt on the 2+ and the 3. */
 bool atm_int_enabled(void);

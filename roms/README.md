@@ -88,6 +88,7 @@ their makers'; they are carried here as pico-speccy carries them.
 | ATM-Turbo 3 | `atm3.rom` | 262144 | `e4a297ab905cd77be3dc486245067aaa` | MSD888's test ROM and xBIOS 1.37 |
 | ATM | `atm-font.rom` | 2048 | `bd4e0f6f9177f38a71f081882ba3c454` | The text mode's character generator (SGEN) |
 | ALF | `alf.rom` | 32768 | `0f896b0811e6db1cdd72f68760331fbc` | The ALF TV Game system ROM |
+| ZX Evolution | `zxevo_fe.rom` | 524288 | `1d578eec033569c69abe0476a49724ad` | NedoPC's `zxevo_fe` flash image (svn.zxevo.ru, CRC32 8D41FC4E): EVO Reset Service 0.61.01, Magic Service, EVO ProfROM, NEO-DOS, BASIC 48/128 and ATM CP/M, 32 pages |
 
 ## Where they live, which is not where they used to
 

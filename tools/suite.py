@@ -31,11 +31,11 @@ MACHINES = [
     '16K', '+2A', 'TC2048', 'Gama 89', 'Leningrad-1', 'Leningrad-2', 'Byte',
     'Pentagon 512', 'Pentagon 1024SL', 'ZS-1024', 'ScorpEvo', 'KAY-256',
     'KAY-1024', 'KAY-1024 2010', 'Phoenix', 'ATM 1', 'ATM 2', 'ATM 2+',
-    'ATM 2+ xBIOS', 'ATM 3', 'ALF',
+    'ATM 2+ xBIOS', 'ATM 3', 'ALF', 'Evo',
 ]
 
 # The ones whose BIOS takes its time: a memory test, or a 3 s auto-boot wait.
-BOOT_S = {'ATM 2': 6, 'ATM 2+': 6, 'ATM 2+ xBIOS': 14, 'ATM 3': 14}
+BOOT_S = {'ATM 2': 6, 'ATM 2+': 6, 'ATM 2+ xBIOS': 14, 'ATM 3': 14, 'Evo': 6}
 
 
 class Result:
@@ -372,9 +372,44 @@ def t_driveb(b, r):
     r.check(b.alive(), 'the machine runs on')
 
 
+def t_evo(b, r):
+    """
+    The ZX Evolution: EVO Reset Service from the reset, its Magic menu by
+    NMI in the one-page text mode and back out of it, and NEO-DOS.
+    """
+    from dino import pick_machine
+    pick_machine(b, MACHINES.index('Evo'), 6)
+    r.check(b.alive(), 'EVO Reset Service runs', b, 'evo_ers.png')
+    b.open_settings()
+    b.enter(0)
+    b.select_row(7)
+    b.key('ENTER', gap=0.5)                    # Magic button (NMI)
+    b.close_menus()
+    time.sleep(3)
+    def text1():                               # page 8, the TEXT1 screen: 25 rows of 80
+        base = b.addr('psram_arena')           # page 8 is the arena's first
+        rows = []
+        for row in range(25):
+            ev = bytes(b.ocd.read(base + 0x1C0 + row * 64, 8, 40))
+            od = bytes(b.ocd.read(base + 0x11C0 + row * 64, 8, 40))
+            rows.append(bytes(x for p in zip(ev, od) for x in p).decode('latin-1'))
+        return '\n'.join(rows)
+    r.check('MAGIC Service' in text1(), 'the NMI brought up EVO Magic Service')
+    r.check(b.u8('atm.c:p77') & 7 == 7, f'Magic is in TEXT1 (#77 mode {b.u8("atm.c:p77") & 7})', b, 'evo_magic.png')
+    b.ocd.write(b.addr('vga_late_lines'), 32, [0])
+    time.sleep(2)
+    r.check(b.u32('vga_late_lines') == 0, f'TEXT1 draws in time (longest line {b.u32("vga_line_max_us")} us)')
+    b.key('ENTER', gap=2)                      # 0. Continue program
+    r.check(b.u8('atm.c:in_nmi') == 0 and b.u8('atm.c:p77') & 7 == 3, 'Continue: out of the NMI, ZX mode again',
+            b, 'evo_back.png')
+    b.type('s', gap=0.3)                       # S. TR-DOS
+    time.sleep(3)
+    r.check(b.alive(), 'NEO-DOS runs', b, 'evo_dos.png')
+
+
 TESTS = {'boot': t_boot, 'steady': t_steady, 'volume': t_volume, 'pause': t_pause, 'menu': t_menu,
          'machines': t_machines, 'snapshot': t_snapshot, 'snapshot128': t_snapshot128, 'sound': t_sound, 'tape': t_tape,
-         'driveb': t_driveb}
+         'driveb': t_driveb, 'evo': t_evo}
 
 
 def main():

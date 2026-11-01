@@ -258,6 +258,8 @@ static const uint8_t *rom_slot_src[4];
 static uint32_t       rom_slot_used[4];
 static uint32_t       rom_slot_clock;
 
+volatile uint32_t spec_rom_misses;     /* refills from flash: the bench reads it (the Evo has none) */
+
 uint8_t *spec_rom_page(const uint8_t *src) {
     rom_slot_clock++;
     unsigned victim = 0;
@@ -266,6 +268,7 @@ uint8_t *spec_rom_page(const uint8_t *src) {
         if (rom_slot_used[i] < rom_slot_used[victim]) victim = i;
     }
     memcpy(rom_window[victim], src, SPEC_BANK_SIZE);
+    spec_rom_misses++;
     rom_slot_src[victim]  = src;
     rom_slot_used[victim] = rom_slot_clock;
     return rom_window[victim];
@@ -464,6 +467,7 @@ const char *spec_machine_name(void) {
         case MACHINE_ATM2X:    return "ATM-Turbo 2+ xBIOS";
         case MACHINE_ATM3:     return "ATM-Turbo 3";
         case MACHINE_ALF:      return "ALF TV Game";
+        case MACHINE_EVO:      return "ZX Evolution";
         default:               return "ZX Spectrum 128K";
     }
 }
@@ -484,9 +488,16 @@ const char *spec_machine_name(void) {
  */
 static inline uint32_t turbo_num(void) { return 2u + settings.turbo; }
 
+/* The four rasters the Evo's AVR offers (Scroll Lock on the real board). */
+static uint32_t evo_frame(void) {
+    static const uint32_t t[4] = { SPEC_TSTATES_PER_FRAME_PENT, 58688u, 69888u, 70908u };
+    return t[settings.evo_raster & 3u];
+}
+
 uint32_t spec_frame_tstates(void) {
     uint32_t base;
     if (spec_is_48k_class(spec_machine))        base = SPEC_TSTATES_PER_FRAME_48;
+    else if (spec_machine == MACHINE_EVO)       base = evo_frame();
     else if (spec_is_pentagon_class(spec_machine) || spec_machine == MACHINE_SCORPEVO)
                                                 base = SPEC_TSTATES_PER_FRAME_PENT;
     else if (spec_machine == MACHINE_ZS1024)    base = 70784u;     // the Green board
@@ -510,7 +521,8 @@ static uint32_t int_tstates(void) {
         case MACHINE_LENINGRAD1: return 15u;
         case MACHINE_PENTAGON:
         case MACHINE_PENT512:
-        case MACHINE_PENT1024:   return 32u;
+        case MACHINE_PENT1024:
+        case MACHINE_EVO:        return 32u;
         default: return spec_is_48k_class(spec_machine) ? 32u : SPEC_INT_TSTATES;
     }
 }
@@ -524,8 +536,10 @@ uint8_t spec_ram[SPEC_RAM_BANKS][SPEC_BANK_SIZE] __attribute__((aligned(4)));
  * one of them that is mapped. */
 #define spec_ram_ext ((uint8_t (*)[SPEC_BANK_SIZE])(psram_arena + ARENA_RAM_OFF))
 
-/* How many banks this machine has: 4 MB on the ATM-Turbo 3, 1 MB on the rest. */
-unsigned spec_ram_banks(void) { return spec_machine == MACHINE_ATM3 ? SPEC_MAX_BANKS_BIG : SPEC_MAX_BANKS; }
+/* How many banks this machine has: 4 MB on the ATM-Turbo 3 and the Evo, 1 MB on the rest. */
+unsigned spec_ram_banks(void) {
+    return (spec_machine == MACHINE_ATM3 || spec_machine == MACHINE_EVO) ? SPEC_MAX_BANKS_BIG : SPEC_MAX_BANKS;
+}
 static uint8_t bank_stage[SPEC_BANK_SIZE] __attribute__((aligned(4)));
 static int     staged_bank = -1;
 
@@ -835,6 +849,8 @@ static void __not_in_flash_func(apply_paging)(void) {
 }
 
 void apply_paging_hook(void) { apply_paging(); }
+
+void spec_contend_remask(void) { if (unlikely(z80_contend.on)) contend_remask(); }
 
 /*
  * The interface overlay: DivMMC replaces the bottom two 8 KB windows.
@@ -1352,6 +1368,7 @@ static inline bool ula_decodes(const uint16_t port) {
         case MACHINE_TIMEX:
         case MACHINE_BYTE: return (port & 0xFFu) == 0xFEu;
         case MACHINE_ATM1: return (port & 0x04u) != 0;
+        case MACHINE_EVO:  return atm_evo_ula(port);
         default:
             return !spec_is_atm(spec_machine) || (port & 0x06u) == 0x06u;
     }
@@ -2288,6 +2305,8 @@ void spec_init(void) {
     spec_port_eff7 = 0;
     spec_pent16c   = false;
     pent_cache_in  = false;
+    rtc_wide = spec_machine == MACHINE_EVO;
+    ide_nemo_toggle = spec_machine == MACHINE_EVO;
     if (spec_is_atm(spec_machine)) atm_reset();
     ide_reset();
     smuc_reset();
@@ -2610,6 +2629,12 @@ static bool bank_contended(const unsigned b) {
 static void contend_remask(void) {
     if (!z80_contend.on) return;
     uint8_t m = 0;
+    // The Evo contends by address, whatever its manager has put there:
+    // #4000-#7FFF, and #C000-#FFFF on the 128K raster with #7FFD D0 set.
+    if (spec_machine == MACHINE_EVO) {
+        z80_contend.mask = (uint8_t)(0x02u | ((settings.evo_raster == 3 && (spec_port_7ffd & 1u)) ? 0x08u : 0u));
+        return;
+    }
     for (unsigned w = 0; w < 4; w++)
         for (unsigned b = 0; b < SPEC_RAM_BANKS; b++)
             if (z80_rpage[w * 2u] == spec_ram[b] && bank_contended(b)) m |= (uint8_t)(1u << w);
@@ -2633,6 +2658,10 @@ static void contend_setup(void) {
         case MACHINE_PLUS3:
         case MACHINE_PLUS2A:
             c = (z80_contend_t){ true, false, 0, 14361u, 228u, 0, contend_p3 };
+            break;
+        case MACHINE_EVO:           // zclock.v: the 48K and 128K rasters contend
+            if (settings.evo_raster == 2) c = (z80_contend_t){ true, true, 0, 14335u, 224u, 0, contend_48 };
+            if (settings.evo_raster == 3) c = (z80_contend_t){ true, true, 0, 14361u, 228u, 0, contend_48 };
             break;
         default:
             break;
@@ -2848,11 +2877,11 @@ void spec_set_machine(const machine_t m) {
     /* ...and arriving at one with no cartridge fills the dock with 0xFF. */
     if (m == MACHINE_TIMEX && !dck_mounted()) dck_eject();
     /*
-     * The ATM-Turbo 3's upper 3 MB are the +3 disk's, the ALF cartridge's
+     * The ATM-Turbo 3's and the Evo's upper 3 MB are the +3 disk's, the ALF cartridge's
      * and the tape capture's space on every other machine (arena.h): take
      * the disk out and forget the cartridge before the RAM lands on them.
      */
-    const bool big = (m == MACHINE_ATM3);
+    const bool big = (m == MACHINE_ATM3 || m == MACHINE_EVO);
     if (big && !arena_big_ram) {
         fdc_eject();
         alf_banks = 0;
@@ -2917,6 +2946,8 @@ static void run_frame(void) {
     z80_t = 0;
     // The ATM 2+ and 3 gate the frame interrupt with #77 D5.
     const bool int_on = !spec_is_atm(spec_machine) || atm_int_enabled();
+    // The Evo's NMI, asked for by #BF D3, comes with the frame (znmi.v).
+    if (unlikely(spec_machine == MACHINE_EVO) && atm_take_nmi()) z80_pulse_nmi();
     frame_int_on = int_on;
     if (unlikely(spec_machine == MACHINE_PROFI)) sm_update_int(); else z80_set_int(int_on);
     z80_run_until(held);

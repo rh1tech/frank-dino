@@ -17,6 +17,8 @@
 #include <string.h>
 
 #include "spectrum.h"
+#include "beta.h"
+#include "atm.h"
 #include "z80_bus.h"
 #include "settings.h"
 #include "tap.h"
@@ -508,6 +510,62 @@ int main(void) {
         EQ(z80_rpage[6][5], 0xA5, "and page 255 kept its byte");
         boot(MACHINE_ATM2P);
         EQ(spec_ram_banks(), 64, "an ATM-Turbo 2+ is back to 64");
+    }
+
+    GROUP("ZX Evolution");
+    {
+        extern const uint8_t evo_rom[];
+        boot(MACHINE_EVO);
+        EQ(spec_ram_banks(), 256, "4 MB, as the ATM-Turbo 3");
+        CHECK(!memcmp(z80_rpage[0], evo_rom + 31 * 16384, 16), "reset: EVO Reset Service, the last page, at #0000");
+        CHECK(!memcmp(z80_rpage[6], evo_rom + 31 * 16384, 16), "...and in every window");
+        EQ(z80_io_in(0x0CBD, 0) & 0xF0, 0x90, "#0CBD: /PEN2 up, /CPM down, no manager, DOS up");
+
+        out(0x0177, 0x03);                            // in shadow: the manager on, /CPM still down
+        out(0xFFF7, (uint8_t)(0x40 | (~9 & 0x3F)));   // window 3, set 0: RAM 9
+        z80_wpage[6][3] = 0x5A;
+        EQ(z80_rpage[6][3], 0x5A, "the manager pages in shadow");
+        EQ(z80_io_in(0x03BD, 0), (uint8_t)(0x40 | (~9 & 0x3F)) | 0x80, "#03BD reads the register back, as written");
+
+        out(0xEFF7, (uint8_t)(0x40 | (~9 & 0x3F)));   // in shadow, #EFF7 is window 3's #xFF7
+        EQ(z80_rpage[6][3], 0x5A, "in shadow #EFF7 is the manager's");
+        out(0x3F77, 0x03);                            // A9: /CPM up -- DOS stays latched
+        CHECK(beta_rom_paged(), "DOS is a latch: /CPM up leaves it");
+        out(0x3FF7, (uint8_t)(0x40 | (~1 & 0x3F)));   // window 0, set 0: RAM 1 (still in shadow)
+        z80_opfetch_cb(0x0000, 0);                    // an M1 from a RAM window
+        CHECK(!beta_rom_paged(), "an M1 from RAM drops it");
+        out(0xEFF7, 0x08);
+        CHECK(z80_rpage[0] == spec_ram[0], "#EFF7 D3: RAM 0 at #0000");
+        out(0xEFF7, 0x00);
+        CHECK(z80_rpage[0] == spec_ram[1], "and the manager's page again");
+
+        // The NMI: #BF D3 1 -> 0, taken with the next frame; RAM #FF in window 0.
+        out(0x00BF, 0x08);
+        out(0x00BF, 0x00);
+        CHECK(atm_take_nmi(), "#BF D3 1->0 asks for an NMI");
+        CHECK(!atm_take_nmi(), "once");
+        z80_opfetch_cb(0x0066, 0);
+        CHECK(z80_rpage[0] == spec_ram_page(0xFF), "the fetch at #0066 comes from RAM #FF");
+        out(0x00BE, 0);
+        z80_opfetch_cb(0x0010, 0);
+        z80_opfetch_cb(0x0011, 0);
+        CHECK(z80_rpage[0] == spec_ram_page(0xFF), "OUT (#BE): the next two M1s still from it");
+        z80_opfetch_cb(0x0012, 0);
+        CHECK(z80_rpage[0] == spec_ram[1], "and the third from the program's page");
+
+        // Pentagon-1024 paging (#EFF7 D2 = 0): #7FFD D7-D5 are page bits.
+        out(0x00BF, 0x01);                            // shadow ports on without DOS
+        out(0xFFF7, 0xFF);                            // window 3: RAM by #7FFD, top bits 0
+        out(0x7FFD, 0xE3);                            // 0xE3: bits 7-5 = 7, bits 2-0 = 3
+        CHECK(z80_rpage[6] == spec_ram_page(0x3B), "#7FFD D7-D5 page 1 MB (page #3B)");
+        out(0x7FFD, 0x21);
+        CHECK(z80_rpage[6] == spec_ram_page(0x09), "and D5 does not lock it (page 9)");
+        out(0x00BF, 0x00);                            // shadow off: #EFF7 is #EFF7 again
+        out(0xEFF7, 0x04);                            // the 128K mode
+        out(0x7FFD, 0x21);
+        out(0x7FFD, 0x02);
+        CHECK(z80_rpage[6] == spec_ram_page(0x01), "#EFF7 D2: 128K paging, and D5 locks");
+        boot(MACHINE_PENTAGON);
     }
 
     GROUP("ATM-Turbo");

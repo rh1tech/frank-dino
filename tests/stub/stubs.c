@@ -212,6 +212,7 @@ bool chips_any(void) { return false; }
 /* --- the hard disk: never fitted on a host --------------------------- */
 #ifndef REAL_IDE
 bool ide_port_out(uint16_t p, uint8_t v) { (void)p; (void)v; return false; }
+bool ide_nemo_toggle;
 bool ide_port_in(uint16_t p, uint8_t *v) { (void)p; (void)v; return false; }
 void ide_reset(void) { }
 bool ide_mounted(void) { return false; }

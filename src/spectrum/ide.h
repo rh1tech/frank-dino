@@ -29,6 +29,9 @@ bool        ide_mounted(void);
 const char *ide_path(void);
 void        ide_reset(void);
 
+/* The Evo's NEMO: #10 alone moves whole words (ide.c). */
+extern bool ide_nemo_toggle;
+
 bool ide_port_out(uint16_t port, uint8_t v);
 bool ide_port_in(uint16_t port, uint8_t *v);
 

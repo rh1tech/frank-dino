@@ -291,15 +291,31 @@ static uint8_t read16_lo(void) {
 
 static void write16_lo(const uint8_t lo) { data_write(lo); data_write(latch); }
 
+/*
+ * The Evo's NEMO decode moves whole words through #10 alone: each access
+ * flips a trigger, so the first read fetches the word and returns its low
+ * byte and the second the high one, and two writes send one word. Any
+ * other register, #11 included, resets it -- so the classic #10 + #11
+ * pair still works. Evo ProfROM reads a sector with INIR : INIR on #10.
+ * After pico-speccy's EvoBase.cpp and Unreal's IDE_NEMO_DIVIDE.
+ */
+bool ide_nemo_toggle;
+static uint8_t nemo_rt, nemo_wt, nemo_w1, nemo_wlo;
+
 bool ide_port_out(const uint16_t port, const uint8_t v) {
     if (!open_) return false;
     const uint8_t lo = (uint8_t)port;
     switch (settings.ide) {
         case IDE_NEMO:
-            if (lo == 0x11u) { latch = v; return true; }
+            if (lo == 0x11u) { latch = v; nemo_wt = 0; nemo_w1 = 1; return true; }
             if ((lo & 0x07u) == 0 && (((lo >> 3) ^ (lo >> 4)) & 1u)) {
                 const unsigned r = (lo >> 5) & 7u;
-                if (r == 0) write16_lo(v); else reg_write(r, v);
+                if (r != 0) { nemo_wt = 0; reg_write(r, v); return true; }
+                if (!ide_nemo_toggle) { write16_lo(v); return true; }
+                nemo_wt ^= 1u;
+                if (nemo_w1)     { nemo_w1 = 0; write16_lo(v); }       // #11 then #10
+                else if (nemo_wt) nemo_wlo = v;                        // hold the low byte
+                else             { latch = v; write16_lo(nemo_wlo); }  // then send both
                 return true;
             }
             if (lo == 0xC8u) { ctrl = v; return true; }
@@ -329,10 +345,13 @@ bool ide_port_in(const uint16_t port, uint8_t *v) {
     const uint8_t lo = (uint8_t)port;
     switch (settings.ide) {
         case IDE_NEMO:
-            if (lo == 0x11u) { *v = latch; return true; }
+            if (lo == 0x11u) { nemo_rt = 0; *v = latch; return true; }
             if ((lo & 0x07u) == 0 && (((lo >> 3) ^ (lo >> 4)) & 1u)) {
                 const unsigned r = (lo >> 5) & 7u;
-                *v = r == 0 ? read16_lo() : reg_read(r);
+                if (r != 0) { nemo_rt = 0; *v = reg_read(r); return true; }
+                if (!ide_nemo_toggle) { *v = read16_lo(); return true; }
+                nemo_rt ^= 1u;
+                *v = nemo_rt ? read16_lo() : latch;
                 return true;
             }
             if (lo == 0xC8u) { *v = status; return true; }
@@ -373,5 +392,6 @@ void ide_smuc_control(const uint8_t v) {
 void ide_reset(void) {
     err = 0x01; count = 1; sec = 1; cyl_lo = cyl_hi = 0; dh = 0;
     pos = -1; left = 0; div_hi = false;
+    nemo_rt = nemo_wt = nemo_w1 = nemo_wlo = 0;
     status = open_ ? (ST_DRDY | ST_DSC) : 0;
 }

@@ -75,6 +75,7 @@ static const field_t fields[] = {
     { "trdos_rom",      &settings.trdos_rom,      4  },
     { "beta_target",    &settings.beta_target,    3  },
     { "p3_speedlock",   &settings.p3_speedlock,   1  },
+    { "evo_raster",     &settings.evo_raster,     3  },
     { "zcontroller",    &settings.zcontroller,    1  },
     { "ide",            &settings.ide,            IDE_COUNT - 1 },
     { "mouse_sens",     &settings.mouse_sens,     8  },

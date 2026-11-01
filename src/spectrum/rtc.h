@@ -21,6 +21,7 @@ void rtc_init(void);
 void rtc_task(void);
 
 /* The ports: #DFF7 selects, #BFF7 reads and writes. Core 1. */
+extern bool rtc_wide;   /* 256 cells, not 64: the ZX Evolution's AVR */
 void    rtc_select(uint8_t reg);
 uint8_t rtc_read(void);
 void    rtc_write(uint8_t v);

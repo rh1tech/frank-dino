@@ -14,6 +14,7 @@
 #include "dino.h"
 #include "psram.h"
 #include "spectrum.h"
+#include "atm.h"
 #include "z80_bus.h"
 
 /*
@@ -146,6 +147,7 @@ static bool     last_ok;
  * it was not made for.
  */
 static void install(void) {
+    if (spec_is_atm(spec_machine)) return;      // no fixed slot: see loader.c
     memcpy(spec_basic_slot() + TRAP_ADDR, stub, sizeof stub);
 }
 

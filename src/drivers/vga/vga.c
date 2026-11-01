@@ -581,6 +581,23 @@ __force_inline static uint8_t *atm_bits8(uint8_t *__restrict px, const uint8_t b
  * lines doubled into the middle 400 of the 480, from the screen page (5
  * or 7) and the page four below it.
  */
+/*
+ * The Evo's TEXT1 screen lives in RAM page 8, which is in the PSRAM: read
+ * a line at a time it cost up to 45 us of a 31.8 us line. So the blanking
+ * copies it into SRAM, one text row a line -- the 40 symbols and 40
+ * attributes of each half -- and the picture is drawn from the copy.
+ */
+static uint8_t text1_rows[25][4][40];
+
+static void text1_fetch(const unsigned row) {
+    const uint8_t *const p8 = spec_bank_host(8);
+    const uint32_t base = 0x01C0u + row * 64u;
+    memcpy(text1_rows[row][0], p8 + base, 40);
+    memcpy(text1_rows[row][1], p8 + 0x1000u + base, 40);
+    memcpy(text1_rows[row][2], p8 + 0x3000u + base, 40);
+    memcpy(text1_rows[row][3], p8 + 0x2000u + base + 1u, 40);
+}
+
 static void render_atm_line(uint32_t *__restrict out, const uint32_t line, const atm_vmode_t vm,
                             const bool dim) {
     const uint8_t  *__restrict pal   = dim ? spec_palette_dim : spec_palette;
@@ -620,6 +637,17 @@ static void render_atm_line(uint32_t *__restrict out, const uint32_t line, const
     // 80x25 text: 64-byte rows from #01C0; even columns' symbols at +0 and
     // attributes at alt+#2000, odd columns' at +#2000 and alt+1.
     const uint8_t *__restrict fnt = atm_font_ptr() + (y & 7u);
+    if (vm == ATM_VM_TEXT1) {
+        // The Evo's TEXT1 keeps it all in RAM page 8: symbols at +0, the
+        // attributes at +#2000, and the second half of each line #1000
+        // on rather than #2000 (video_addrgen.v, mode_a_txt_1page).
+        const uint8_t (*__restrict r)[40] = text1_rows[y >> 3];
+        for (uint32_t x = 0; x < 40u; x++) {
+            px = atm_bits8(px, fnt[r[0][x] * 8u], r[2][x], pal);
+            px = atm_bits8(px, fnt[r[1][x] * 8u], r[3][x], pal);
+        }
+        return;
+    }
     const uint32_t base = 0x01C0u + (y >> 3) * 64u;
     for (uint32_t x = 0; x < 40u; x++) {
         px = atm_bits8(px, fnt[scr[base + x] * 8u], alt[0x2000u + base + x], pal);
@@ -1085,6 +1113,9 @@ void __time_critical_func(vga_scanline)(void) {
             }
         }
         if (line == VISIBLE_LINES && vga_mode == VGA_MODE_UI) ui_row_request(0);
+        if (line > VISIBLE_LINES && line <= VISIBLE_LINES + 25u && spec_machine == MACHINE_EVO
+            && atm_video_mode() == ATM_VM_TEXT1)
+            text1_fetch(line - VISIBLE_LINES - 1u);
         const int which = (line >= VSYNC_START_LINE && line <= VSYNC_END_LINE) ? VSYNC : VBLANK;
         dma_channel_set_read_addr(dma_ctrl_channel, &scanline_buffers[which], false);
         return;

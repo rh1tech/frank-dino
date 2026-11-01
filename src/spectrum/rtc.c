@@ -32,7 +32,8 @@
 #endif
 
 static uint8_t  sel;
-static uint8_t  nvram[64];          // 0-13 the clock's own, 14-63 the NVRAM
+static uint8_t  nvram[256];         // 0-13 the clock's own, 14-63 the NVRAM, the rest the Evo's
+bool            rtc_wide;           // the Evo's AVR: all 256 cells
 static int64_t  offset_s;           // seconds added to build time + uptime
 static volatile bool     dirty;
 static volatile uint64_t dirty_at;
@@ -133,13 +134,38 @@ static void set_clock_reg(const uint8_t r, const uint8_t v) {
 // ---------------------------------------------------------------------------
 // Ports
 // ---------------------------------------------------------------------------
-void rtc_select(const uint8_t reg) { sel = reg & 0x3Fu; }
+void rtc_select(const uint8_t reg) { sel = rtc_wide ? reg : (uint8_t)(reg & 0x3Fu); }
+
+/*
+ * The Evo's AVR serves the clock and keeps cells #F0-#FF for itself: a
+ * write to #F0 picks what the sixteen read back -- the BaseConf's version,
+ * the boot loader's, the PS/2 scancode log, the modes register. After
+ * pico-speccy's ZxEvoAvr.cpp and the AVR's version.c. Name, then the date
+ * (month<<5 | day, official<<7 | year<<1 | month bit 3), then a CRC
+ * nothing checks.
+ */
+static uint8_t avr_type;
+static const uint8_t kAvrVer[2][16] = {
+    { 'f','r','a','n','k','-','d','i','n','o',0,0, 0x61,0xB5, 0,0 },
+    { 'f','r','a','n','k','-','d','i','n','o',0,0, 0x61,0xB5, 0,0 },
+};
+
+static uint8_t avr_read(const uint8_t i) {
+    switch (avr_type) {
+        case 0: case 1: return kAvrVer[avr_type][i];
+        case 2:         return 0;                       // the scancode log: empty
+        case 3:         return i == 0 ? 0x01u : 0xFFu;  // modes: VGA
+        default:        return 0xFF;
+    }
+}
 
 uint8_t rtc_read(void) {
+    if (rtc_wide && sel >= 0xF0u) return avr_read(sel & 15u);
     return sel < 14 ? clock_reg(sel) : nvram[sel];
 }
 
 void rtc_write(const uint8_t v) {
+    if (rtc_wide && sel >= 0xF0u) { avr_type = v; return; }   // any cell picks, no interface owns one
     if (sel < 10 && sel != 1 && sel != 3 && sel != 5) { set_clock_reg(sel, v); return; }
     if (nvram[sel] == v) return;
     nvram[sel] = v;
@@ -158,9 +184,9 @@ void rtc_init(void) {
     FIL f;
     if (f_open(&f, NVR_PATH, FA_READ) == FR_OK) {
         UINT got = 0;
-        uint8_t buf[50];
-        if (f_read(&f, buf, sizeof buf, &got) == FR_OK && got == sizeof buf)
-            memcpy(nvram + 14, buf, sizeof buf);
+        // 50 bytes from before the Evo, 242 since.
+        if (f_read(&f, nvram + 14, sizeof nvram - 14, &got) != FR_OK || got < 50)
+            memset(nvram + 14, 0, sizeof nvram - 14);
         f_close(&f);
     }
 #endif
@@ -175,7 +201,7 @@ void rtc_task(void) {
     FIL f;
     if (f_open(&f, NVR_PATH, FA_WRITE | FA_CREATE_ALWAYS) != FR_OK) return;
     UINT put = 0;
-    f_write(&f, nvram + 14, 50, &put);
+    f_write(&f, nvram + 14, sizeof nvram - 14, &put);
     f_close(&f);
 #endif
 }

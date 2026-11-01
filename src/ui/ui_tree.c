@@ -37,6 +37,7 @@
 #include "psram.h"
 #include "settings.h"
 #include "spectrum.h"
+#include "atm.h"
 #include "screen.h"
 #include "storage.h"
 #include "usbdisk.h"
@@ -138,6 +139,14 @@ static const ui_option_t opt_machine[] = {
     { "ATM-Turbo 2+ xBIOS", MACHINE_ATM2X,  "ATM xBIOS"},
     { "ATM-Turbo 3",      MACHINE_ATM3,     "ATM 3"    },
     { "ALF TV Game",      MACHINE_ALF,      "ALF"      },
+    { "ZX Evolution",     MACHINE_EVO,      "Evo"      },
+};
+
+static const ui_option_t opt_evo_raster[] = {
+    { "Pentagon (71680)", 0, "Pentagon" },
+    { "60 Hz (58688)",    1, "60 Hz"    },
+    { "48K (69888)",      2, "48K"      },
+    { "128K (70908)",     3, "128K"     },
 };
 
 static const ui_option_t opt_turbo[] = {
@@ -865,6 +874,14 @@ static void reset_action(void) {
     say("%s reset.", spec_machine_name());
 }
 
+/* The ZX Evolution's Magic button: EVO Reset Service's NMI menu. */
+static bool is_evo(void) { return spec_machine == MACHINE_EVO; }
+
+static void magic_action(void) {
+    atm_nmi_button();
+    say("Magic: the NMI comes when the menu closes.");
+}
+
 /* ── the tree ────────────────────────────────────────────────────────── */
 
 // ── snapshots ───────────────────────────────────────────────────────────
@@ -970,6 +987,8 @@ static const ui_node_t machine_kids[] = {
     UI_BOOL ("Spanish ROMs",      &settings.rom_spanish, machine_changed),
     UI_ACTION("Reset the machine", reset_action),
     UI_ACTIONV("ROM",             NULL, rom_info),
+    UI_ACTIONV_EN("Magic button (NMI)", magic_action, NULL, is_evo),
+    UI_RADIO_EN("Evo raster",     &settings.evo_raster, opt_evo_raster, machine_changed, is_evo),
 };
 
 static const ui_node_t audio_kids[] = {

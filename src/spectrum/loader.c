@@ -19,6 +19,7 @@
 #include "fdc.h"
 #include "settings.h"
 #include "spectrum.h"
+#include "atm.h"
 #include "tape.h"
 #include "tapeplay.h"
 #include "pulse.h"
@@ -645,7 +646,11 @@ static bool load_tap(FIL *f, const uint32_t size, const tape_format_t fmt,
 
     char mounted[64];
     // A worn tape has to be played: the trap would read straight past the damage.
+    // So does any tape on an ATM or an Evo, whose 48K ROM is one page of
+    // many, cached in whichever ROM slot came free: there is no fixed
+    // place for the patch to go.
     const bool trap = !settings.tape_realtime && !settings.tape_wear && pulse_all_rom_loadable()
+                      && !spec_is_atm(spec_machine)
                       && len <= TAPE_MAX_BYTES && fmt != TAPE_CSW && fmt != TAPE_WAV;
     if (trap) {
         // Into the trap's own buffer, converted in place; see tape.c.

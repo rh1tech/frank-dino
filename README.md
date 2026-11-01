@@ -22,10 +22,10 @@ the RP2350B being everything else the CPU can see.
 
 | | |
 |---|---|
-| Machines | 16K, 48K, 128K, +2, +2A, +3; Pentagon 128, 512 and 1024SL; Scorpion ZS-256 and ZS-1024 (ProfROM), ScorpEvo; Nemo KAY-256, KAY-1024 (two ROMs), ZXM-Phoenix; Profi 1024 with DS80 and CP/M; ATM-Turbo 1, 2, 2+ (two BIOSes) and 3 (all 4 MB); Timex TC2048 and TC2068; Didaktik Gama 89; Leningrad-1 and -2; Byte; ALF TV Game. Spanish ROMs for the 48K, 128K and +2 |
+| Machines | 16K, 48K, 128K, +2, +2A, +3; Pentagon 128, 512 and 1024SL; Scorpion ZS-256 and ZS-1024 (ProfROM), ScorpEvo; Nemo KAY-256, KAY-1024 (two ROMs), ZXM-Phoenix; Profi 1024 with DS80 and CP/M; ATM-Turbo 1, 2, 2+ (two BIOSes) and 3 (all 4 MB); ZX Evolution BaseConf (EVO Reset Service, its Magic NMI menu, EVO ProfROM, NEO-DOS; 4 MB); Timex TC2048 and TC2068; Didaktik Gama 89; Leningrad-1 and -2; Byte; ALF TV Game. Spanish ROMs for the 48K, 128K and +2 |
 | CPU | A real Z84C00 at each machine's own clock (3.5, 3.5469 or 3.528 MHz), paced by the wall clock; 5.3 and 7 MHz on request |
 | Timing | Every handler is told its T-state: the ULA's contention and floating bus on the Sinclair machines, a picture built as the ULA fetched it (multicolour, border effects), Gigascreen with an Auto mode |
-| RAM | 128 KB in SRAM; up to 1 MB more in the 8 MB PSRAM (4 MB on the ATM-Turbo 3), at #C000 through a staging page or anywhere at all through the XIP cache (the ATM) |
+| RAM | 128 KB in SRAM; up to 1 MB more in the 8 MB PSRAM (4 MB on the ATM-Turbo 3 and the Evo), at #C000 through a staging page or anywhere at all through the XIP cache (the ATM) |
 | Video | 256x192 and border doubled into 640x480 over HDMI; ULA+, Gigascreen, the Timex modes, Pentagon 16 colours, Profi 512x240, ATM EGA/hires/80x25 text with its palette; palettes (Sinclair, Pulsar, Alone, Grayscale, Mars, Ocean), four scanline strengths and a CRT filter with an aperture grille, all dithered onto the ladder at no cost per pixel |
 | Sound | Beeper, two AYs (TurboSound and TurboSound FM's YM2203s), SAA1099 and the CMS pair, OPL3, YM2413, two SN76489s, Covox (#FB or #DD), SounDrive, SpecDrum, the Byte's 8253 -- synthesised on core 0 from timestamped writes, stereo to two PWM DACs |
 | Tape | `.tap`, `.tzx` (every block type, GDB included), `.pzx`, `.csw`, `.wav` in real time onto the EAR bit, or instantly by ROM trap when a tape is all standard blocks; a real cassette on J8; a worn-tape model (wow, lurches, dropouts); a tape browser; SAVE recorded back to `.tap`; Rodolfo Guerra timings |
@@ -334,10 +334,11 @@ This makes "did stage 0 pass" a question a script can answer.
 
 ## What comes next
 
-The machine runs, loads and plays. What it has not got yet:
-
-- **ZX Evolution BaseConf.** The ATM-Turbo 2+ memory manager with the
-  Evo's own ports, its keyboard controller, font RAM and rasters.
+The machine runs, loads and plays, and every machine on the list is in.
+What is still missing is small and listed in `docs/spectrum.md`: the
+Evo's PS/2 scancode log (for avrconf and the like), its drive emulator's
+virtual disks, untried, and the 7 and 14 MHz turbo clocks, which a real
+Z84C00 on this bus does not reach.
 
 ## Toolchain
 
@@ -372,7 +373,7 @@ of it GPL-3.0 or compatible, and each ported file says so at its top:
 
 - **pico-speccy** (https://github.com/drewpo28/pico-speccy) by drew.po28 —
   the machine models (Pentagon 512/1024, Scorpion/ProfROM/KAY/Phoenix,
-  ATM-Turbo, Byte, ALF, Profi DS80), the FM and PSG cores, the tape timings,
+  ATM-Turbo, the ZX Evolution's BaseConf and its tools/evo_sim.c, Byte, ALF, Profi DS80), the FM and PSG cores, the tape timings,
   the TD0 decoder, the Kempston mouse decode, SMUC, the tape wear model, the
   pad decoders and button map, the palettes and CRT filter, and the menus.
 - **ESPectrum** by Víctor Iborra [Eremus] and David Crespo [dcrespo3d], from
