@@ -21,6 +21,7 @@
  * moment after the last change and read back at boot.
  */
 #include "rtc.h"
+#include "evo_ps2.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -153,19 +154,26 @@ static const uint8_t kAvrVer[2][16] = {
 static uint8_t avr_read(const uint8_t i) {
     switch (avr_type) {
         case 0: case 1: return kAvrVer[avr_type][i];
-        case 2:         return 0;                       // the scancode log: empty
+        case 2:         return evo_ps2_pop();           // the scancode log
         case 3:         return i == 0 ? 0x01u : 0xFFu;  // modes: VGA
         default:        return 0xFF;
     }
 }
 
 uint8_t rtc_read(void) {
-    if (rtc_wide && sel >= 0xF0u) return avr_read(sel & 15u);
+    if (rtc_wide) {
+        if (sel >= 0xF0u) return avr_read(sel & 15u);
+        // The modifier keys' state; D7 of #0D set says "an ATM-type
+        // board" to the 2011 Evo ProfROM (pico-speccy RTC.cpp).
+        if (sel == 0x0Du) return (uint8_t)(evo_ps2_mods0() | 0x80u);
+        if (sel == 0x0Eu) return evo_ps2_mods1();
+    }
     return sel < 14 ? clock_reg(sel) : nvram[sel];
 }
 
 void rtc_write(const uint8_t v) {
     if (rtc_wide && sel >= 0xF0u) { avr_type = v; return; }   // any cell picks, no interface owns one
+    if (rtc_wide && sel == 0x0Cu) { if (v & 1u) evo_ps2_clear(); return; }   // D0: empty the log
     if (sel < 10 && sel != 1 && sel != 3 && sel != 5) { set_clock_reg(sel, v); return; }
     if (nvram[sel] == v) return;
     nvram[sel] = v;

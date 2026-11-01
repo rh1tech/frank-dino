@@ -34,6 +34,7 @@
 #include "loader.h"
 #include "spectrum.h"
 #include "storage.h"
+#include "ff.h"
 
 #define DLE 0x10
 
@@ -151,11 +152,37 @@ volatile uint8_t harness_req;
 volatile uint8_t harness_ok;
 char             harness_detail[64];
 
+/*
+ * ...and writing one: harness_req = 2 puts harness_len bytes from
+ * harness_src (anywhere the tool has filled, the PSRAM usually) into the
+ * file at harness_off, creating it. How a test gets a disk image onto the
+ * card without taking the card out.
+ */
+volatile uint32_t harness_src, harness_len, harness_off;
+
+static bool harness_write(const char *path) {
+    FIL f;
+    if (f_open(&f, path, FA_WRITE | FA_OPEN_ALWAYS) != FR_OK) return false;
+    UINT put = 0;
+    const bool ok = f_lseek(&f, harness_off) == FR_OK
+                 && f_write(&f, (const void *)(uintptr_t)harness_src, harness_len, &put) == FR_OK
+                 && put == harness_len;
+    f_close(&f);
+    snprintf(harness_detail, sizeof harness_detail, "%lu bytes at %lu",
+             (unsigned long)put, (unsigned long)harness_off);
+    return ok;
+}
+
 void harness_poll(void) {
     if (!harness_req) return;
     char path[sizeof harness_path];
     memcpy(path, (const char *)harness_path, sizeof path);
     path[sizeof path - 1] = '\0';
+    if (harness_req == 2) {
+        harness_ok = harness_write(path) ? 1u : 0u;
+        harness_req = 0;
+        return;
+    }
     spec_pause();
     harness_ok = loader_load(path, storage_kind(path), harness_detail, sizeof harness_detail) ? 1u : 0u;
     spec_resume();

@@ -172,11 +172,13 @@ int main(void) {
     in(DATA); in(DATA);
     EQ(in(DATA), 0x01, "CMD8 echoes the voltage range");
     EQ(in(DATA), 0xAA, "CMD8 echoes the check pattern");
-    /* ACMD41 = CMD55 then CMD41. This card is ready from the start, so
-     * it answers APP_CMD ready rather than idle; esxDOS loops on
-     * ACMD41's response, not on CMD55's. */
+    /* CRC_ON_OFF before ACMD41 says "idle", which EVO Reset Service
+     * waits on. APP_CMD says ready whatever: esxDOS 0.8.9 hangs on an
+     * idle one, and loops on ACMD41's response anyway. */
+    EQ(card_cmd(59, 0, 0x91), 0x01, "CMD59 CRC_ON_OFF -> idle");
     EQ(card_cmd(55, 0, 0x65), 0x00, "CMD55 APP_CMD accepted");
     EQ(card_cmd(41, 0x40000000, 0x77), 0x00, "ACMD41 -> ready");
+    EQ(card_cmd(59, 0, 0x91), 0x00, "and CMD59 after it -> ready");
     EQ(card_cmd(58, 0, 0xFD), 0x00, "CMD58 READ_OCR");
     const uint8_t ocr0 = in(DATA);
     in(DATA); in(DATA); in(DATA);

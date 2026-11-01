@@ -63,12 +63,18 @@ in the Gluk clock's cells #E7-#EF, so they are saved to `/cmos.nvr`.
   generator. ERS reloads it at every reset with a KOI-8 font, so Magic's
   frame characters come out as Cyrillic letters, as they do with that font.
 - The AVR answers its version window (#F0-#FF) with this firmware's name
-  and build date; the PS/2 scancode log is there but always empty, so the
-  Evo-only programs that read keys from it (avrconf) see none.
+  and build date, and keeps the PS/2 scancode log the Evo-only programs
+  (avrconf, Wild Commander) read their keys from: set-2 bytes from the USB
+  keyboard and the console, sixteen deep, 0xFF once when it overflows, and
+  the modifier keys in cells #0D and #0E.
+- The SD card is the Z-Controller's: choose a card image (`.img`, `.mmc`,
+  `.hdf`) in the browser while the Evo runs and it goes in there, with no
+  esxDOS and no restart — then reset, since ERS looks for the card at
+  reset. ERS's file browser reads it, and a `.trd` from it goes into ERS's
+  RAM disk or is mounted from the card; either way TR-DOS reaches it
+  through the drive emulator, RAM page #FE behind the WD1793's ports.
 - The NEMO IDE moves whole words through #10 alone, as Evo ProfROM wants.
-- 7 and 14 MHz (#77 D3, #EFF7 D4) are latched and ignored, and the drive
-  emulator's page-#FE trap is modelled but ERS's virtual drives have not
-  been tried.
+- 7 and 14 MHz (#77 D3, #EFF7 D4) are latched and ignored.
 
 ### Timing
 

@@ -754,6 +754,16 @@ static bool load_mmc(const char *path, char *detail, const unsigned detail_len) 
 
     char mounted[80];
     snprintf(mounted, sizeof mounted, "%s", detail);
+    /*
+     * The Evo's SD card is its Z-Controller's, and EVO Reset Service
+     * browses it and mounts disk images from it itself: the card goes in
+     * there, with no esxDOS and no restart.
+     */
+    if (spec_machine == MACHINE_EVO) {
+        settings.zcontroller = 1;
+        snprintf(detail, detail_len, "%s -- the Evo's SD card", mounted);
+        return true;
+    }
     settings.esxdos = 1;
     settings.betadisk = 0;
     spec_set_machine(spec_machine);      /* cold start with esxDOS in */

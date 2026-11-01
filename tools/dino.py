@@ -296,6 +296,37 @@ class Board:
         raw = bytes(self.ocd.read(self.addr('harness_detail'), 8, 64))
         return self.u8('harness_ok') == 1, raw.split(b'\0')[0].decode(errors='replace')
 
+    def put_file(self, path, data, buf_sym='psram_arena', buf_off=0x00E0000, chunk=0x10000):
+        """
+        Write `data` to `path` on the card, a chunk at a time through a
+        PSRAM buffer (by default the arena's tape-capture part, idle unless
+        capturing). All-zero chunks are written from a zeroed buffer
+        without sending them again.
+        """
+        buf = self.addr(buf_sym) + buf_off
+        zero = buf + chunk
+        self.ocd.write(zero, 32, [0] * (chunk // 4))
+        pa = self.addr('harness_path')
+        self.ocd.write(pa, 8, list(path.encode()[:95] + b'\0'))
+        for off in range(0, len(data), chunk):
+            part = data[off:off + chunk]
+            if any(part):
+                part = part + bytes(-len(part) % 4)
+                for i in range(0, len(part), 4096):
+                    words = [int.from_bytes(part[j:j + 4], 'little') for j in range(i, min(i + 4096, len(part)), 4)]
+                    self.ocd.write(buf + i, 32, words)
+                src = buf
+            else:
+                src = zero
+            self.ocd.write(self.addr('harness_src'), 32, [src])
+            self.ocd.write(self.addr('harness_len'), 32, [min(chunk, len(data) - off)])
+            self.ocd.write(self.addr('harness_off'), 32, [off])
+            self.ocd.write(self.addr('harness_req'), 8, [2])
+            if not self._wait(lambda: self.u8('harness_req') == 0, 20):
+                raise RuntimeError(f'writing {path} stalled at {off}')
+            if self.u8('harness_ok') != 1:
+                raise RuntimeError(f'writing {path} failed at {off}')
+
     # -- the Z80's memory, through the live page table (8 KB pages) --------
     def zread(self, addr, n):
         """n bytes of what the Z80 sees from addr (n a multiple of 4, no page crossing)."""

@@ -301,9 +301,16 @@ static void card_write(const uint8_t v) {
     const uint32_t arg = ((uint32_t)params[0] << 24) | ((uint32_t)params[1] << 16)
                        | ((uint32_t)params[2] << 8)  | params[3];
 
+    /*
+     * R1's bit 0 says the card is still initialising: set by GO_IDLE and
+     * cleared by SEND_OP_COND. EVO Reset Service sends CRC_ON_OFF before
+     * ACMD41 and wants that bit on it; esxDOS, on the other hand, wants
+     * APP_CMD answered 0 even then -- so only CRC_ON_OFF carries it.
+     */
+    static bool idle;
     switch (cmd & 0x3Fu) {
-        case 0:  resp = 1; break;                           /* GO_IDLE_STATE */
-        case 1:  resp = 0; break;                           /* SEND_OP_COND */
+        case 0:  resp = 1; idle = true; break;              /* GO_IDLE_STATE */
+        case 1:  resp = 0; idle = false; break;             /* SEND_OP_COND */
         case 8:  resp = 1;                                  /* SEND_IF_COND */
                  begin_reg((const uint8_t[]){ 0, 0, 1, params[3] }, 4);
                  break;
@@ -355,8 +362,10 @@ static void card_write(const uint8_t v) {
             multi_write = ((cmd & 0x3Fu) == 25u);
             wr_idx = 0;
             break;
-        case 55: resp = 0; break;                           /* APP_CMD */
-        case 41: resp = 0; break;                           /* ACMD41: ready */
+        case 55: resp = 0; break;                           /* APP_CMD: ready, idle or not --
+                                                             * esxDOS 0.8.9 hangs on a 1 here */
+        case 41: resp = 0; idle = false; break;             /* ACMD41: ready */
+        case 59: resp = idle ? 1 : 0; break;                /* CRC_ON_OFF: CRCs are not checked anyway */
         case 58:                                            /* READ_OCR */
             resp = 0;
             begin_reg((const uint8_t[]){ sdhc ? 0xC0u : 0x80u, 0xFF, 0x80, 0x00 }, 4);

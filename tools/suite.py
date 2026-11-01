@@ -323,8 +323,8 @@ def t_tape(b, r):
         got = b.zread(0x8200, 64)
         want = bytes.fromhex('00600061006200630064006500660067206020612062206320642065206620674060406140624063406440654066406760606061606260636064606560666067')
         r.check(got == want, 'the code block is loading, byte for byte', b, 'tape.png')
-        r.check(0x5E9 <= b.status()['pc'] <= 0x5FA, f'the ROM is still reading bits (pc {b.status()["pc"]:04X})',
-                b, 'tape.png')
+        pc = b.status()['pc']                    # LD-BYTES and its edge loops: #0556-#0604
+        r.check(0x556 <= pc <= 0x604, f'the ROM is still reading bits (pc {pc:04X})', b, 'tape.png')
     finally:
         b.setting('tape_realtime', was)
 
@@ -407,9 +407,119 @@ def t_evo(b, r):
     r.check(b.alive(), 'NEO-DOS runs', b, 'evo_dos.png')
 
 
+# The Evo's scancode log, read by the Z80: the Gluk ports opened with
+# #EFF7 D7 (D2 kept), the log emptied (#0C D0), its window picked (#F0 = 2),
+# then every byte that is not 0 to #9000 until six have come.
+EVO_LOG_READER = bytes((
+    0x01, 0xBD, 0x0B, 0xED, 0x78, 0xF6, 0x80,       # IN A,(#0BBD) : OR #80
+    0x01, 0xF7, 0xEF, 0xED, 0x79,                   # OUT (#EFF7),A
+    0x01, 0xF7, 0xDF, 0x3E, 0x0C, 0xED, 0x79,       # select #0C
+    0x06, 0xBF, 0x3E, 0x01, 0xED, 0x79,             # D0: empty the log
+    0x06, 0xDF, 0x3E, 0xF0, 0xED, 0x79,             # select #F0
+    0x06, 0xBF, 0x3E, 0x02, 0xED, 0x79,             # the window: the log
+    0x21, 0x00, 0x90,                               # LD HL,#9000
+    0x06, 0xDF, 0x3E, 0xF0, 0xED, 0x79,             # loop: select #F0
+    0x06, 0xBF, 0xED, 0x78,                         # IN A,(#BFF7)
+    0xB7, 0x28, 0x02, 0x77, 0x23,                   # OR A : JR Z,+2 : LD (HL),A : INC HL
+    0x7D, 0xFE, 0x06, 0x20, 0xEC,                   # LD A,L : CP 6 : JR NZ,loop
+    0xC9))
+
+
+def t_evo_keys(b, r):
+    """
+    The Evo's PS/2 scancode log, read by the Z80 through the Gluk cells
+    the way avrconf reads it: "hi" typed is 33 F0 33 43 F0 43.
+    """
+    from dino import pick_machine
+    pick_machine(b, MACHINES.index('Evo'), 6)
+    b.type('u', gap=0.3)                       # ERS: 128K BASIC
+    time.sleep(2)
+    b.key('DOWN', gap=0.4)
+    b.key('ENTER', gap=1.5)                    # its menu: 128 BASIC
+    b.zwrite(0x9000, bytes(8))
+    b.zwrite(0x8000, EVO_LOG_READER)
+    b.type('RANDOMIZE USR 32768', gap=0.15)
+    b.key('ENTER', gap=1.5)
+    b.type('hi', gap=0.4)
+    for _ in range(30):                        # the routine stores them as it reads them
+        got = b.zread(0x9000, 8)[:6]
+        if got[5]:
+            break
+        time.sleep(0.1)
+    r.check(got == bytes((0x33, 0xF0, 0x33, 0x43, 0xF0, 0x43)),
+            f'"hi" came through the log as set-2 ({got.hex(" ")})', b, 'evo_keys.png')
+
+
+EVO_IMG = '/ZX/evo.img'
+
+
+def evo_card_image():
+    """A 32 MB FAT16 card with one TR-DOS disk on it: EVOTEST, a file HELLO."""
+    import subprocess
+    import tempfile
+    d = bytearray(655360)
+    d[0:16] = b'HELLO   C' + (32768).to_bytes(2, 'little') + (512).to_bytes(2, 'little') + bytes((2, 0, 1))
+    s9 = 0x800
+    d[s9 + 0xE1:s9 + 0xE8] = bytes((2, 1, 0x16, 1, 2542 & 255, 2542 >> 8, 0x10))
+    d[s9 + 0xF5:s9 + 0xFD] = b'EVOTEST '
+    with tempfile.TemporaryDirectory() as t:
+        trd, img = os.path.join(t, 'evotest.trd'), os.path.join(t, 'evo.img')
+        open(trd, 'wb').write(d)
+        open(img, 'wb').write(bytes(32 << 20))
+        subprocess.run(['mformat', '-i', img, '-v', 'ZXEVO', '::'], check=True)
+        subprocess.run(['mcopy', '-i', img, trd, '::EVOTEST.TRD'], check=True)
+        return open(img, 'rb').read()
+
+
+def t_evo_disk(b, r):
+    """
+    EVO Reset Service's virtual drive: its file browser reads the
+    Z-Controller's card, puts a .trd in its RAM disk, and NEO-DOS lists
+    it through the drive emulator (RAM page #FE behind the WD1793's ports).
+    """
+    from dino import pick_machine
+    nv = b.addr('rtc.c:nvram')
+    cmos = b.ocd.read(nv, 8, 256)
+    zc = b.setting('zcontroller')
+    try:
+        pick_machine(b, MACHINES.index('Evo'), 3)
+        ok, detail = b.load(EVO_IMG)
+        if not ok:
+            b.put_file(EVO_IMG, evo_card_image())   # a minute, once
+            ok, detail = b.load(EVO_IMG)
+        r.check(ok and 'SD' in detail, f'the card is the Evo\'s ({detail})')
+        pick_machine(b, MACHINES.index('Evo'), 6)  # ERS looks for it at reset
+        b.type('f', gap=0.3)                       # F. File browse
+        time.sleep(3)
+        b.key('ENTER', gap=3)                      # EVOTEST.TRD
+        for _ in range(4):                         # the dialog takes its time
+            b.type('1', gap=0.3)                   # 1. Ramdisk A:
+            time.sleep(3)
+            if b.u8('atm.c:fdd_mask') & 1:
+                break
+        r.check(b.u8('atm.c:fdd_mask') & 1, 'ERS took drive A for its emulator', b, 'evo_ramdisk.png')
+        b.type('s', gap=0.3)                       # S. TR-DOS
+        time.sleep(4)
+        b.type('k', gap=0.5)                       # LIST
+        b.key('ENTER', gap=0.05)
+        seen, t0 = set(), time.time()
+        while time.time() - t0 < 4:
+            seen.add(b.u8('atm.c:in_trdemu'))
+        r.check(1 in seen, 'the catalogue went through RAM page #FE')
+        # "Title: EVOTEST" is the first text row: pixel line 1 of it, at #4100.
+        r.check(any(b.zread(0x4100, 32)), "and NEO-DOS printed it", b, "evo_list.png")
+    finally:
+        b.setting('zcontroller', zc)
+        b.ocd.write(nv, 8, cmos)
+        b.ocd.write(b.addr('rtc.c:dirty_at'), 32, [0, 0])
+        b.ocd.write(b.addr('rtc.c:dirty'), 8, [1])
+        time.sleep(2)
+        pick_machine(b, MACHINES.index('Evo'), 4)
+
+
 TESTS = {'boot': t_boot, 'steady': t_steady, 'volume': t_volume, 'pause': t_pause, 'menu': t_menu,
          'machines': t_machines, 'snapshot': t_snapshot, 'snapshot128': t_snapshot128, 'sound': t_sound, 'tape': t_tape,
-         'driveb': t_driveb, 'evo': t_evo}
+         'driveb': t_driveb, 'evo': t_evo, 'evokeys': t_evo_keys, 'evodisk': t_evo_disk}
 
 
 def main():

@@ -36,10 +36,11 @@ try() { [ -z "$only" ] || [ "$only" = "$1" ] || return 0; run_one "$@" || fail=1
 
 try paging  "-DREAL_SPECTRUM -DREAL_VGA -DREAL_ATM -DREAL_RTC -DRTC_HOST_TEST -DPULSE_HOST_TEST -DTAPEREC_HOST_TEST -DSMUC_HOST_TEST" \
     src/spectrum/spectrum.c src/core/z80_bus.c src/spectrum/saa.c src/spectrum/sound.c \
-    src/spectrum/tapeplay.c src/spectrum/pulse.c src/spectrum/taperec.c src/spectrum/atm.c src/spectrum/rtc.c \
+    src/spectrum/tapeplay.c src/spectrum/pulse.c src/spectrum/taperec.c src/spectrum/atm.c src/spectrum/rtc.c src/spectrum/evo_ps2.c \
     src/spectrum/smuc.c src/spectrum/arena.c
 try smuc    "-DSMUC_HOST_TEST" src/spectrum/smuc.c
 try joymap  "-DREAL_JOY" src/spectrum/joymap.c
+try evops2  "" src/spectrum/evo_ps2.c
 try fdc     "-DREAL_FDC" \
     src/spectrum/fdc.c src/spectrum/storage.c src/spectrum/arena.c tests/stub/ff_host.c
 try beta    "-DREAL_BETA" \

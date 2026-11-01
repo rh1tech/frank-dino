@@ -32,6 +32,7 @@ target_sources(spectrum INTERFACE
         ${CMAKE_CURRENT_LIST_DIR}/ula_frame.c
         ${CMAKE_CURRENT_LIST_DIR}/atm.c
         ${CMAKE_CURRENT_LIST_DIR}/rtc.c
+        ${CMAKE_CURRENT_LIST_DIR}/evo_ps2.c
         ${CMAKE_CURRENT_LIST_DIR}/diskconv.c
         ${CMAKE_CURRENT_LIST_DIR}/ide.c
         ${CMAKE_CURRENT_LIST_DIR}/smuc.c

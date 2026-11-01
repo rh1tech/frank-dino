@@ -56,6 +56,7 @@ file_kind_t storage_kind(const char *name) {
     if (ext_is(name, "dck")) return FILE_DCK;
     if (ext_is(name, "mmc")) return FILE_MMC;
     if (ext_is(name, "hdf")) return FILE_MMC;
+    if (ext_is(name, "img")) return FILE_MMC;   // a raw SD card, as dd writes one
     if (ext_is(name, "zip")) return FILE_ZIP;
     return FILE_OTHER;
 }

@@ -31,6 +31,7 @@
 #include "z80_bus.h"
 #include "atm.h"
 #include "rtc.h"
+#include "evo_ps2.h"
 #include "smuc.h"
 #include "customrom.h"
 #include "arena.h"
@@ -2134,6 +2135,11 @@ void spec_key_ascii(char c) {
             joy_state |= held_joy;
         }
 
+        if (spec_machine == MACHINE_EVO && c >= 'A' && c <= 'D') {
+            static const uint8_t arrow[4] = { 0x52, 0x51, 0x4F, 0x50 };   // up down right left
+            evo_ps2_hid(arrow[c - 'A'], true);
+            evo_ps2_hid(arrow[c - 'A'], false);
+        }
         held_frames = KEY_HOLD_FRAMES;
         hold(R_CSZXCV, 0);                      // CAPS SHIFT
         switch (c) {
@@ -2149,6 +2155,7 @@ void spec_key_ascii(char c) {
 
     if (held_count || held_joy) return;         // one keystroke at a time
 
+    if (spec_machine == MACHINE_EVO) evo_ps2_ascii(c);
     held_frames = KEY_HOLD_FRAMES;
 
     if (c >= 'a' && c <= 'z') { hold(key_letters[c - 'a'].row, key_letters[c - 'a'].bit); return; }
@@ -2307,6 +2314,7 @@ void spec_init(void) {
     pent_cache_in  = false;
     rtc_wide = spec_machine == MACHINE_EVO;
     ide_nemo_toggle = spec_machine == MACHINE_EVO;
+    evo_ps2_clear();
     if (spec_is_atm(spec_machine)) atm_reset();
     ide_reset();
     smuc_reset();

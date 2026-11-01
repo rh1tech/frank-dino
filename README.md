@@ -335,10 +335,8 @@ This makes "did stage 0 pass" a question a script can answer.
 ## What comes next
 
 The machine runs, loads and plays, and every machine on the list is in.
-What is still missing is small and listed in `docs/spectrum.md`: the
-Evo's PS/2 scancode log (for avrconf and the like), its drive emulator's
-virtual disks, untried, and the 7 and 14 MHz turbo clocks, which a real
-Z84C00 on this bus does not reach.
+What it will not do is run the 7 and 14 MHz turbo clocks of the ATM and
+the Evo, which a real Z84C00 on this bus does not reach.
 
 ## Toolchain
 

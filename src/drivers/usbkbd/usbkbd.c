@@ -24,6 +24,7 @@
 #include "menu.h"
 #include "settings.h"
 #include "spectrum.h"
+#include "evo_ps2.h"
 
 static bool    mounted;
 static uint8_t last_report[8];
@@ -632,6 +633,9 @@ void tuh_hid_report_received_cb(uint8_t dev_addr, uint8_t instance,
         uint8_t before[8];
         memcpy(before, last_report, 8);
         memcpy(last_report, report, 8);
+
+        // The Evo's AVR logs every key as set-2 bytes as well (evo_ps2.c).
+        if (!menu_is_open() && spec_machine == MACHINE_EVO) evo_ps2_report(last_report, before);
 
         if (menu_is_open()) {
             feed_menu(last_report, before);
