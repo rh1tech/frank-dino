@@ -248,6 +248,9 @@ void settings_defaults(void);
  * Both need the card, so both are core 0's business, with the machine
  * paused -- the same rule as every other FatFs call in this firmware.
  */
+/* Force the invariants a config file cannot be trusted to hold. */
+void settings_validate(void);
+
 bool settings_load(void);
 bool settings_save(void);
 

@@ -231,6 +231,24 @@ static void apply_line(char *line) {
     }
 }
 
+/*
+ * The invariants a file cannot be trusted to hold.
+ *
+ * The menu keeps these -- turning one of a pair on turns the other off
+ * -- but a card carries whatever was written to it, including by an
+ * older firmware or by hand. A config naming two interfaces that
+ * cannot coexist has to resolve to one here rather than reach the port
+ * handlers, where the result is decided by the order of the ifs.
+ *
+ * The Beta Disk and DivMMC are the pair that matters: #E3, #E7 and #EB
+ * all alias the Beta Disk's system register, and both interfaces page
+ * themselves in on a fetch in #3D00-#3DFF. With both on, a DivMMC port
+ * write lands on the WD1793 and its bit 2 low is that drive's reset.
+ */
+void settings_validate(void) {
+    if (settings.betadisk && settings.esxdos) settings.esxdos = 0;
+}
+
 bool settings_load(void) { return settings_load_from(CFG_PATH); }
 
 bool settings_load_from(const char *path) {
@@ -247,6 +265,7 @@ bool settings_load_from(const char *path) {
     }
 
     f_close(&f);
+    settings_validate();
     return true;
 }
 
